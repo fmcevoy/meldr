@@ -1,0 +1,663 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use std::fs;
+use std::process;
+use tempfile::TempDir;
+
+#[allow(deprecated)]
+fn meldr() -> Command {
+    Command::cargo_bin("meldr").unwrap()
+}
+
+fn init_workspace(dir: &std::path::Path) {
+    meldr()
+        .args(["init", "--name", "test-ws"])
+        .current_dir(dir)
+        .assert()
+        .success();
+}
+
+fn create_bare_repo(dir: &std::path::Path, name: &str) -> String {
+    let repo_path = dir.join(name);
+    fs::create_dir_all(&repo_path).unwrap();
+
+    process::Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    // Create a temporary clone to add an initial commit
+    let tmp_clone = dir.join(format!("{}-tmp", name));
+    process::Command::new("git")
+        .args([
+            "clone",
+            repo_path.to_str().unwrap(),
+            tmp_clone.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    // Configure git user for the clone
+    process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&tmp_clone)
+        .output()
+        .unwrap();
+    process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&tmp_clone)
+        .output()
+        .unwrap();
+
+    fs::write(tmp_clone.join("README.md"), "# test").unwrap();
+    process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&tmp_clone)
+        .output()
+        .unwrap();
+    process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(&tmp_clone)
+        .output()
+        .unwrap();
+    process::Command::new("git")
+        .args(["push"])
+        .current_dir(&tmp_clone)
+        .output()
+        .unwrap();
+
+    fs::remove_dir_all(&tmp_clone).unwrap();
+
+    repo_path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn test_init() {
+    let tmp = TempDir::new().unwrap();
+    meldr()
+        .args(["init", "--name", "my-workspace"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized meldr workspace 'my-workspace'"));
+
+    assert!(tmp.path().join("meldr.toml").exists());
+    assert!(tmp.path().join("packages").exists());
+    assert!(tmp.path().join("worktrees").exists());
+    assert!(tmp.path().join(".meldr").exists());
+}
+
+#[test]
+fn test_init_default_name() {
+    let tmp = TempDir::new().unwrap();
+    meldr()
+        .arg("init")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized meldr workspace"));
+
+    assert!(tmp.path().join("meldr.toml").exists());
+}
+
+#[test]
+fn test_init_already_initialized() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .arg("init")
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already initialized"));
+}
+
+#[test]
+fn test_package_add_and_list() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added package 'frontend'"));
+
+    meldr()
+        .args(["package", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("frontend"));
+}
+
+#[test]
+fn test_package_add_multiple() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo1 = create_bare_repo(repos_dir.path(), "frontend");
+    let repo2 = create_bare_repo(repos_dir.path(), "backend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo1, &repo2])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Added package 'frontend'")
+                .and(predicate::str::contains("Added package 'backend'")),
+        );
+}
+
+#[test]
+fn test_package_remove() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["package", "remove", "frontend"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed package 'frontend'"));
+}
+
+#[test]
+fn test_package_list_empty() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No packages in workspace"));
+}
+
+#[test]
+fn test_worktree_add_no_tabs() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created worktree 'feature-test'"));
+
+    assert!(tmp
+        .path()
+        .join("worktrees/feature-test/frontend")
+        .exists());
+}
+
+#[test]
+fn test_worktree_remove_no_tabs() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-rm"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "remove", "feature-rm"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed worktree 'feature-rm'"));
+}
+
+#[test]
+fn test_worktree_list() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature-list"));
+}
+
+#[test]
+fn test_worktree_add_duplicate() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-dup"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_status() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .arg("status")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Workspace:")
+                .and(predicate::str::contains("Packages:"))
+                .and(predicate::str::contains("frontend")),
+        );
+}
+
+#[test]
+fn test_no_workspace_error() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["package", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Not a meldr workspace"));
+}
+
+#[test]
+fn test_exec() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["exec", "echo", "hello"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--- frontend ---")
+                .and(predicate::str::contains("hello")),
+        );
+}
+
+#[test]
+fn test_config_set_and_get() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set agent = cursor"));
+
+    meldr()
+        .args(["config", "get", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent = cursor"));
+}
+
+#[test]
+fn test_config_list() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent =")
+                .and(predicate::str::contains("mode ="))
+                .and(predicate::str::contains("sync_method =")),
+        );
+}
+
+#[test]
+fn test_pkg_alias() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["pkg", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No packages in workspace"));
+}
+
+#[test]
+fn test_wt_alias() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["wt", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active worktrees"));
+}
+
+#[test]
+fn test_st_alias() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .arg("st")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Workspace:"));
+}
+
+#[test]
+fn test_create_bare() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Created workspace 'my-ws'")
+                .and(predicate::str::contains("Workspace ready at")),
+        );
+
+    assert!(tmp.path().join("my-ws/meldr.toml").exists());
+    assert!(tmp.path().join("my-ws/packages").exists());
+    assert!(tmp.path().join("my-ws/worktrees").exists());
+}
+
+#[test]
+fn test_create_with_repos() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    meldr()
+        .args(["create", "my-ws", "-r", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Created workspace 'my-ws'")
+                .and(predicate::str::contains("Added package 'frontend'")),
+        );
+
+    assert!(tmp.path().join("my-ws/packages/frontend").exists());
+}
+
+#[test]
+fn test_create_with_repos_and_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    meldr()
+        .args([
+            "create",
+            "my-ws",
+            "-r",
+            &repo_url,
+            "-b",
+            "feature-x",
+            "--no-tabs",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Created workspace 'my-ws'")
+                .and(predicate::str::contains("Added package 'frontend'"))
+                .and(predicate::str::contains("Created worktree 'feature-x'")),
+        );
+
+    assert!(tmp
+        .path()
+        .join("my-ws/worktrees/feature-x/frontend")
+        .exists());
+}
+
+#[test]
+fn test_create_with_agent() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws", "-a", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
+    assert!(content.contains("cursor"));
+}
+
+#[test]
+fn test_create_full_combo() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo1 = create_bare_repo(repos_dir.path(), "frontend");
+    let repo2 = create_bare_repo(repos_dir.path(), "backend");
+
+    meldr()
+        .args([
+            "create",
+            "my-ws",
+            "-r",
+            &repo1,
+            "-r",
+            &repo2,
+            "-b",
+            "feature-y",
+            "-a",
+            "cursor",
+            "--no-tabs",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Created workspace 'my-ws'")
+                .and(predicate::str::contains("Added package 'frontend'"))
+                .and(predicate::str::contains("Added package 'backend'"))
+                .and(predicate::str::contains("Created worktree 'feature-y'")),
+        );
+
+    assert!(tmp
+        .path()
+        .join("my-ws/worktrees/feature-y/frontend")
+        .exists());
+    assert!(tmp
+        .path()
+        .join("my-ws/worktrees/feature-y/backend")
+        .exists());
+}
+
+#[test]
+fn test_create_already_exists() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["create", "my-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already initialized"));
+}
+
+#[test]
+fn test_create_branch_without_repos_warns() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws", "-b", "feature-z", "--no-tabs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No packages to create worktrees for"));
+}
+
+#[test]
+fn test_config_set_invalid_key() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "bogus_key", "value"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_worktree_remove_nonexistent() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["worktree", "remove", "no-such-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_version_flag() {
+    meldr()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("meldr"));
+}
+
+#[test]
+fn test_init_toml_has_commented_defaults() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    let content = fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+    assert!(content.contains("# agent = \"claude\""));
+    assert!(content.contains("# mode = \"full\""));
+    assert!(content.contains("# sync_method = \"rebase\""));
+    assert!(content.contains("# sync_strategy = \"theirs\""));
+}
+
+#[test]
+fn test_create_with_agent_sets_setting() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    meldr()
+        .args(["create", "my-ws", "-r", &repo_url, "-a", "cursor", "--no-tabs"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // After packages are added, meldr.toml should have the agent setting and package entries
+    let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
+    assert!(content.contains("agent = \"cursor\""), "Agent setting should persist");
+    assert!(content.contains("[[package]]"), "Package entries should exist");
+    assert!(content.contains("frontend"), "Package name should be present");
+}
