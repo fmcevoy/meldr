@@ -28,6 +28,10 @@ pub trait TmuxOps: Send + Sync {
     fn send_keys(&self, target: &str, keys: &str) -> Result<()>;
     fn kill_window(&self, window: &str) -> Result<()>;
     fn create_dev_window(&self, name: &str, cwd: &str, config: &EffectiveConfig, custom_layout: Option<&LayoutDef>) -> Result<DevWindowPanes>;
+    /// Check whether a tmux window still exists.
+    fn has_window(&self, window: &str) -> bool;
+    /// Select (focus) an existing tmux window.
+    fn select_window(&self, window: &str) -> Result<()>;
 }
 
 pub struct RealTmux;
@@ -253,6 +257,17 @@ impl TmuxOps for RealTmux {
             _ => Self::create_default_layout(name, cwd),
         }
     }
+
+    fn has_window(&self, window: &str) -> bool {
+        Self::run(&["list-windows", "-F", "#{window_id}"])
+            .map(|out| out.lines().any(|line| line.trim() == window))
+            .unwrap_or(false)
+    }
+
+    fn select_window(&self, window: &str) -> Result<()> {
+        Self::run(&["select-window", "-t", window])?;
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
@@ -278,6 +293,12 @@ impl TmuxOps for NoopTmux {
         Err(MeldrError::NotInTmux)
     }
     fn create_dev_window(&self, _name: &str, _cwd: &str, _config: &EffectiveConfig, _custom_layout: Option<&LayoutDef>) -> Result<DevWindowPanes> {
+        Err(MeldrError::NotInTmux)
+    }
+    fn has_window(&self, _window: &str) -> bool {
+        false
+    }
+    fn select_window(&self, _window: &str) -> Result<()> {
         Err(MeldrError::NotInTmux)
     }
 }

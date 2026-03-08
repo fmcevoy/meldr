@@ -88,6 +88,10 @@ fn run(cli: Cli) -> error::Result<()> {
                 WorktreeAction::Remove { branch, force } => {
                     cli::worktree::remove(&git, &tmux, &root, &branch, force)
                 }
+                WorktreeAction::Open { branch } => {
+                    let (config, global) = build_effective_config(&root, &cli_overrides)?;
+                    cli::worktree::open(&tmux, &root, &branch, &config, Some(&global))
+                }
                 WorktreeAction::List => cli::worktree::list(&root),
             }
         }

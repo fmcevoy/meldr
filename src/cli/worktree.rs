@@ -40,6 +40,22 @@ pub fn remove(
     Ok(())
 }
 
+pub fn open(
+    tmux: &dyn TmuxOps,
+    workspace_root: &Path,
+    branch: &str,
+    config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
+) -> Result<()> {
+    let manifest = Manifest::load(workspace_root)?;
+    let mut state = WorkspaceState::load(workspace_root)?;
+    crate::core::worktree::open_worktree(
+        tmux, &manifest, &mut state, workspace_root, branch, config, global_config,
+    )?;
+    println!("Opened worktree '{}'", branch);
+    Ok(())
+}
+
 pub fn list(workspace_root: &Path) -> Result<()> {
     let state = WorkspaceState::load(workspace_root)?;
     let worktrees = crate::core::worktree::list_worktrees(&state);

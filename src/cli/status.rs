@@ -17,15 +17,10 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
     println!("{}", style("Packages:").bold().underlined());
     for pkg in &manifest.packages {
         let pkg_path = workspace::package_path(workspace_root, &pkg.name);
-        let dirty = if pkg_path.exists() {
-            git.is_dirty(&pkg_path).unwrap_or(false)
-        } else {
-            false
-        };
-        let status_marker = if dirty {
-            style("*").red().to_string()
-        } else {
+        let status_marker = if pkg_path.exists() {
             style("✓").green().to_string()
+        } else {
+            style("✗").red().to_string()
         };
         let branch_info = pkg.branch.as_deref().unwrap_or("(default)");
         println!("  {} {} ({})", status_marker, pkg.name, branch_info);
