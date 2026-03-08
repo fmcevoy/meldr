@@ -20,6 +20,104 @@ pub fn expand_template(template: &str, ws: &str, branch: &str, pkg: &str) -> Str
         .replace("{pkg}", pkg)
 }
 
+/// Result of setting up tmux windows for a worktree.
+struct TmuxSetupResult {
+    tmux_window: Option<String>,
+    pane_mappings: HashMap<String, String>,
+}
+
+/// Create tmux windows and panes for a set of packages in a worktree branch.
+///
+/// Handles both manifest layout overrides and per-package dev window layouts.
+/// Skips packages whose worktree path does not exist on disk.
+fn setup_tmux_windows(
+    tmux: &dyn TmuxOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    branch: &str,
+    pkg_names: &[String],
+    config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
+) -> Result<TmuxSetupResult> {
+    let ws_name = &manifest.workspace.name;
+    let mut tmux_windows = Vec::new();
+    let mut pane_mappings = HashMap::new();
+
+    if let Some(ref lo) = manifest.layout {
+        let window_name = expand_template(&config.window_name_template, ws_name, branch, "");
+        let window_id = tmux.create_window(&window_name)?;
+
+        for _ in 1..lo.panes.len() {
+            tmux.split_window(&window_id)?;
+        }
+
+        let layout = crate::tmux::TmuxLayout {
+            definition: lo.definition.clone(),
+            pane_names: lo.panes.clone(),
+        };
+        tmux.apply_layout(&window_id, &layout)?;
+
+        for (i, pkg_name) in lo.panes.iter().enumerate() {
+            if pkg_name.is_empty() {
+                continue;
+            }
+            let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+            let target = format!("{}.{}", window_id, i);
+            tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
+            if config.should_launch_agent() {
+                tmux.send_keys(&target, &config.agent_command)?;
+            }
+            pane_mappings.insert(i.to_string(), pkg_name.clone());
+        }
+
+        tmux_windows.push(window_id);
+    } else {
+        let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
+
+        for pkg_name in pkg_names {
+            let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+            if !wt_path.exists() {
+                eprintln!("Warning: worktree path for '{}' does not exist, skipping", pkg_name);
+                continue;
+            }
+            let wt_path_str = wt_path.to_string_lossy().to_string();
+
+            let window_name =
+                expand_template(&config.window_name_template, ws_name, branch, pkg_name);
+
+            let dev =
+                tmux.create_dev_window(&window_name, &wt_path_str, config, custom_layout)?;
+
+            if let Some(ref editor_pane) = dev.editor {
+                tmux.send_keys(editor_pane, &config.editor)?;
+                pane_mappings.insert(format!("{}:editor", pkg_name), editor_pane.clone());
+            }
+
+            if config.should_launch_agent() {
+                if let Some(ref agent_pane) = dev.agent {
+                    tmux.send_keys(agent_pane, &config.agent_command)?;
+                }
+            }
+            if let Some(ref agent_pane) = dev.agent {
+                pane_mappings.insert(format!("{}:agent", pkg_name), agent_pane.clone());
+            }
+
+            tmux_windows.push(dev.window_id);
+        }
+    }
+
+    let tmux_window = match tmux_windows.len() {
+        0 => None,
+        1 => Some(tmux_windows.into_iter().next().unwrap()),
+        _ => Some(tmux_windows.join(",")),
+    };
+
+    Ok(TmuxSetupResult {
+        tmux_window,
+        pane_mappings,
+    })
+}
+
 pub fn add_worktree(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,
@@ -76,109 +174,21 @@ pub fn add_worktree(
         eprintln!("Warning: {}", error);
     }
 
-    let ws_name = &manifest.workspace.name;
-    let mut tmux_windows = Vec::new();
-    let mut pane_mappings = HashMap::new();
-
-    if needs_tmux {
-        // Check for layout override in manifest
-        if let Some(ref lo) = manifest.layout {
-            let window_name = expand_template(
-                &config.window_name_template,
-                ws_name,
-                branch,
-                "",
-            );
-            let window_id = tmux.create_window(&window_name)?;
-
-            let pane_count = lo.panes.len();
-            for _ in 1..pane_count {
-                tmux.split_window(&window_id)?;
-            }
-
-            let layout = crate::tmux::TmuxLayout {
-                definition: lo.definition.clone(),
-                pane_names: lo.panes.clone(),
-            };
-            tmux.apply_layout(&window_id, &layout)?;
-
-            for (i, pkg_name) in lo.panes.iter().enumerate() {
-                if pkg_name.is_empty() {
-                    continue;
-                }
-                let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-                let target = format!("{}.{}", window_id, i);
-                tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
-                if config.should_launch_agent() {
-                    tmux.send_keys(&target, &config.agent_command)?;
-                }
-                pane_mappings.insert(i.to_string(), pkg_name.clone());
-            }
-
-            tmux_windows.push(window_id);
-        } else {
-            // Look up custom layout from global config if the preset name isn't built-in
-            let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
-
-            // One dev window per package
-            for pkg_name in &created {
-                let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-                let wt_path_str = wt_path.to_string_lossy().to_string();
-
-                let window_name = expand_template(
-                    &config.window_name_template,
-                    ws_name,
-                    branch,
-                    pkg_name,
-                );
-
-                let dev = tmux.create_dev_window(&window_name, &wt_path_str, config, custom_layout)?;
-
-                // Launch editor
-                if let Some(ref editor_pane) = dev.editor {
-                    tmux.send_keys(editor_pane, &config.editor)?;
-                }
-
-                // Launch agent
-                if config.should_launch_agent() {
-                    if let Some(ref agent_pane) = dev.agent {
-                        tmux.send_keys(agent_pane, &config.agent_command)?;
-                    }
-                }
-
-                if let Some(ref editor_pane) = dev.editor {
-                    pane_mappings.insert(
-                        format!("{}:editor", pkg_name),
-                        editor_pane.clone(),
-                    );
-                }
-                if let Some(ref agent_pane) = dev.agent {
-                    pane_mappings.insert(
-                        format!("{}:agent", pkg_name),
-                        agent_pane.clone(),
-                    );
-                }
-
-                tmux_windows.push(dev.window_id);
-            }
-        }
-    }
-
-    let tmux_window = if tmux_windows.len() == 1 {
-        Some(tmux_windows.into_iter().next().unwrap())
-    } else if tmux_windows.is_empty() {
-        None
+    let setup = if needs_tmux {
+        setup_tmux_windows(tmux, manifest, workspace_root, branch, &created, config, global_config)?
     } else {
-        // Store comma-separated window IDs for multi-package worktrees
-        Some(tmux_windows.join(","))
+        TmuxSetupResult {
+            tmux_window: None,
+            pane_mappings: HashMap::new(),
+        }
     };
 
     state.add_worktree(
         branch,
         WorktreeState {
             branch: branch.to_string(),
-            tmux_window,
-            pane_mappings,
+            tmux_window: setup.tmux_window,
+            pane_mappings: setup.pane_mappings,
         },
     );
     state.save(workspace_root)?;
@@ -245,6 +255,57 @@ pub fn remove_worktree(
     Ok(())
 }
 
+pub fn open_worktree(
+    tmux: &dyn TmuxOps,
+    manifest: &Manifest,
+    state: &mut WorkspaceState,
+    workspace_root: &Path,
+    branch: &str,
+    config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
+) -> Result<()> {
+    let wt_state = state
+        .get_worktree(branch)
+        .ok_or_else(|| MeldrError::WorktreeNotFound(branch.to_string()))?;
+
+    // If tmux windows are still alive, just select the first one
+    if let Some(ref window_ids) = wt_state.tmux_window {
+        let first = window_ids.split(',').next().unwrap_or("");
+        if !first.is_empty() && tmux.has_window(first) {
+            tmux.select_window(first)?;
+            return Ok(());
+        }
+    }
+
+    // Windows are gone — recreate them
+    if !config.should_use_tmux() {
+        return Err(MeldrError::Tmux(
+            "Cannot open worktree windows: tmux is disabled via --no-tabs or config".to_string(),
+        ));
+    }
+
+    if !tmux.is_inside_tmux() {
+        return Err(MeldrError::NotInTmux);
+    }
+
+    let packages: Vec<String> = manifest.packages.iter().map(|p| p.name.clone()).collect();
+    let setup = setup_tmux_windows(
+        tmux, manifest, workspace_root, branch, &packages, config, global_config,
+    )?;
+
+    state.add_worktree(
+        branch,
+        WorktreeState {
+            branch: branch.to_string(),
+            tmux_window: setup.tmux_window,
+            pane_mappings: setup.pane_mappings,
+        },
+    );
+    state.save(workspace_root)?;
+
+    Ok(())
+}
+
 pub fn list_worktrees(state: &WorkspaceState) -> Vec<&WorktreeState> {
     state.worktrees.values().collect()
 }
@@ -277,9 +338,6 @@ pub fn sync_worktree(
 
         println!("Syncing {}...", pkg.name);
         git.fetch(&repo_path, remote)?;
-        if let Err(e) = git.pull_ff_only(&repo_path) {
-            eprintln!("Warning: Could not fast-forward '{}' main: {}", pkg.name, e);
-        }
 
         // Resolve default branch: explicit > auto-detect > config fallback
         let detected;
@@ -290,10 +348,12 @@ pub fn sync_worktree(
             detected.as_deref().unwrap_or(&config.default_branch)
         };
 
+        // Rebase/merge against the remote-tracking branch (bare repos have no local checkout)
+        let upstream = format!("{}/{}", remote, default_branch);
         if method == "merge" {
-            git.merge(&wt_path, default_branch, strategy)?;
+            git.merge(&wt_path, &upstream, strategy)?;
         } else {
-            git.rebase(&wt_path, default_branch, strategy, true)?;
+            git.rebase(&wt_path, &upstream, strategy, true)?;
         }
     }
     Ok(())

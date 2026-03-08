@@ -12,7 +12,6 @@ pub trait GitOps: Send + Sync {
     fn fetch(&self, path: &Path, remote: &str) -> Result<()>;
     fn rebase(&self, path: &Path, onto: &str, strategy: &str, autostash: bool) -> Result<()>;
     fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()>;
-    fn pull_ff_only(&self, path: &Path) -> Result<()>;
     fn status_porcelain(&self, path: &Path) -> Result<String>;
     fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String>;
 }
@@ -45,7 +44,7 @@ impl RealGit {
 impl GitOps for RealGit {
     fn clone_repo(&self, url: &str, path: &Path) -> Result<()> {
         let path_str = path.to_string_lossy();
-        let args = ["clone", url, &path_str];
+        let args = ["clone", "--bare", url, &path_str];
         trace::trace_cmd("git", &args, None);
 
         let output = Command::new("git")
@@ -124,11 +123,6 @@ impl GitOps for RealGit {
         }
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         Self::run(&arg_refs, path)?;
-        Ok(())
-    }
-
-    fn pull_ff_only(&self, path: &Path) -> Result<()> {
-        Self::run(&["pull", "--ff-only"], path)?;
         Ok(())
     }
 

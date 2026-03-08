@@ -131,6 +131,11 @@ pub enum WorktreeAction {
         #[arg(long)]
         force: bool,
     },
+    /// Reopen tmux windows for an existing worktree (e.g. after a crash)
+    Open {
+        /// Branch name of the worktree to open
+        branch: String,
+    },
     /// List all active worktrees
     List,
 }
