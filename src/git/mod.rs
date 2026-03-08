@@ -9,11 +9,12 @@ pub trait GitOps: Send + Sync {
     fn worktree_add(&self, repo: &Path, dest: &Path, branch: &str) -> Result<()>;
     fn worktree_remove(&self, repo: &Path, path: &Path, force: bool) -> Result<()>;
     fn is_dirty(&self, path: &Path) -> Result<bool>;
-    fn fetch(&self, path: &Path) -> Result<()>;
+    fn fetch(&self, path: &Path, remote: &str) -> Result<()>;
     fn rebase(&self, path: &Path, onto: &str, strategy: &str, autostash: bool) -> Result<()>;
     fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()>;
     fn pull_ff_only(&self, path: &Path) -> Result<()>;
     fn status_porcelain(&self, path: &Path) -> Result<String>;
+    fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String>;
 }
 
 pub struct RealGit;
@@ -98,8 +99,8 @@ impl GitOps for RealGit {
         Ok(!output.is_empty())
     }
 
-    fn fetch(&self, path: &Path) -> Result<()> {
-        Self::run(&["fetch", "origin"], path)?;
+    fn fetch(&self, path: &Path, remote: &str) -> Result<()> {
+        Self::run(&["fetch", remote], path)?;
         Ok(())
     }
 
@@ -133,5 +134,13 @@ impl GitOps for RealGit {
 
     fn status_porcelain(&self, path: &Path) -> Result<String> {
         Self::run(&["status", "--porcelain"], path)
+    }
+
+    fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String> {
+        let ref_path = format!("refs/remotes/{}/HEAD", remote);
+        let output = Self::run(&["symbolic-ref", &ref_path], path).ok()?;
+        // Output is like "refs/remotes/origin/main" — extract the branch name
+        let prefix = format!("refs/remotes/{}/", remote);
+        output.strip_prefix(&prefix).map(|s| s.to_string())
     }
 }

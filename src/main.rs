@@ -11,7 +11,7 @@ use std::path::Path;
 use clap::Parser;
 
 use cli::{Cli, Commands, ConfigAction, PackageAction, WorktreeAction};
-use core::config::{self, CliOverrides};
+use core::config::{self, CliOverrides, GlobalConfig};
 use core::workspace::{self, Manifest};
 use git::RealGit;
 use tmux::RealTmux;
@@ -46,6 +46,7 @@ fn run(cli: Cli) -> error::Result<()> {
             agent,
         } => {
             let cwd = std::env::current_dir()?;
+            let global = config::load_global_config()?;
             let mut config = config::EffectiveConfig::default();
             config.no_agent = cli_overrides.no_agent;
             config.no_tabs = cli_overrides.no_tabs;
@@ -62,6 +63,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 branch.as_deref(),
                 agent.as_deref(),
                 &config,
+                Some(&global),
             )
         }
 
@@ -80,8 +82,8 @@ fn run(cli: Cli) -> error::Result<()> {
             let root = workspace::find_workspace_root(&cwd)?;
             match action {
                 WorktreeAction::Add { branch } => {
-                    let config = build_effective_config(&root, &cli_overrides)?;
-                    cli::worktree::add(&git, &tmux, &root, &branch, &config)
+                    let (config, global) = build_effective_config(&root, &cli_overrides)?;
+                    cli::worktree::add(&git, &tmux, &root, &branch, &config, Some(&global))
                 }
                 WorktreeAction::Remove { branch, force } => {
                     cli::worktree::remove(&git, &tmux, &root, &branch, force)
@@ -99,7 +101,8 @@ fn run(cli: Cli) -> error::Result<()> {
         Commands::Exec { command } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
-            cli::exec::run(&root, &command)
+            let (config, _) = build_effective_config(&root, &cli_overrides)?;
+            cli::exec::run(&root, &command, &config)
         }
 
         Commands::Sync {
@@ -111,10 +114,10 @@ fn run(cli: Cli) -> error::Result<()> {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let manifest = Manifest::load(&root)?;
-            let config = build_effective_config(&root, &cli_overrides)?;
+            let (config, _) = build_effective_config(&root, &cli_overrides)?;
 
-            let method = if merge { "merge" } else { &config.sync_method };
-            let strat = strategy.as_deref().unwrap_or(&config.sync_strategy);
+            let method_override = if merge { Some("merge") } else { None };
+            let strat_override = strategy.as_deref();
 
             if all {
                 let state = core::state::WorkspaceState::load(&root)?;
@@ -125,8 +128,9 @@ fn run(cli: Cli) -> error::Result<()> {
                         &manifest,
                         &root,
                         branch_name,
-                        method,
-                        strat,
+                        &config,
+                        method_override,
+                        strat_override,
                     )?;
                 }
             } else {
@@ -135,7 +139,8 @@ fn run(cli: Cli) -> error::Result<()> {
                 match target_branch {
                     Some(b) => {
                         core::worktree::sync_worktree(
-                            &git, &manifest, &root, &b, method, strat,
+                            &git, &manifest, &root, &b, &config,
+                            method_override, strat_override,
                         )?;
                         println!("Synced worktree '{}'", b);
                     }
@@ -165,22 +170,33 @@ fn run(cli: Cli) -> error::Result<()> {
 fn build_effective_config(
     workspace_root: &Path,
     cli_overrides: &CliOverrides,
-) -> error::Result<config::EffectiveConfig> {
+) -> error::Result<(config::EffectiveConfig, GlobalConfig)> {
     let global = config::load_global_config()?;
     let manifest = Manifest::load(workspace_root)?;
 
     let mut env_overrides = HashMap::new();
-    if let Ok(val) = std::env::var("MELDR_AGENT") {
-        env_overrides.insert("MELDR_AGENT".to_string(), val);
-    }
-    if let Ok(val) = std::env::var("MELDR_MODE") {
-        env_overrides.insert("MELDR_MODE".to_string(), val);
+    for key in &[
+        "MELDR_AGENT",
+        "MELDR_MODE",
+        "MELDR_EDITOR",
+        "MELDR_DEFAULT_BRANCH",
+        "MELDR_REMOTE",
+        "MELDR_SHELL",
+        "MELDR_LAYOUT",
+        "VISUAL",
+        "EDITOR",
+        "SHELL",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            env_overrides.insert(key.to_string(), val);
+        }
     }
 
-    Ok(config::resolve_config(
+    let effective = config::resolve_config(
         &global,
         &manifest.settings,
         cli_overrides,
         &env_overrides,
-    ))
+    );
+    Ok((effective, global))
 }

@@ -29,6 +29,18 @@ pub struct Settings {
     pub sync_method: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sync_strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_name: Option<String>,
 }
 
 impl Settings {
@@ -37,6 +49,12 @@ impl Settings {
             && self.mode.is_empty()
             && self.sync_method.is_empty()
             && self.sync_strategy.is_empty()
+            && self.editor.is_none()
+            && self.default_branch.is_none()
+            && self.remote.is_none()
+            && self.shell.is_none()
+            && self.layout.is_none()
+            && self.window_name.is_none()
     }
 }
 
@@ -52,6 +70,8 @@ pub struct PackageEntry {
     pub url: String,
     #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 
 impl Manifest {
@@ -94,6 +114,12 @@ impl Manifest {
             "# mode = \"full\"             # \"full\" | \"no-agent\" | \"no-tabs\"\n",
             "# sync_method = \"rebase\"    # \"rebase\" | \"merge\"\n",
             "# sync_strategy = \"theirs\"  # \"theirs\" | \"ours\" | \"manual\"\n",
+            "# editor = \"nvim .\"         # editor command (or uses $EDITOR/$VISUAL)\n",
+            "# default_branch = \"main\"   # fallback branch for sync\n",
+            "# remote = \"origin\"         # default git remote\n",
+            "# shell = \"sh\"              # shell for exec (or uses $SHELL)\n",
+            "# layout = \"default\"        # \"default\" | \"minimal\" | \"editor-only\"\n",
+            "# window_name = \"{ws}/{branch}:{pkg}\"  # tmux window name template\n",
         );
 
         // Insert defaults comment right after [settings] block (or after [workspace] if no settings)
@@ -216,6 +242,7 @@ mod tests {
             name: "frontend".to_string(),
             url: "https://github.com/org/frontend.git".to_string(),
             branch: Some("main".to_string()),
+            remote: None,
         }).unwrap();
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();
@@ -259,12 +286,14 @@ url = "https://github.com/org/backend.git"
             name: "pkg".to_string(),
             url: "url".to_string(),
             branch: None,
+            remote: None,
         }).unwrap();
 
         let result = manifest.add_package(PackageEntry {
             name: "pkg".to_string(),
             url: "url2".to_string(),
             branch: None,
+            remote: None,
         });
         assert!(result.is_err());
     }
@@ -276,6 +305,7 @@ url = "https://github.com/org/backend.git"
             name: "pkg".to_string(),
             url: "url".to_string(),
             branch: None,
+            remote: None,
         }).unwrap();
 
         let removed = manifest.remove_package("pkg").unwrap();

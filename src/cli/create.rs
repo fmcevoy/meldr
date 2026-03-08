@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::core::config::EffectiveConfig;
+use crate::core::config::{EffectiveConfig, GlobalConfig};
 use crate::core::state::WorkspaceState;
 use crate::core::workspace::Manifest;
 use crate::error::{MeldrError, Result};
@@ -16,6 +16,7 @@ pub fn run(
     branch: Option<&str>,
     agent: Option<&str>,
     config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     let workspace_root = parent_dir.join(name);
     if workspace_root.exists() {
@@ -57,6 +58,7 @@ pub fn run(
                 &workspace_root,
                 branch_name,
                 config,
+                global_config,
             )?;
             println!("Created worktree '{}'", branch_name);
         }

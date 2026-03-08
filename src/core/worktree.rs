@@ -3,12 +3,22 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::core::config::EffectiveConfig;
+use crate::core::config::{EffectiveConfig, GlobalConfig};
 use crate::core::state::{WorkspaceState, WorktreeState};
 use crate::core::workspace::{self, Manifest};
 use crate::error::{MeldrError, Result};
 use crate::git::GitOps;
 use crate::tmux::TmuxOps;
+
+/// Expand template variables in a string.
+///
+/// Replaces `{ws}`, `{branch}`, and `{pkg}` with their respective values.
+pub fn expand_template(template: &str, ws: &str, branch: &str, pkg: &str) -> String {
+    template
+        .replace("{ws}", ws)
+        .replace("{branch}", branch)
+        .replace("{pkg}", pkg)
+}
 
 pub fn add_worktree(
     git: &dyn GitOps,
@@ -18,6 +28,7 @@ pub fn add_worktree(
     workspace_root: &Path,
     branch: &str,
     config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     if state.get_worktree(branch).is_some() {
         return Err(MeldrError::WorktreeAlreadyExists(branch.to_string()));
@@ -72,7 +83,12 @@ pub fn add_worktree(
     if needs_tmux {
         // Check for layout override in manifest
         if let Some(ref lo) = manifest.layout {
-            let window_name = format!("{}/{}", ws_name, branch);
+            let window_name = expand_template(
+                &config.window_name_template,
+                ws_name,
+                branch,
+                "",
+            );
             let window_id = tmux.create_window(&window_name)?;
 
             let pane_count = lo.panes.len();
@@ -101,35 +117,47 @@ pub fn add_worktree(
 
             tmux_windows.push(window_id);
         } else {
-            // Default: one dev window per package with nvim + agent + 4 terminals
+            // Look up custom layout from global config if the preset name isn't built-in
+            let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
+
+            // One dev window per package
             for pkg_name in &created {
                 let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
                 let wt_path_str = wt_path.to_string_lossy().to_string();
 
-                let window_name = if created.len() == 1 {
-                    format!("{}/{}", ws_name, branch)
-                } else {
-                    format!("{}/{}:{}", ws_name, branch, pkg_name)
-                };
+                let window_name = expand_template(
+                    &config.window_name_template,
+                    ws_name,
+                    branch,
+                    pkg_name,
+                );
 
-                let dev = tmux.create_dev_window(&window_name, &wt_path_str)?;
+                let dev = tmux.create_dev_window(&window_name, &wt_path_str, config, custom_layout)?;
 
-                // Launch nvim in pane 0
-                tmux.send_keys(&dev.nvim, "nvim .")?;
-
-                // Launch agent in the agent pane (top-right)
-                if config.should_launch_agent() {
-                    tmux.send_keys(&dev.agent, &config.agent_command)?;
+                // Launch editor
+                if let Some(ref editor_pane) = dev.editor {
+                    tmux.send_keys(editor_pane, &config.editor)?;
                 }
 
-                pane_mappings.insert(
-                    format!("{}:nvim", pkg_name),
-                    dev.nvim.clone(),
-                );
-                pane_mappings.insert(
-                    format!("{}:agent", pkg_name),
-                    dev.agent.clone(),
-                );
+                // Launch agent
+                if config.should_launch_agent() {
+                    if let Some(ref agent_pane) = dev.agent {
+                        tmux.send_keys(agent_pane, &config.agent_command)?;
+                    }
+                }
+
+                if let Some(ref editor_pane) = dev.editor {
+                    pane_mappings.insert(
+                        format!("{}:editor", pkg_name),
+                        editor_pane.clone(),
+                    );
+                }
+                if let Some(ref agent_pane) = dev.agent {
+                    pane_mappings.insert(
+                        format!("{}:agent", pkg_name),
+                        agent_pane.clone(),
+                    );
+                }
 
                 tmux_windows.push(dev.window_id);
             }
@@ -226,9 +254,13 @@ pub fn sync_worktree(
     manifest: &Manifest,
     workspace_root: &Path,
     branch: &str,
-    method: &str,
-    strategy: &str,
+    config: &EffectiveConfig,
+    method_override: Option<&str>,
+    strategy_override: Option<&str>,
 ) -> Result<()> {
+    let method = method_override.unwrap_or(&config.sync_method);
+    let strategy = strategy_override.unwrap_or(&config.sync_strategy);
+
     for pkg in &manifest.packages {
         let repo_path = workspace::package_path(workspace_root, &pkg.name);
         let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
@@ -241,13 +273,23 @@ pub fn sync_worktree(
             continue;
         }
 
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+
         println!("Syncing {}...", pkg.name);
-        git.fetch(&repo_path)?;
+        git.fetch(&repo_path, remote)?;
         if let Err(e) = git.pull_ff_only(&repo_path) {
             eprintln!("Warning: Could not fast-forward '{}' main: {}", pkg.name, e);
         }
 
-        let default_branch = pkg.branch.as_deref().unwrap_or("main");
+        // Resolve default branch: explicit > auto-detect > config fallback
+        let detected;
+        let default_branch = if let Some(ref b) = pkg.branch {
+            b.as_str()
+        } else {
+            detected = git.detect_default_branch(&repo_path, remote);
+            detected.as_deref().unwrap_or(&config.default_branch)
+        };
+
         if method == "merge" {
             git.merge(&wt_path, default_branch, strategy)?;
         } else {
@@ -255,4 +297,27 @@ pub fn sync_worktree(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_template_all_vars() {
+        let result = expand_template("{ws}/{branch}:{pkg}", "myws", "feature-x", "frontend");
+        assert_eq!(result, "myws/feature-x:frontend");
+    }
+
+    #[test]
+    fn test_expand_template_no_pkg() {
+        let result = expand_template("{ws}/{branch}", "myws", "main", "");
+        assert_eq!(result, "myws/main");
+    }
+
+    #[test]
+    fn test_expand_template_custom() {
+        let result = expand_template("[{branch}] {pkg}", "ws", "dev", "api");
+        assert_eq!(result, "[dev] api");
+    }
 }
