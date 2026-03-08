@@ -32,5 +32,11 @@ pub fn list(workspace_root: &Path) -> Result<()> {
     println!("  mode = {}", effective.mode);
     println!("  sync_method = {}", effective.sync_method);
     println!("  sync_strategy = {}", effective.sync_strategy);
+    println!("  editor = {}", effective.editor);
+    println!("  default_branch = {}", effective.default_branch);
+    println!("  remote = {}", effective.remote);
+    println!("  shell = {}", effective.shell);
+    println!("  layout = {}", effective.layout);
+    println!("  window_name = {}", effective.window_name_template);
     Ok(())
 }

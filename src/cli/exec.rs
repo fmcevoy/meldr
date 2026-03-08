@@ -3,10 +3,11 @@ use std::process::Command;
 
 use rayon::prelude::*;
 
+use crate::core::config::EffectiveConfig;
 use crate::core::workspace::{self, Manifest};
 use crate::error::Result;
 
-pub fn run(workspace_root: &Path, command: &[String]) -> Result<()> {
+pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
 
     if manifest.packages.is_empty() {
@@ -21,7 +22,7 @@ pub fn run(workspace_root: &Path, command: &[String]) -> Result<()> {
         .par_iter()
         .map(|pkg| {
             let pkg_path = workspace::package_path(workspace_root, &pkg.name);
-            let output = Command::new("sh")
+            let output = Command::new(&config.shell)
                 .args(["-c", &cmd_str])
                 .current_dir(&pkg_path)
                 .output();

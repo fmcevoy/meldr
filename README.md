@@ -69,8 +69,6 @@ meldr worktree add feature-auth
 |------|-------------|
 | `--no-agent` | Skip agent launch in tmux panes |
 | `--no-tabs` | Skip tmux window/pane creation entirely |
-| `--verbose` | Verbose output |
-| `--quiet` | Suppress non-error output |
 
 ## Directory Layout
 
@@ -99,44 +97,141 @@ name = "my-project"
 # mode = "full"             # "full" | "no-agent" | "no-tabs"
 # sync_method = "rebase"    # "rebase" | "merge"
 # sync_strategy = "theirs"  # "theirs" | "ours" | "manual"
+# editor = "nvim ."         # editor command (or uses $EDITOR/$VISUAL)
+# default_branch = "main"   # fallback branch for sync
+# remote = "origin"         # default git remote
+# shell = "sh"              # shell for exec (or uses $SHELL)
+# layout = "default"        # "default" | "minimal" | "editor-only"
+# window_name = "{ws}/{branch}:{pkg}"  # tmux window name template
 
 [[package]]
 name = "frontend"
 url = "https://github.com/org/frontend.git"
 branch = "main"
+# remote = "origin"         # per-package remote override
 
 [[package]]
 name = "backend"
 url = "https://github.com/org/backend.git"
 ```
 
+## Configuration
+
+### Settings
+
+| Key | Default | Env vars | Description |
+|-----|---------|----------|-------------|
+| `agent` | `claude` | `MELDR_AGENT` | AI agent to launch |
+| `mode` | `full` | `MELDR_MODE` | `full`, `no-agent`, or `no-tabs` |
+| `sync_method` | `rebase` | | `rebase` or `merge` |
+| `sync_strategy` | `theirs` | | `theirs`, `ours`, or `manual` |
+| `editor` | `nvim .` | `MELDR_EDITOR`, `$VISUAL`, `$EDITOR` | Editor command for tmux panes |
+| `default_branch` | `main` | `MELDR_DEFAULT_BRANCH` | Fallback branch for sync (auto-detected when possible) |
+| `remote` | `origin` | `MELDR_REMOTE` | Default git remote name |
+| `shell` | `sh` | `MELDR_SHELL`, `$SHELL` | Shell used by `meldr exec` |
+| `layout` | `default` | `MELDR_LAYOUT` | Tmux layout preset |
+| `window_name` | `{ws}/{branch}:{pkg}` | | Tmux window name template |
+
+### Configuration Layering
+
+Configuration is resolved in order (highest priority first):
+
+1. **CLI flags** (`--no-agent`, `--no-tabs`)
+2. **Environment variables** (`MELDR_*`, `$EDITOR`, `$VISUAL`, `$SHELL`)
+3. **Workspace settings** (`meldr.toml [settings]`)
+4. **Global config** (`~/.config/meldr/config.toml`)
+5. **Built-in defaults**
+
+### Global Config (~/.config/meldr/config.toml)
+
+```toml
+[defaults]
+agent = "claude"
+editor = "code ."
+layout = "minimal"
+shell = "/bin/zsh"
+
+[agents.claude]
+command = "claude"
+
+[agents.cursor]
+command = "cursor ."
+
+# Custom tmux layout presets
+[layouts.wide]
+setup = [
+  "split-window -t {{window}}.0 -h -p 30 -c {{cwd}} -P -F '#{pane_id}'",
+  "select-pane -t {{window}}.0",
+]
+editor_pane = 0
+agent_pane = 1
+```
+
 ## Tmux Integration
 
-When running inside tmux (default mode), `meldr worktree add` will:
+When running inside tmux (default mode), `meldr worktree add` creates a development environment for each package with editor, agent, and terminal panes.
 
-1. Capture your current tmux layout (or use a layout override from `meldr.toml`)
-2. Create a new tmux window named `meldr:<branch>`
-3. Split panes to match the captured layout
-4. `cd` each pane into the corresponding worktree package directory
-5. Optionally launch an AI coding agent in each pane
+### Built-in Layout Presets
 
-### Layout Override
+**`default`** — 6 panes: editor + agent + 4 terminals
+```
++-------------------+-----------+
+|                   |           |
+|    editor (0)     | agent (1) |
+|                   |           |
++--------+----------+           |
+| t1 (2) | t3 (4)   |           |
++--------+----------+           |
+| t2 (3) | t4 (5)   |           |
++--------+----------+-----------+
+```
+
+**`minimal`** — 2 panes: editor + agent
+```
++-------------------+-----------+
+|                   |           |
+|    editor (0)     | agent (1) |
+|                   |           |
++-------------------+-----------+
+```
+
+**`editor-only`** — single pane
+```
++-------------------------------+
+|                               |
+|          editor (0)           |
+|                               |
++-------------------------------+
+```
+
+### Custom Layouts
+
+Define custom layouts in `~/.config/meldr/config.toml` using raw tmux commands:
+
+```toml
+[layouts.my-layout]
+setup = [
+  "split-window -t {{window}}.0 -h -p 40 -c {{cwd}} -P -F '#{pane_id}'",
+  "split-window -t {{window}}.0 -v -p 20 -c {{cwd}} -P -F '#{pane_id}'",
+  "select-pane -t {{window}}.0",
+]
+editor_pane = 0
+agent_pane = 1
+```
+
+Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`.
+
+Then select it: `meldr config set layout my-layout`
+
+### Layout Override (per-workspace)
+
+For fully custom tmux layouts using layout definitions:
 
 ```toml
 [layout]
 definition = "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}"
 panes = ["frontend", "backend"]
 ```
-
-## Configuration Layering
-
-Configuration is resolved in order (highest priority first):
-
-1. **CLI flags** (`--no-agent`, `--no-tabs`)
-2. **Environment variables** (`MELDR_AGENT`, `MELDR_MODE`)
-3. **Workspace settings** (`meldr.toml [settings]`)
-4. **Global config** (`~/.config/meldr/config.toml`)
-5. **Built-in defaults** (agent=claude, mode=full, sync=rebase/theirs)
 
 ## Sync
 
@@ -156,3 +251,5 @@ meldr sync --merge
 # Custom strategy
 meldr sync --strategy ours
 ```
+
+The sync command auto-detects the default branch from the remote when possible, falling back to the configured `default_branch` (default: `main`). Per-package `branch` and `remote` overrides in `meldr.toml` are respected.

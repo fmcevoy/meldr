@@ -8,6 +8,12 @@ pub const DEFAULT_AGENT: &str = "claude";
 pub const DEFAULT_MODE: &str = "full";
 pub const DEFAULT_SYNC_METHOD: &str = "rebase";
 pub const DEFAULT_SYNC_STRATEGY: &str = "theirs";
+pub const DEFAULT_EDITOR: &str = "nvim .";
+pub const DEFAULT_BRANCH: &str = "main";
+pub const DEFAULT_REMOTE: &str = "origin";
+pub const DEFAULT_SHELL: &str = "sh";
+pub const DEFAULT_LAYOUT: &str = "default";
+pub const DEFAULT_WINDOW_NAME: &str = "{ws}/{branch}:{pkg}";
 
 pub(crate) fn default_agent() -> String {
     DEFAULT_AGENT.to_string()
@@ -23,6 +29,8 @@ pub struct GlobalConfig {
     pub defaults: GlobalDefaults,
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
+    #[serde(default)]
+    pub layouts: HashMap<String, LayoutDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +41,18 @@ pub struct GlobalDefaults {
     pub mode: String,
     #[serde(default)]
     pub root_dir: Option<String>,
+    #[serde(default)]
+    pub editor: Option<String>,
+    #[serde(default)]
+    pub default_branch: Option<String>,
+    #[serde(default)]
+    pub remote: Option<String>,
+    #[serde(default)]
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub window_name: Option<String>,
 }
 
 impl Default for GlobalDefaults {
@@ -41,6 +61,12 @@ impl Default for GlobalDefaults {
             agent: default_agent(),
             mode: default_mode(),
             root_dir: None,
+            editor: None,
+            default_branch: None,
+            remote: None,
+            shell: None,
+            layout: None,
+            window_name: None,
         }
     }
 }
@@ -48,6 +74,22 @@ impl Default for GlobalDefaults {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub command: String,
+}
+
+/// A custom tmux layout defined as a sequence of tmux commands with template variables.
+///
+/// Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`,
+/// `{{pkg}}`, `{{branch}}`, `{{ws}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutDef {
+    /// Tmux commands to run after window creation (e.g., split-window, select-pane).
+    pub setup: Vec<String>,
+    /// Pane index where the editor command is sent. If `None`, no editor is launched.
+    #[serde(default)]
+    pub editor_pane: Option<usize>,
+    /// Pane index where the agent command is sent. If `None`, no agent is launched.
+    #[serde(default)]
+    pub agent_pane: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +101,12 @@ pub struct EffectiveConfig {
     pub sync_strategy: String,
     pub no_agent: bool,
     pub no_tabs: bool,
+    pub editor: String,
+    pub default_branch: String,
+    pub remote: String,
+    pub shell: String,
+    pub layout: String,
+    pub window_name_template: String,
 }
 
 impl Default for EffectiveConfig {
@@ -71,6 +119,12 @@ impl Default for EffectiveConfig {
             sync_strategy: DEFAULT_SYNC_STRATEGY.to_string(),
             no_agent: false,
             no_tabs: false,
+            editor: DEFAULT_EDITOR.to_string(),
+            default_branch: DEFAULT_BRANCH.to_string(),
+            remote: DEFAULT_REMOTE.to_string(),
+            shell: DEFAULT_SHELL.to_string(),
+            layout: DEFAULT_LAYOUT.to_string(),
+            window_name_template: DEFAULT_WINDOW_NAME.to_string(),
         }
     }
 }
@@ -119,6 +173,24 @@ pub fn resolve_config(
     // Layer 4: Global config
     config.agent = global.defaults.agent.clone();
     config.mode = global.defaults.mode.clone();
+    if let Some(ref v) = global.defaults.editor {
+        config.editor = v.clone();
+    }
+    if let Some(ref v) = global.defaults.default_branch {
+        config.default_branch = v.clone();
+    }
+    if let Some(ref v) = global.defaults.remote {
+        config.remote = v.clone();
+    }
+    if let Some(ref v) = global.defaults.shell {
+        config.shell = v.clone();
+    }
+    if let Some(ref v) = global.defaults.layout {
+        config.layout = v.clone();
+    }
+    if let Some(ref v) = global.defaults.window_name {
+        config.window_name_template = v.clone();
+    }
 
     // Layer 3: Workspace settings
     if !workspace_settings.agent.is_empty() {
@@ -133,6 +205,24 @@ pub fn resolve_config(
     if !workspace_settings.sync_strategy.is_empty() {
         config.sync_strategy = workspace_settings.sync_strategy.clone();
     }
+    if let Some(ref v) = workspace_settings.editor {
+        config.editor = v.clone();
+    }
+    if let Some(ref v) = workspace_settings.default_branch {
+        config.default_branch = v.clone();
+    }
+    if let Some(ref v) = workspace_settings.remote {
+        config.remote = v.clone();
+    }
+    if let Some(ref v) = workspace_settings.shell {
+        config.shell = v.clone();
+    }
+    if let Some(ref v) = workspace_settings.layout {
+        config.layout = v.clone();
+    }
+    if let Some(ref v) = workspace_settings.window_name {
+        config.window_name_template = v.clone();
+    }
 
     // Layer 2: Environment variables
     if let Some(agent) = env_overrides.get("MELDR_AGENT") {
@@ -140,6 +230,27 @@ pub fn resolve_config(
     }
     if let Some(mode) = env_overrides.get("MELDR_MODE") {
         config.mode = mode.clone();
+    }
+    if let Some(v) = env_overrides.get("MELDR_EDITOR") {
+        config.editor = v.clone();
+    } else if let Some(v) = env_overrides.get("VISUAL") {
+        config.editor = format!("{} .", v);
+    } else if let Some(v) = env_overrides.get("EDITOR") {
+        config.editor = format!("{} .", v);
+    }
+    if let Some(v) = env_overrides.get("MELDR_DEFAULT_BRANCH") {
+        config.default_branch = v.clone();
+    }
+    if let Some(v) = env_overrides.get("MELDR_REMOTE") {
+        config.remote = v.clone();
+    }
+    if let Some(v) = env_overrides.get("MELDR_SHELL") {
+        config.shell = v.clone();
+    } else if let Some(v) = env_overrides.get("SHELL") {
+        config.shell = v.clone();
+    }
+    if let Some(v) = env_overrides.get("MELDR_LAYOUT") {
+        config.layout = v.clone();
     }
 
     // Layer 1: CLI flags (these are independent — both can be true)
@@ -156,7 +267,18 @@ pub fn resolve_config(
     config
 }
 
-const VALID_SETTINGS_KEYS: &[&str] = &["agent", "mode", "sync_method", "sync_strategy"];
+const VALID_SETTINGS_KEYS: &[&str] = &[
+    "agent",
+    "mode",
+    "sync_method",
+    "sync_strategy",
+    "editor",
+    "default_branch",
+    "remote",
+    "shell",
+    "layout",
+    "window_name",
+];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
     if !VALID_SETTINGS_KEYS.contains(&key) {
@@ -218,9 +340,9 @@ mod tests {
             defaults: GlobalDefaults {
                 agent: "cursor".to_string(),
                 mode: "full".to_string(),
-                root_dir: None,
+                ..Default::default()
             },
-            agents: HashMap::new(),
+            ..Default::default()
         };
 
         let workspace = Settings {
@@ -302,6 +424,7 @@ mod tests {
                 ..Default::default()
             },
             agents,
+            ..Default::default()
         };
 
         let workspace = Settings::default();
@@ -310,5 +433,87 @@ mod tests {
 
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent_command, "cursor .");
+    }
+
+    #[test]
+    fn test_new_config_defaults() {
+        let config = EffectiveConfig::default();
+        assert_eq!(config.editor, "nvim .");
+        assert_eq!(config.default_branch, "main");
+        assert_eq!(config.remote, "origin");
+        assert_eq!(config.shell, "sh");
+        assert_eq!(config.layout, "default");
+        assert_eq!(config.window_name_template, "{ws}/{branch}:{pkg}");
+    }
+
+    #[test]
+    fn test_editor_from_env_visual() {
+        let global = GlobalConfig::default();
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let mut env = HashMap::new();
+        env.insert("VISUAL".to_string(), "code".to_string());
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.editor, "code .");
+    }
+
+    #[test]
+    fn test_meldr_editor_overrides_visual() {
+        let global = GlobalConfig::default();
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let mut env = HashMap::new();
+        env.insert("VISUAL".to_string(), "code".to_string());
+        env.insert("MELDR_EDITOR".to_string(), "hx .".to_string());
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.editor, "hx .");
+    }
+
+    #[test]
+    fn test_shell_from_env() {
+        let global = GlobalConfig::default();
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let mut env = HashMap::new();
+        env.insert("SHELL".to_string(), "/bin/zsh".to_string());
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.shell, "/bin/zsh");
+    }
+
+    #[test]
+    fn test_workspace_settings_override_global() {
+        let global = GlobalConfig {
+            defaults: GlobalDefaults {
+                editor: Some("code .".to_string()),
+                layout: Some("minimal".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let workspace = Settings {
+            editor: Some("hx .".to_string()),
+            ..Default::default()
+        };
+
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.editor, "hx .");
+        assert_eq!(config.layout, "minimal");
+    }
+
+    #[test]
+    fn test_valid_settings_keys_expanded() {
+        assert!(VALID_SETTINGS_KEYS.contains(&"editor"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"default_branch"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"remote"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"shell"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"layout"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"window_name"));
     }
 }

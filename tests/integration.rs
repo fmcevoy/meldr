@@ -661,3 +661,94 @@ fn test_create_with_agent_sets_setting() {
     assert!(content.contains("[[package]]"), "Package entries should exist");
     assert!(content.contains("frontend"), "Package name should be present");
 }
+
+#[test]
+fn test_config_set_new_keys() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    // Test setting all new config keys
+    for (key, value) in &[
+        ("editor", "code ."),
+        ("default_branch", "develop"),
+        ("remote", "upstream"),
+        ("shell", "/bin/zsh"),
+        ("layout", "minimal"),
+        ("window_name", "[{branch}] {pkg}"),
+    ] {
+        meldr()
+            .args(["config", "set", key, value])
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!("Set {} = {}", key, value)));
+
+        meldr()
+            .args(["config", "get", key])
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!("{} = {}", key, value)));
+    }
+}
+
+#[test]
+fn test_config_list_shows_new_fields() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("editor =")
+                .and(predicate::str::contains("default_branch ="))
+                .and(predicate::str::contains("remote ="))
+                .and(predicate::str::contains("shell ="))
+                .and(predicate::str::contains("layout ="))
+                .and(predicate::str::contains("window_name =")),
+        );
+}
+
+#[test]
+fn test_init_toml_has_new_commented_defaults() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    let content = fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+    assert!(content.contains("# editor = \"nvim .\""));
+    assert!(content.contains("# default_branch = \"main\""));
+    assert!(content.contains("# remote = \"origin\""));
+    assert!(content.contains("# shell = \"sh\""));
+    assert!(content.contains("# layout = \"default\""));
+}
+
+#[test]
+fn test_exec_respects_shell_config() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set shell to bash and verify exec still works
+    meldr()
+        .args(["config", "set", "shell", "bash"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["exec", "echo", "works"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("works"));
+}

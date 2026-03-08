@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(find /Users/fintanmcevoy/workspaces/ws-meldr/worktrees/refine/meldr -type f | grep -E '\\\\.\\(rs|toml|yaml|yml|json\\)$' | head -30)"
+    ]
+  }
+}

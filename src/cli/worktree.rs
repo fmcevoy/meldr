@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::core::config::EffectiveConfig;
+use crate::core::config::{EffectiveConfig, GlobalConfig};
 use crate::core::state::WorkspaceState;
 use crate::core::workspace::Manifest;
 use crate::error::Result;
@@ -13,11 +13,12 @@ pub fn add(
     workspace_root: &Path,
     branch: &str,
     config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::add_worktree(
-        git, tmux, &manifest, &mut state, workspace_root, branch, config,
+        git, tmux, &manifest, &mut state, workspace_root, branch, config, global_config,
     )?;
     println!("Created worktree '{}'", branch);
     Ok(())

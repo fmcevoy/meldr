@@ -31,6 +31,7 @@ pub fn add_packages(
                     name: name.clone(),
                     url: url.clone(),
                     branch: None,
+                    remote: None,
                 };
                 manifest.add_package(entry)?;
                 added.push(name);
