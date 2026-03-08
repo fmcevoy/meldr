@@ -1,246 +1,323 @@
-# Meldr Gap Analysis: Workspace Management in the Agentic Era
+# Meldr Gap Analysis: Workspace Infrastructure for the Agentic Era
 
-## What Meldr Does Well Today
+## What Meldr Is
 
-Meldr already occupies a unique niche — it's a **multi-repo workspace tool with
-first-class tmux and AI agent integration**, written in Rust. Key strengths:
+Meldr is a **workspace orchestration layer that sits above AI agents**. It
+doesn't compete with Claude Code, Cursor, or Codex — it provides the
+multi-repo infrastructure they run inside. Its job:
 
-- Git worktree management across multiple repos (the right isolation primitive)
-- Tmux-based developer environment orchestration
-- AI agent launching (Claude, Cursor) per worktree
-- Parallel command execution across packages (`meldr exec`)
-- Layered configuration system
-- Safety checks (dirty state detection, force flags)
-- Clean one-shot `meldr create` workflow
+1. **Isolation** — Git worktrees per branch, per package, so agents don't collide
+2. **Environment** — Tmux windows/panes with nvim + agent + terminals per package
+3. **Lifecycle** — Create, sync, and tear down worktrees across repos atomically
+4. **Execution** — Run commands in parallel across all packages (`meldr exec`)
+5. **Configuration** — 5-layer config system (CLI → env → workspace → global → defaults)
 
-This puts meldr ahead of traditional multi-repo tools (gita, mu-repo, myrepos,
-meta) which have no agent awareness, and ahead of monorepo tools (Nx, Turborepo)
-which don't handle multi-repo worktree orchestration.
-
----
-
-## Gap Analysis: Biggest Missing Elements
-
-Gaps are ordered by strategic importance for becoming a next-generation
-agentic workspace tool.
+This is the right abstraction. Agents handle code generation; meldr handles
+the workspace they operate in. The question is: what does the workspace layer
+need to do better to support the way agents are actually being used?
 
 ---
 
-### 1. Agent Orchestration & Lifecycle Management (CRITICAL)
+## What Meldr Does Today (Concrete)
 
-**Current state:** Meldr launches agents in tmux panes but has no awareness of
-what agents are doing, whether they've finished, succeeded, or failed.
+| Capability | Implementation |
+|---|---|
+| Multi-repo worktree management | `worktrees/{branch}/{package}/` layout, parallel creation via rayon |
+| Tmux environment orchestration | 5-pane dev layout per package (nvim + agent + 4 terminals), or custom layouts |
+| Agent launching | Configurable command per agent type, launched into tmux panes |
+| Parallel cross-package execution | `meldr exec` runs commands across all `packages/` dirs concurrently |
+| Branch synchronization | `meldr sync` with rebase/merge strategies, autostash, per-package |
+| State tracking | `.meldr/state.json` maps worktrees → tmux window/pane IDs |
+| Safety checks | Dirty-state detection before worktree removal, duplicate prevention |
+| One-shot setup | `meldr create` clones repos + creates worktrees + launches agents |
 
-**What's missing:**
+**What meldr tracks:** which packages exist, which branches have worktrees,
+which tmux windows belong to which worktrees.
 
-| Gap | What competitors do | Priority |
-|-----|-------------------|----------|
-| **Agent status tracking** | Claude Squad, Conductor, and Composio track agent state (running/done/failed/blocked). Cursor 2.0 manages up to 8 concurrent agents with status dashboards. | P0 |
-| **Agent output capture** | No way to see what an agent produced without switching to its pane. Parallel Code and Superset surface agent outputs in a unified view. | P0 |
-| **Task assignment** | No structured way to tell agents *what* to do. Composio and Vibe Kanban accept task descriptions and feed them to agents with context. | P1 |
-| **Agent-to-agent coordination** | Agents in meldr worktrees are completely isolated — no shared context or blackboard. Google ADK uses shared `session.state`; LangGraph uses a state graph. | P1 |
-| **Completion callbacks / hooks** | No way to trigger actions when an agent finishes (e.g., run tests, create PR, notify user, start next agent). | P1 |
-
-**Why it matters:** The #1 trend in 2025-2026 is parallel agent orchestration.
-Teams are running 5-30 agents simultaneously. Meldr has the isolation layer
-(worktrees) but none of the coordination layer.
-
----
-
-### 2. Context Engineering Infrastructure (CRITICAL)
-
-**Current state:** No support for context files, agent instructions, or
-memory persistence.
-
-**What's missing:**
-
-| Gap | Industry standard | Priority |
-|-----|------------------|----------|
-| **CLAUDE.md / AGENTS.md support** | 72.6% of Claude Code projects use CLAUDE.md. AGENTS.md is now under the Linux Foundation. These are the standard way to give agents project-specific instructions. Meldr should propagate workspace-level context files to each worktree. | P0 |
-| **Per-task context injection** | When launching an agent on a task, inject relevant context: which files to touch, architectural constraints, related PRs. Composio does this automatically. | P1 |
-| **Shared workspace context** | Cross-agent context like "agent A modified the auth module, agent B should be aware" — a shared knowledge layer. Steve Yegge's "Beads" system tracks this. | P2 |
-| **MCP server integration** | MCP (Model Context Protocol) is becoming "USB-C for AI" — 75% of gateway vendors integrating by 2026. Moon and Rush already ship MCP servers. Meldr should expose workspace state via MCP so agents can query package structure, worktree status, and coordinate. | P1 |
-
-**Why it matters:** The ETH Zurich research and Cognition (Devin) both found
-that agent failures almost always stem from **missing context**. The workspace
-tool is the natural place to solve this — it knows the repo structure, the
-branches, the relationships between packages.
+**What meldr does NOT track:** what agents are doing, whether they finished,
+what they produced, or what task they were assigned.
 
 ---
 
-### 3. Merge, Conflict & Branch Lifecycle Management (HIGH)
+## Gap Analysis
 
-**Current state:** Meldr creates worktrees and syncs them (rebase/merge) but
-has no support for the full branch lifecycle.
-
-**What's missing:**
-
-| Gap | What's needed | Priority |
-|-----|--------------|----------|
-| **Cross-repo atomic operations** | When 5 agents finish work across 3 repos, merge all branches together or none. No tool does this well yet — huge differentiator opportunity. | P1 |
-| **Conflict detection before merge** | Proactively detect when two agents' branches will conflict, before they try to merge. Like a CI check but at the workspace level. | P1 |
-| **Auto-PR creation** | After agent work completes, automatically create PRs across all affected repos with linked descriptions. `gh` CLI exists but meldr doesn't integrate. | P1 |
-| **Branch cleanup** | Remove worktrees + branches across all packages after merge. Currently manual with `meldr wt remove`. | P2 |
-| **Dependency-ordered merging** | If package B depends on package A, merge A first, verify CI, then merge B. | P2 |
-
-**Why it matters:** Google's DORA report shows 91% increase in code review
-time and 154% increase in PR size with AI agents. The workspace tool needs to
-help manage this output flood.
+Gaps are framed from the perspective of **what a workspace layer above agents
+should provide**. Meldr isn't trying to be an agent — it's trying to be the
+best possible infrastructure for agents to work in.
 
 ---
 
-### 4. Task Decomposition & Planning (HIGH)
+### 1. Workspace-Level Context Propagation (CRITICAL)
 
-**Current state:** No concept of "tasks" — only branches and packages.
+**The problem:** Agents are only as good as the context they receive. Meldr
+creates the worktree but sends agents in blind — they don't know about the
+workspace structure, sibling packages, or cross-repo relationships.
 
-**What's missing:**
+**What meldr knows that agents don't:**
+- Which packages exist and their relationships
+- Which branches are active and who's working on what
+- The workspace-level configuration and conventions
+- What other agents have been doing in other worktrees
 
-| Gap | What competitors do | Priority |
-|-----|-------------------|----------|
-| **Spec-driven task breakdown** | Emerging "requirements.md → design.md → tasks.md" pattern. Devin plans before executing. A workspace tool should help decompose a feature into parallelizable agent tasks. | P1 |
-| **Dependency graph between tasks** | "Task B depends on task A finishing" — allows automatic sequencing and maximum parallelism. Google ADK's ParallelAgent and SequentialAgent patterns. | P1 |
-| **Task-to-worktree mapping** | Associate tasks with specific worktrees/agents, track which task each agent is working on. | P1 |
-| **Progress dashboard** | Beyond `meldr status` (git dirty state), show task-level progress: planned → in-progress → reviewing → merged. | P2 |
+**What the workspace layer should provide:**
 
-**Why it matters:** The biggest productivity gains come from running agents in
-parallel. But parallelization requires decomposition, and decomposition requires
-tooling support. Senior engineers do this mentally; tooling should codify it.
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Workspace-aware context files** | Generate/propagate CLAUDE.md or AGENTS.md per worktree that includes workspace structure, package list, related branches. 72.6% of Claude Code projects rely on these. AGENTS.md is now a Linux Foundation standard. | P0 |
+| **MCP server for workspace state** | Expose workspace topology (packages, worktrees, branches, dirty status) via MCP so agents can query it at runtime. MCP is becoming the standard interface — Moon and Rush already ship MCP servers. Agents in worktree A could ask "what branches exist? what packages are in this workspace?" | P0 |
+| **Cross-package relationship context** | When launching an agent in `worktrees/feature-auth/api/`, tell it about `worktrees/feature-auth/web/` and that both are part of the same feature. Today agents have no idea sibling packages exist. | P1 |
+| **Task context injection** | When creating a worktree for a specific task, include the task description, relevant files, architectural constraints. The workspace layer knows what the work is — it should tell the agent. | P1 |
 
----
-
-### 5. Runtime Isolation Beyond File System (MEDIUM)
-
-**Current state:** Git worktrees provide file-level isolation only.
-
-**What's missing:**
-
-| Gap | What's needed | Priority |
-|-----|--------------|----------|
-| **Port isolation** | Multiple dev servers all default to :3000, :5432, :8080. Agents stepping on each other. Container Use by Dagger solves this. | P1 |
-| **Database isolation** | Shared DB state causes race conditions when multiple agents run migrations or tests. | P1 |
-| **Container-per-agent option** | Wrap each worktree in a lightweight container for full runtime isolation. Devin and Google Jules do this with cloud VMs. | P2 |
-| **Resource limits** | Prevent one agent from consuming all CPU/memory/disk. A 2GB codebase can balloon to 10GB+ with 5 worktrees. | P2 |
-
-**Why it matters:** File-system isolation (worktrees) is necessary but not
-sufficient for true parallel agent execution. Any agent running tests or dev
-servers will collide with others.
+**Why this is #1:** ETH Zurich (March 2026) and Cognition (Devin) independently
+found that agent failures almost always stem from missing context. The workspace
+tool is the *natural* owner of structural context — it knows things no
+individual agent can discover on its own.
 
 ---
 
-### 6. CI/CD & Feedback Loop Integration (MEDIUM)
+### 2. Agent Lifecycle Awareness (CRITICAL)
 
-**Current state:** No CI/CD integration whatsoever.
+**The problem:** Meldr launches agents into tmux panes and then goes silent. It
+has no idea if the agent is still running, finished successfully, errored out,
+or is waiting for input. This makes meldr a "fire and forget" launcher rather
+than an orchestration layer.
 
-**What's missing:**
+**What the workspace layer should track:**
 
-| Gap | What competitors do | Priority |
-|-----|-------------------|----------|
-| **Self-correcting build loops** | When an agent's code fails CI, feed the error back to the agent automatically. GitHub Agentic Workflows and Elastic's Claude CI integration do this. | P1 |
-| **Pre-merge validation** | Run tests across all affected packages before allowing worktree merge. Nx and Turborepo do this with affected analysis. | P1 |
-| **CI status in dashboard** | Show CI pass/fail status per worktree/branch alongside git status. | P2 |
-| **Webhook triggers** | Allow external CI systems to notify meldr of build results, triggering next steps. | P2 |
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Process-level awareness** | Detect whether the agent process in a tmux pane is still running, exited cleanly, or crashed. tmux provides `pane_dead` and exit codes. | P0 |
+| **Git-based progress signals** | Monitor worktree git state changes (new commits, file modifications) as a proxy for agent activity. Meldr already has `git status --porcelain` for dirty detection — extend it to detect "work being done." | P0 |
+| **Completion detection** | Know when an agent is done. Could be process exit, a sentinel file (`.meldr/done`), or git commit matching a convention. Enables "what's still running?" queries. | P1 |
+| **Event hooks** | When an agent finishes, trigger configurable actions: run tests, create PR, notify user, start next worktree. The workspace layer is the right place for this — it manages the worktree lifecycle already. | P1 |
 
-**Why it matters:** 67.3% of AI-generated PRs are rejected (LinearB data).
-Aggressive CI validation catches ~15% of agent code that would introduce bugs.
-The workspace tool should close the feedback loop.
-
----
-
-### 7. Observability & Governance (MEDIUM)
-
-**Current state:** No logging, metrics, or audit trail.
-
-**What's missing:**
-
-| Gap | What's needed | Priority |
-|-----|--------------|----------|
-| **Agent activity log** | What did each agent do, when, what files were touched? | P1 |
-| **Token/cost tracking** | How many tokens each agent consumed. Critical for budget management at scale (20-30 agents). | P1 |
-| **Outcome tracking** | Success rate per agent, per task type. Did the agent's code pass review? | P2 |
-| **Time tracking** | How long each agent took, wall-clock and active time. | P2 |
-
-**Why it matters:** When running many agents, observability is the difference
-between controlled automation and chaos.
+**Why this matters:** Without lifecycle awareness, the user is the orchestrator.
+They manually check each tmux pane, decide what's done, and kick off next
+steps. Meldr should replace that manual coordination.
 
 ---
 
-### 8. Traditional Workspace Features (LOWER but table-stakes)
+### 3. Multi-Repo Branch Lifecycle (HIGH)
 
-**Compared to established workspace tools, meldr also lacks:**
+**The problem:** Meldr handles worktree creation and sync, but the full branch
+lifecycle — from creation through merge and cleanup — has gaps, especially the
+multi-repo coordination that is meldr's unique value.
 
-| Gap | Competitors that have it | Priority |
-|-----|------------------------|----------|
-| **Task caching** | Nx, Turborepo, Bazel. Cache build/test outputs to avoid redundant work. | P2 |
-| **Affected/changed analysis** | Nx, Pants. Only run tasks for packages impacted by a change. | P2 |
-| **Dependency graph visualization** | Nx, Pants, Bazel. Visual graph of package relationships. | P3 |
-| **Scaffolding / templates** | Nx generators, Copier, Plop. Generate new packages from templates. | P3 |
-| **Environment management** | mise, Devbox, Dev Containers. Ensure consistent tool versions per workspace. | P3 |
-| **Plugin / extension system** | Nx plugins, meta plugins. Allow community extensions. | P3 |
-| **Remote/distributed caching** | Nx Cloud, Turborepo Remote Cache. Share build cache across team/CI. | P3 |
+**What's already working:** `meldr wt add` (create), `meldr sync` (rebase/merge),
+`meldr wt remove` (cleanup with safety checks).
 
-These are less urgent because meldr's differentiation is in the agentic
-orchestration space, not competing head-to-head with Nx or Turborepo on
-build optimization.
+**What the workspace layer should add:**
+
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Cross-repo conflict detection** | Before merging, check if branches in different packages will conflict with each other or with main. Meldr owns the multi-repo view — no other tool can do this. | P1 |
+| **Coordinated PR creation** | `meldr pr create` generates linked PRs across all packages in a worktree. Include cross-references ("this PR is part of workspace feature-auth, see also: api#42, web#43"). | P1 |
+| **Post-merge cleanup** | After PRs merge, auto-remove worktrees and branches across all packages. Extend existing `meldr wt remove` with merge-triggered automation. | P1 |
+| **Cross-repo atomic merge** | Merge branches across all packages together or roll back all. No tool does this well — it's a natural extension of meldr's multi-repo worktree model. | P2 |
+| **Dependency-ordered operations** | If package B depends on A, sync/merge/test A first. Requires knowing package dependencies (currently not tracked). | P2 |
+
+**Why this matters:** AI agents produce 154% larger PRs (DORA Report). When 5
+agents finish work across 3 repos, someone has to coordinate the merge. That
+should be the workspace layer.
 
 ---
 
-## Strategic Recommendations
+### 4. Enhanced Status & Dashboard (HIGH)
 
-### Phase 1: Agent-Aware Workspace (make meldr *the* tool for parallel agents)
-1. **Agent lifecycle tracking** — know when agents start, finish, succeed, fail
-2. **Context file propagation** — CLAUDE.md/AGENTS.md replicated to worktrees
-3. **MCP server** — expose workspace state so agents can self-coordinate
-4. **Unified status dashboard** — agent state + git state + task state
+**The problem:** `meldr status` shows workspace name, package dirty states, and
+worktree tmux window IDs. That's git-level status. For an orchestration layer,
+the dashboard should answer: "what's happening across my workspace right now?"
 
-### Phase 2: Coordination Layer (enable teams of agents)
-5. **Task decomposition & assignment** — spec → tasks → agents
-6. **Cross-agent shared state** — blackboard pattern for coordination
-7. **Conflict detection** — proactive merge conflict warnings
-8. **Auto-PR creation** — agents' work automatically surfaces for review
+**What `meldr status` should show:**
 
-### Phase 3: Full Lifecycle (production-grade agent development)
-9. **CI feedback loops** — build failures fed back to agents automatically
-10. **Runtime isolation** — containers or port/DB namespacing per worktree
-11. **Observability** — logs, token costs, outcome tracking
-12. **Cross-repo atomic merges** — all-or-nothing merge across packages
+| Gap | What it adds | Priority |
+|---|---|---|
+| **Agent state per worktree** | Running / finished / errored / idle — per package, per worktree. Derived from tmux pane state + git activity. | P0 |
+| **Recent git activity** | Last commit time, number of new commits since worktree creation, files changed. More useful than just "dirty" bit. | P1 |
+| **Cross-worktree view** | Show all active worktrees, all agents, all packages in a single table. Current `status` is text-based; a structured table or TUI would help at scale. | P1 |
+| **Sync state** | How far behind upstream each worktree is. Already doing this in `sync` — surface it in `status`. | P2 |
+
+**Why this matters:** The value of an orchestration layer scales with
+visibility. When you have 5 worktrees with 10 agents across 3 repos, you need
+a single view of the whole system.
+
+---
+
+### 5. Task-to-Worktree Mapping (MEDIUM-HIGH)
+
+**The problem:** Meldr's data model is branches and packages. There's no concept
+of *why* a worktree exists — what task or feature it's serving. This makes
+meldr a workspace manager, not a work manager.
+
+**What the workspace layer could add:**
+
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Task metadata on worktrees** | Associate a description, issue link, or spec file with each worktree. `meldr wt add feature-auth --task "Implement OAuth flow for API and Web"` | P1 |
+| **Task state tracking** | planned → in-progress → reviewing → merged. Mirrors the worktree lifecycle meldr already manages. | P1 |
+| **Spec file convention** | Look for `tasks.md` or `.meldr/task.md` in the workspace root. When creating a worktree, inject the relevant task description as agent context. | P2 |
+| **Task dependency graph** | "Auth must finish before payment" — enables automatic sequencing of worktree creation. | P2 |
+
+**Why this matters:** The emerging "spec-driven development" pattern
+(requirements.md → design.md → tasks.md) needs infrastructure support.
+The workspace layer is the natural place to map tasks to isolated environments.
+This is what enables parallelism — decompose the work, assign each piece to
+a worktree, let agents execute independently.
+
+---
+
+### 6. Runtime Isolation Beyond Filesystem (MEDIUM)
+
+**The problem:** Git worktrees isolate files, but agents running dev servers or
+tests in parallel will collide on ports, databases, and shared resources.
+
+**What the workspace layer could provide:**
+
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Port namespacing** | Assign unique port ranges per worktree (e.g., worktree 1 gets 3001/5433/8081, worktree 2 gets 3002/5434/8082). Inject as env vars. | P1 |
+| **Environment variable isolation** | Set `PORT`, `DATABASE_URL`, etc. per worktree before launching agents. Meldr already manages the tmux env — extend it. | P1 |
+| **Container wrapping (optional)** | Wrap each worktree in a lightweight container for full isolation. Opt-in for heavy use cases. Container Use (Dagger) and Devin do this. | P2 |
+| **Disk budget warnings** | A 2GB codebase with 5 worktrees = 10GB+. Warn when approaching limits. | P3 |
+
+**Why this matters:** This is the difference between "you can have 2 agents" and
+"you can have 10 agents." File isolation is necessary but not sufficient for
+true parallel execution with dev servers and tests.
+
+---
+
+### 7. Build & Validation Integration (MEDIUM)
+
+**The problem:** No integration with build systems or CI. The workspace layer
+should help validate agent output before it reaches review.
+
+**What the workspace layer could provide:**
+
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Pre-merge validation** | `meldr validate {worktree}` runs tests/lints across all packages in a worktree. Leverages `meldr exec` which already runs parallel commands. | P1 |
+| **Affected package analysis** | Determine which packages were actually modified in a worktree and only validate those. Basic version: check git diff per package. | P1 |
+| **CI status tracking** | Surface CI pass/fail per branch in `meldr status`. Query GitHub Actions / external CI via APIs. | P2 |
+| **Build caching** | Cache test/build results per worktree to avoid re-running unchanged packages. Similar to Nx/Turborepo but at the workspace level. | P3 |
+
+**Why this matters:** 67.3% of AI-generated PRs are rejected (LinearB). The
+workspace layer can catch failures early by running validation before the agent
+even creates a PR. `meldr exec` is the primitive; validation is the product.
+
+---
+
+### 8. Observability (LOWER)
+
+**The problem:** No logging or metrics. When managing many agents, you need to
+know what happened, not just what's happening now.
+
+| Gap | What it means for meldr | Priority |
+|---|---|---|
+| **Workspace event log** | Log worktree creation, agent launch, sync operations, completion events to `.meldr/log`. | P2 |
+| **Agent output capture** | Optionally capture tmux pane output to files for post-hoc review. tmux's `pipe-pane` makes this straightforward. | P2 |
+| **Session history** | Which worktrees were created, how long they lasted, what was the outcome. Persisted across sessions. | P3 |
+
+---
+
+## What Meldr Should NOT Do
+
+Staying disciplined about scope is as important as identifying gaps. Meldr is
+a workspace layer, not:
+
+- **An agent framework** — Don't reimplement Claude Code, CrewAI, or LangGraph.
+  Agents handle code generation; meldr handles the workspace they work in.
+- **A project management tool** — Don't build Jira. Task metadata should be
+  lightweight (description + state), just enough to map work to worktrees.
+- **A build system** — Don't compete with Nx/Turborepo on build graph
+  optimization. Use `meldr exec` to invoke whatever build tool the project uses.
+- **A CI/CD platform** — Don't replace GitHub Actions. Integrate with CI, don't
+  replace it.
+- **A container orchestrator** — Don't build mini-Kubernetes. Port namespacing
+  via env vars covers 80% of cases. Container support should be opt-in.
+
+The principle: **meldr provides the infrastructure and context that agents need,
+and coordinates the multi-repo lifecycle that no single agent can manage.**
+
+---
+
+## Strategic Roadmap
+
+### Phase 1: Make the Workspace Aware (infrastructure for agents)
+1. **MCP server** — Expose workspace state so agents can self-coordinate
+2. **Context file propagation** — CLAUDE.md/AGENTS.md with workspace structure
+3. **Agent lifecycle detection** — Process state, git activity, completion signals
+4. **Enhanced status** — Agent state + git state in a single dashboard view
+
+### Phase 2: Coordinate the Multi-Repo Lifecycle (meldr's unique value)
+5. **Coordinated PR creation** — Linked PRs across packages in one command
+6. **Cross-repo conflict detection** — Proactive warnings before merge
+7. **Task-to-worktree mapping** — Associate work descriptions with worktrees
+8. **Pre-merge validation** — Run tests across affected packages
+
+### Phase 3: Scale the Workspace (support 10+ agents)
+9. **Port/environment isolation** — Env vars per worktree for runtime separation
+10. **Event hooks** — Trigger actions on agent completion (tests, PRs, next task)
+11. **Observability** — Event log, output capture, session history
+12. **Cross-repo atomic merges** — All-or-nothing merge across packages
 
 ---
 
 ## Competitive Positioning
 
+Meldr's role in the ecosystem:
+
 ```
-                    Multi-repo        Single-repo
-                    ──────────────────────────────
-  Agent-native  │   MELDR (target)  │  Cursor 2.0  │
-                │   Claude Squad    │  Devin        │
-                │   Composio        │  Codex CLI    │
-                ├───────────────────┼───────────────┤
-  Traditional   │   gita, meta      │  Nx           │
-                │   mu-repo, mani   │  Turborepo    │
-                │   Google repo     │  Bazel        │
-                    ──────────────────────────────
+┌─────────────────────────────────────────────────────────┐
+│  HUMAN (task decomposition, review, decisions)          │
+├─────────────────────────────────────────────────────────┤
+│  MELDR (workspace layer)                                │
+│  - Multi-repo worktree isolation                        │
+│  - Tmux environment orchestration                       │
+│  - Context propagation to agents                        │
+│  - Branch lifecycle coordination                        │
+│  - Status & observability                               │
+├──────────┬──────────┬──────────┬────────────────────────┤
+│ Claude   │ Cursor   │ Codex    │ (any future agent)     │
+│ Code     │          │ CLI      │                        │
+│ (agent)  │ (agent)  │ (agent)  │                        │
+├──────────┴──────────┴──────────┴────────────────────────┤
+│  GIT (worktrees, branches, repos)                       │
+├─────────────────────────────────────────────────────────┤
+│  FILE SYSTEM / CONTAINERS (isolation)                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Meldr's unique position: **the only tool purpose-built for multi-repo agentic
-workspaces**. Claude Squad and Composio are catching up but are agent-specific
-wrappers, not full workspace managers. The opportunity is to own the
-"agent-native multi-repo workspace" quadrant before it gets crowded.
+**vs. Agent orchestrators** (Claude Squad, Composio, Conductor):
+These are agent-specific wrappers. They orchestrate one type of agent.
+Meldr is agent-agnostic and adds multi-repo awareness.
+
+**vs. Traditional workspace tools** (gita, meta, mu-repo):
+These manage multiple repos but have no concept of agents, worktree-per-task
+isolation, or workspace context propagation.
+
+**vs. Monorepo tools** (Nx, Turborepo, Bazel):
+These optimize builds in a single repo. Meldr manages isolated work
+environments across multiple repos.
+
+**Meldr's unique value:** It's the only tool that combines multi-repo worktree
+management with agent-aware workspace orchestration. The closest competitor
+pattern is Claude Squad (worktrees + tmux + agents), but Claude Squad is
+Claude-specific and single-repo.
 
 ---
 
 ## Key Data Points
 
-- Stripe's "Minions" produce **1,000+ merged PRs/week** via parallel agents
-- Claude Code: **80.9% SWE-bench**, ~90% of itself written by itself
-- Cursor 2.0: supports **8 concurrent agents** with independent workspaces
-- AGENTS.md adoption: **29% reduction in median runtime**, 17% fewer tokens
-- AI-generated PR rejection rate: **67.3%** (vs 15.6% manual) — CI gates essential
-- AI adoption correlates with **154% increase in PR size** — merge management critical
-- MCP expected in **75% of gateway vendors** by 2026
-- A 2GB codebase can consume **~10GB in 20 minutes** with automatic worktree creation
+- 72.6% of Claude Code projects use CLAUDE.md for agent context
+- AGENTS.md adoption: 29% reduction in median runtime, 17% fewer tokens
+- Cursor 2.0: up to 8 concurrent agents, each needing isolated workspaces
+- AI-generated PR rejection rate: 67.3% vs 15.6% manual — validation essential
+- AI adoption → 154% increase in PR size — merge coordination critical
+- MCP expected in 75% of gateway vendors by 2026
+- 2GB codebase → ~10GB with 5 worktrees in 20 minutes
+- Stripe runs 1,000+ merged agent PRs/week — workspace tooling is table-stakes
 
 ---
 
-*Research compiled March 2026. Sources include DORA Report, LinearB, ETH Zurich,
-SWE-bench, Anthropic, Cognition, Google ADK, Linux Foundation, and numerous
-developer blogs and tool documentation.*
+*Research compiled March 2026. Sources: DORA Report, LinearB, ETH Zurich,
+SWE-bench, Anthropic, Cognition, Google ADK, Linux Foundation.*
