@@ -1003,6 +1003,119 @@ fn test_sync_works_after_package_add() {
         .success();
 }
 
+#[test]
+fn test_sync_no_worktrees_fetches_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync at workspace root with no worktrees should succeed (fetch only)
+    meldr()
+        .args(["sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("No active worktrees")),
+        );
+}
+
+#[test]
+fn test_sync_all_no_worktrees_fetches_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --all with no worktrees should still fetch packages
+    meldr()
+        .args(["sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("No active worktrees")),
+        );
+}
+
+#[test]
+fn test_sync_at_workspace_root_with_worktrees() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync at workspace root (not inside a worktree dir) should sync all
+    meldr()
+        .args(["sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fetching frontend"));
+}
+
+#[test]
+fn test_sync_all_with_worktrees() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --all should fetch and sync worktrees
+    meldr()
+        .args(["sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("Syncing worktree 'feat-all'")),
+        );
+}
+
 // ─── Global config tests ───────────────────────────────────────
 
 /// Helper to run meldr with a custom HOME directory so global config

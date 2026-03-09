@@ -143,19 +143,7 @@ fn run(cli: Cli) -> error::Result<()> {
             let strat_override = strategy.as_deref();
 
             if all {
-                let state = core::state::WorkspaceState::load(&root)?;
-                for branch_name in state.worktrees.keys() {
-                    println!("Syncing worktree '{}'...", branch_name);
-                    core::worktree::sync_worktree(
-                        &git,
-                        &manifest,
-                        &root,
-                        branch_name,
-                        &config,
-                        method_override,
-                        strat_override,
-                    )?;
-                }
+                sync_all(&git, &manifest, &root, &config, method_override, strat_override)?;
             } else {
                 let target_branch = branch.or_else(|| {
                     let dir_name = workspace::detect_current_worktree_dir(&root, &cwd)?;
@@ -171,10 +159,9 @@ fn run(cli: Cli) -> error::Result<()> {
                         println!("Synced worktree '{}'", b);
                     }
                     None => {
-                        eprintln!(
-                            "Could not detect current worktree. Specify a branch or use --all."
-                        );
-                        std::process::exit(1);
+                        // No specific branch detected — sync all worktrees,
+                        // or just fetch packages if none exist.
+                        sync_all(&git, &manifest, &root, &config, method_override, strat_override)?;
                     }
                 }
             }
@@ -203,6 +190,38 @@ fn run(cli: Cli) -> error::Result<()> {
             }
         }
     }
+}
+
+fn sync_all(
+    git: &dyn git::GitOps,
+    manifest: &Manifest,
+    root: &std::path::Path,
+    config: &config::EffectiveConfig,
+    method_override: Option<&str>,
+    strategy_override: Option<&str>,
+) -> error::Result<()> {
+    // Always fetch all packages first
+    core::worktree::fetch_packages(git, manifest, root, config)?;
+
+    // Then rebase/merge any active worktrees
+    let state = core::state::WorkspaceState::load(root)?;
+    if state.worktrees.is_empty() {
+        println!("All packages fetched. No active worktrees to rebase/merge.");
+    } else {
+        for branch_name in state.worktrees.keys() {
+            println!("Syncing worktree '{}'...", branch_name);
+            core::worktree::sync_worktree(
+                git,
+                manifest,
+                root,
+                branch_name,
+                config,
+                method_override,
+                strategy_override,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn build_effective_config(

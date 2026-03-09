@@ -649,6 +649,22 @@ mod tests {
     }
 }
 
+/// Fetch all packages from their remotes without rebasing/merging any worktree.
+pub fn fetch_packages(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    config: &EffectiveConfig,
+) -> Result<()> {
+    for pkg in &manifest.packages {
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        println!("Fetching {}...", pkg.name);
+        git.fetch(&repo_path, remote)?;
+    }
+    Ok(())
+}
+
 pub fn sync_worktree(
     git: &dyn GitOps,
     manifest: &Manifest,
