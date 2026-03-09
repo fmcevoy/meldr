@@ -368,7 +368,7 @@ fn test_exec_from_worktree() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("--- frontend ---").and(predicate::str::contains("hello")),
+            predicate::str::contains("[frontend] hello"),
         );
 }
 
@@ -459,8 +459,7 @@ fn test_exec_from_worktree_root() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("--- frontend ---")
-                .and(predicate::str::contains("from-root")),
+            predicate::str::contains("[frontend] from-root"),
         );
 }
 
@@ -523,9 +522,8 @@ fn test_exec_multiple_packages() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("--- frontend ---")
-                .and(predicate::str::contains("--- backend ---"))
-                .and(predicate::str::contains("multi")),
+            predicate::str::contains("[frontend] multi")
+                .and(predicate::str::contains("[backend] multi")),
         );
 }
 
