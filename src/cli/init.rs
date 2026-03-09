@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::core::config;
 use crate::core::workspace::Manifest;
 use crate::error::{MeldrError, Result};
 
@@ -24,6 +25,9 @@ pub fn run(workspace_root: &Path, name: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(workspace_root.join("packages"))?;
     std::fs::create_dir_all(workspace_root.join("worktrees"))?;
     std::fs::create_dir_all(workspace_root.join(".meldr"))?;
+
+    // Ensure global config directory exists
+    config::ensure_global_config()?;
 
     println!("Initialized meldr workspace '{}'", workspace_name);
     Ok(())

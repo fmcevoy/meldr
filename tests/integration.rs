@@ -341,7 +341,7 @@ fn test_no_workspace_error() {
 }
 
 #[test]
-fn test_exec() {
+fn test_exec_from_worktree() {
     let tmp = TempDir::new().unwrap();
     let repos_dir = TempDir::new().unwrap();
     let repo_url = create_bare_repo(repos_dir.path(), "frontend");
@@ -355,12 +355,175 @@ fn test_exec() {
         .success();
 
     meldr()
-        .args(["exec", "echo", "hello"])
+        .args(["--no-tabs", "worktree", "add", "feature-exec"])
         .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-exec/frontend");
+
+    meldr()
+        .args(["exec", "echo", "hello"])
+        .current_dir(&wt_dir)
         .assert()
         .success()
         .stdout(
             predicate::str::contains("[frontend] hello"),
+        );
+}
+
+#[test]
+fn test_exec_fails_outside_worktree() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Running exec from workspace root should fail
+    meldr()
+        .args(["exec", "echo", "hello"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "meldr exec must be run from within a worktree directory",
+        ));
+}
+
+#[test]
+fn test_exec_runs_in_worktree_dir_not_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-pwd"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-pwd/frontend");
+
+    // Create a marker file in the worktree dir to verify exec runs there
+    fs::write(wt_dir.join("worktree-marker.txt"), "in-worktree").unwrap();
+
+    meldr()
+        .args(["exec", "cat", "worktree-marker.txt"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("in-worktree"));
+}
+
+#[test]
+fn test_exec_from_worktree_root() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-root"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Running from the worktree branch root dir (not inside a package subdir)
+    let wt_root = tmp.path().join("worktrees/feature-root");
+
+    meldr()
+        .args(["exec", "echo", "from-root"])
+        .current_dir(&wt_root)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[frontend] from-root"),
+        );
+}
+
+#[test]
+fn test_exec_with_slash_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/exec-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/fm-exec-test/frontend");
+
+    meldr()
+        .args(["exec", "echo", "slash-branch"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("slash-branch"));
+}
+
+#[test]
+fn test_exec_multiple_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo1 = create_bare_repo(repos_dir.path(), "frontend");
+    let repo2 = create_bare_repo(repos_dir.path(), "backend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo1, &repo2])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-multi"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-multi/frontend");
+
+    meldr()
+        .args(["exec", "echo", "multi"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("[frontend] multi")
+                .and(predicate::str::contains("[backend] multi")),
         );
 }
 
@@ -381,7 +544,7 @@ fn test_config_set_and_get() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("agent = cursor"));
+        .stdout(predicate::str::contains("cursor"));
 }
 
 #[test]
@@ -852,7 +1015,7 @@ fn test_config_set_new_keys() {
             .current_dir(tmp.path())
             .assert()
             .success()
-            .stdout(predicate::str::contains(format!("{} = {}", key, value)));
+            .stdout(predicate::str::contains(*value));
     }
 }
 
@@ -902,6 +1065,12 @@ fn test_exec_respects_shell_config() {
         .assert()
         .success();
 
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-shell"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
     // Set shell to bash and verify exec still works
     meldr()
         .args(["config", "set", "shell", "bash"])
@@ -909,10 +1078,545 @@ fn test_exec_respects_shell_config() {
         .assert()
         .success();
 
+    let wt_dir = tmp.path().join("worktrees/feature-shell/frontend");
+
     meldr()
         .args(["exec", "echo", "works"])
-        .current_dir(tmp.path())
+        .current_dir(&wt_dir)
         .assert()
         .success()
         .stdout(predicate::str::contains("works"));
+}
+
+#[test]
+fn test_bare_clone_has_remote_tracking_refs() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "myrepo");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let pkg_path = tmp.path().join("packages/myrepo");
+
+    // Verify fetch refspec is configured for remote tracking
+    let refspec = process::Command::new("git")
+        .args(["config", "--get-all", "remote.origin.fetch"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    let refspec_str = String::from_utf8_lossy(&refspec.stdout);
+    assert!(
+        refspec_str.contains("+refs/heads/*:refs/remotes/origin/*"),
+        "Bare clone should have fetch refspec for remote tracking, got: {}",
+        refspec_str
+    );
+
+    // Verify refs/remotes/origin/HEAD is set
+    let head_ref = process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    assert!(
+        head_ref.status.success(),
+        "refs/remotes/origin/HEAD should be set after clone"
+    );
+    let head_str = String::from_utf8_lossy(&head_ref.stdout);
+    assert!(
+        head_str.contains("refs/remotes/origin/"),
+        "HEAD should point to a remote tracking ref, got: {}",
+        head_str
+    );
+
+    // Verify refs/remotes/origin/main exists
+    let remote_main = process::Command::new("git")
+        .args(["rev-parse", "refs/remotes/origin/main"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    assert!(
+        remote_main.status.success(),
+        "refs/remotes/origin/main should exist after clone"
+    );
+}
+
+#[test]
+fn test_sync_works_after_package_add() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "test-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync should succeed — this would fail without remote tracking refs
+    meldr()
+        .args(["sync", "test-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_sync_no_worktrees_fetches_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync at workspace root with no worktrees should succeed (fetch only)
+    meldr()
+        .args(["sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("No active worktrees")),
+        );
+}
+
+#[test]
+fn test_sync_all_no_worktrees_fetches_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --all with no worktrees should still fetch packages
+    meldr()
+        .args(["sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("No active worktrees")),
+        );
+}
+
+#[test]
+fn test_sync_at_workspace_root_with_worktrees() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync at workspace root (not inside a worktree dir) should sync all
+    meldr()
+        .args(["sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fetching frontend"));
+}
+
+#[test]
+fn test_sync_all_with_worktrees() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --all should fetch and sync worktrees
+    meldr()
+        .args(["sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Fetching frontend")
+                .and(predicate::str::contains("Syncing worktree 'feat-all'")),
+        );
+}
+
+// ─── Global config tests ───────────────────────────────────────
+
+/// Helper to run meldr with a custom HOME directory so global config
+/// writes go to a temp dir instead of the real ~/.meldr.
+fn meldr_with_home(home: &std::path::Path) -> Command {
+    let mut cmd = meldr();
+    cmd.env("HOME", home);
+    cmd
+}
+
+#[test]
+fn test_config_set_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "editor", "code ."])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set editor = code . (global)"));
+
+    // Verify the file was created
+    assert!(home.path().join(".meldr/config.toml").exists());
+}
+
+#[test]
+fn test_config_get_global() {
+    let home = TempDir::new().unwrap();
+
+    // Set first
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "remote", "upstream"])
+        .assert()
+        .success();
+
+    // Get
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "remote"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("upstream"));
+}
+
+#[test]
+fn test_config_unset_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "layout", "minimal"])
+        .assert()
+        .success();
+
+    meldr_with_home(home.path())
+        .args(["config", "unset", "--global", "layout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unset layout (global)"));
+
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "layout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not set"));
+}
+
+#[test]
+fn test_config_list_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "agent", "cursor"])
+        .assert()
+        .success();
+
+    meldr_with_home(home.path())
+        .args(["config", "list", "--global"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Global configuration")
+                .and(predicate::str::contains("agent = cursor")),
+        );
+}
+
+#[test]
+fn test_config_unset_workspace() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "unset", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unset agent (workspace)"));
+
+    meldr()
+        .args(["config", "get", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not set"));
+}
+
+#[test]
+fn test_config_show_sources() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace with custom HOME
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global editor
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "editor", "code ."])
+        .assert()
+        .success();
+
+    // Set workspace agent
+    meldr_with_home(home.path())
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Show should display sources
+    meldr_with_home(home.path())
+        .args(["config", "show"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = cursor (workspace)")
+                .and(predicate::str::contains("editor = code . (global)"))
+                .and(predicate::str::contains("remote = origin (default)")),
+        );
+}
+
+#[test]
+fn test_config_precedence_ws_over_global() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global default_branch
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "default_branch", "develop"])
+        .assert()
+        .success();
+
+    // Set workspace default_branch (should override global)
+    meldr_with_home(home.path())
+        .args(["config", "set", "default_branch", "staging"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // List effective config — workspace should win
+    meldr_with_home(home.path())
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default_branch = staging"));
+}
+
+#[test]
+fn test_config_global_overrides_default() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global shell
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "shell", "/bin/zsh"])
+        .assert()
+        .success();
+
+    // Effective config should reflect global override
+    meldr_with_home(home.path())
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shell = /bin/zsh"));
+}
+
+#[test]
+fn test_config_global_without_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Should work even without a workspace
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "agent", "none"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set agent = none (global)"));
+
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("none"));
+}
+
+#[test]
+fn test_config_workspace_without_global_flag_needs_workspace() {
+    let tmp = TempDir::new().unwrap();
+
+    // Without --global and outside a workspace, should fail
+    meldr()
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Not in a meldr workspace"));
+}
+
+#[test]
+fn test_config_set_global_invalid_key() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "bogus", "value"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_config_unset_global_invalid_key() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "unset", "--global", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_init_creates_global_config_dir() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(home.path().join(".meldr").exists());
+    assert!(home.path().join(".meldr/config.toml").exists());
+}
+
+#[test]
+fn test_global_config_default_file_contents() {
+    let home = TempDir::new().unwrap();
+
+    // Trigger global config creation
+    meldr_with_home(home.path())
+        .args(["config", "list", "--global"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(home.path().join(".meldr/config.toml")).unwrap();
+    assert!(content.contains("# agent = \"claude\""));
+    assert!(content.contains("# editor = \"nvim .\""));
+    assert!(content.contains("# default_branch = \"main\""));
+}
+
+#[test]
+fn test_config_set_all_global_keys() {
+    let home = TempDir::new().unwrap();
+
+    for (key, value) in &[
+        ("agent", "cursor"),
+        ("mode", "no-tabs"),
+        ("editor", "hx ."),
+        ("default_branch", "develop"),
+        ("remote", "upstream"),
+        ("shell", "/bin/fish"),
+        ("layout", "minimal"),
+        ("window_name", "[{branch}]"),
+    ] {
+        meldr_with_home(home.path())
+            .args(["config", "set", "--global", key, value])
+            .assert()
+            .success();
+
+        meldr_with_home(home.path())
+            .args(["config", "get", "--global", key])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(*value));
+    }
+}
+
+#[test]
+fn test_config_sync_method_not_in_global() {
+    let home = TempDir::new().unwrap();
+
+    // sync_method and sync_strategy are workspace-only settings
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "sync_method", "merge"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
 }

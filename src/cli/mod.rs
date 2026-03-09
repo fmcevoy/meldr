@@ -69,8 +69,12 @@ pub enum Commands {
     #[command(alias = "st")]
     Status,
 
-    /// Run a command in every package directory (parallel)
+    /// Run a command in every package's worktree directory (must be run from within a worktree)
     Exec {
+        /// Launch an interactive shell so aliases and rc files are loaded
+        #[arg(short, long)]
+        interactive: bool,
+
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
@@ -142,18 +146,38 @@ pub enum WorktreeAction {
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// Set a workspace configuration value
+    /// Set a configuration value
     Set {
-        /// Setting key (agent, mode, sync_method, sync_strategy)
+        /// Setting key (agent, mode, sync_method, sync_strategy, editor, default_branch, remote, shell, layout, window_name)
         key: String,
         /// Setting value
         value: String,
+        /// Apply to global config (~/.meldr/config.toml) instead of workspace
+        #[arg(long)]
+        global: bool,
     },
-    /// Get a workspace configuration value
+    /// Get a configuration value
     Get {
         /// Setting key to read
         key: String,
+        /// Read from global config (~/.meldr/config.toml) instead of workspace
+        #[arg(long)]
+        global: bool,
+    },
+    /// Remove a configuration value
+    Unset {
+        /// Setting key to remove
+        key: String,
+        /// Remove from global config (~/.meldr/config.toml) instead of workspace
+        #[arg(long)]
+        global: bool,
     },
     /// Show effective configuration from all layers
-    List,
+    List {
+        /// Show only global config (~/.meldr/config.toml)
+        #[arg(long)]
+        global: bool,
+    },
+    /// Show where each setting value comes from
+    Show,
 }

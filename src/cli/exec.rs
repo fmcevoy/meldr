@@ -8,7 +8,7 @@ use rayon::prelude::*;
 
 use crate::core::config::EffectiveConfig;
 use crate::core::workspace::{self, Manifest};
-use crate::error::Result;
+use crate::error::{MeldrError, Result};
 
 enum OutputLine {
     Stdout(String, String),
@@ -17,7 +17,13 @@ enum OutputLine {
     Error(String, String),
 }
 
-pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) -> Result<()> {
+pub fn run(
+    workspace_root: &Path,
+    cwd: &Path,
+    command: &[String],
+    config: &EffectiveConfig,
+    interactive: bool,
+) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
 
     if manifest.packages.is_empty() {
@@ -25,21 +31,36 @@ pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) 
         return Ok(());
     }
 
+    let worktree_dir_name = workspace::detect_current_worktree_dir(workspace_root, cwd)
+        .ok_or_else(|| {
+            MeldrError::Config(
+                "meldr exec must be run from within a worktree directory.".to_string(),
+            )
+        })?;
+
     let cmd_str = command.join(" ");
+
+    let shell_args: Vec<String> = if interactive {
+        vec!["-i".to_string(), "-c".to_string(), cmd_str]
+    } else {
+        vec!["-c".to_string(), cmd_str]
+    };
+
+    let worktree_base = workspace::worktrees_dir(workspace_root).join(&worktree_dir_name);
+
     let (tx, rx) = mpsc::channel::<OutputLine>();
 
     let packages: Vec<_> = manifest.packages.clone();
     let shell = config.shell.clone();
-    let root = workspace_root.to_path_buf();
 
     thread::spawn(move || {
         packages.par_iter().for_each(|pkg| {
             let tx = tx.clone();
-            let pkg_path = workspace::package_path(&root, &pkg.name);
+            let pkg_path = worktree_base.join(&pkg.name);
             let name = pkg.name.clone();
 
             let child = Command::new(&shell)
-                .args(["-c", &cmd_str])
+                .args(&shell_args)
                 .current_dir(&pkg_path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

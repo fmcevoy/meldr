@@ -396,6 +396,7 @@ mod tests {
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
         fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -474,6 +475,7 @@ mod tests {
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
         fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
     }
 
     struct OrderTrackingTmux {
@@ -645,6 +647,22 @@ mod tests {
         let result = expand_template("[{branch}] {pkg}", "ws", "dev", "api");
         assert_eq!(result, "[dev] api");
     }
+}
+
+/// Fetch all packages from their remotes without rebasing/merging any worktree.
+pub fn fetch_packages(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    config: &EffectiveConfig,
+) -> Result<()> {
+    for pkg in &manifest.packages {
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        println!("Fetching {}...", pkg.name);
+        git.fetch(&repo_path, remote)?;
+    }
+    Ok(())
 }
 
 pub fn sync_worktree(
