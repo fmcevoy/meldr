@@ -73,13 +73,14 @@ fn setup_tmux_windows(
         tmux_windows.push(window_id);
     } else {
         let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
-        let ws_root_str = workspace_root.to_string_lossy().to_string();
+        let wt_dir = workspace::worktree_branch_dir(workspace_root, branch);
+        let wt_dir_str = wt_dir.to_string_lossy().to_string();
 
         let window_name =
             expand_template(&config.window_name_template, ws_name, branch, "");
 
         let dev =
-            tmux.create_dev_window(&window_name, &ws_root_str, config, custom_layout)?;
+            tmux.create_dev_window(&window_name, &wt_dir_str, config, custom_layout)?;
 
         if let Some(ref editor_pane) = dev.editor {
             tmux.send_keys(editor_pane, &config.editor)?;
