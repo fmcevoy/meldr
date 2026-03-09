@@ -35,7 +35,7 @@ fn setup_tmux_windows(
     manifest: &Manifest,
     workspace_root: &Path,
     branch: &str,
-    pkg_names: &[String],
+    _pkg_names: &[String],
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
 ) -> Result<TmuxSetupResult> {
@@ -73,37 +73,29 @@ fn setup_tmux_windows(
         tmux_windows.push(window_id);
     } else {
         let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
+        let ws_root_str = workspace_root.to_string_lossy().to_string();
 
-        for pkg_name in pkg_names {
-            let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-            if !wt_path.exists() {
-                eprintln!("Warning: worktree path for '{}' does not exist, skipping", pkg_name);
-                continue;
-            }
-            let wt_path_str = wt_path.to_string_lossy().to_string();
+        let window_name =
+            expand_template(&config.window_name_template, ws_name, branch, "");
 
-            let window_name =
-                expand_template(&config.window_name_template, ws_name, branch, pkg_name);
+        let dev =
+            tmux.create_dev_window(&window_name, &ws_root_str, config, custom_layout)?;
 
-            let dev =
-                tmux.create_dev_window(&window_name, &wt_path_str, config, custom_layout)?;
-
-            if let Some(ref editor_pane) = dev.editor {
-                tmux.send_keys(editor_pane, &config.editor)?;
-                pane_mappings.insert(format!("{}:editor", pkg_name), editor_pane.clone());
-            }
-
-            if config.should_launch_agent() {
-                if let Some(ref agent_pane) = dev.agent {
-                    tmux.send_keys(agent_pane, &config.agent_command)?;
-                }
-            }
-            if let Some(ref agent_pane) = dev.agent {
-                pane_mappings.insert(format!("{}:agent", pkg_name), agent_pane.clone());
-            }
-
-            tmux_windows.push(dev.window_id);
+        if let Some(ref editor_pane) = dev.editor {
+            tmux.send_keys(editor_pane, &config.editor)?;
+            pane_mappings.insert("editor".to_string(), editor_pane.clone());
         }
+
+        if config.should_launch_agent() {
+            if let Some(ref agent_pane) = dev.agent {
+                tmux.send_keys(agent_pane, &config.agent_command)?;
+            }
+        }
+        if let Some(ref agent_pane) = dev.agent {
+            pane_mappings.insert("agent".to_string(), agent_pane.clone());
+        }
+
+        tmux_windows.push(dev.window_id);
     }
 
     let tmux_window = match tmux_windows.len() {
