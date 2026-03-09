@@ -142,10 +142,7 @@ fn run(cli: Cli) -> error::Result<()> {
                     branch.or_else(|| workspace::detect_current_worktree(&root, &cwd));
                 match target_branch {
                     Some(b) => {
-                        core::worktree::sync_worktree(
-                            &git, &manifest, &root, &b, &config,
-                            method_override, strat_override,
-                        )?;
+                        core::worktree::sync_worktree(&git, &manifest, &root, &b, method, strat)?;
                         println!("Synced worktree '{}'", b);
                     }
                     None => {

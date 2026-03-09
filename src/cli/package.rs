@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::core::workspace::Manifest;
+use crate::core::state::WorkspaceState;
+use crate::core::workspace::{self, Manifest};
 use crate::error::Result;
 use crate::git::GitOps;
 
@@ -12,6 +13,32 @@ pub fn add(git: &dyn GitOps, workspace_root: &Path, urls: &[String]) -> Result<(
     } else {
         for name in &added {
             println!("Added package '{}'", name);
+        }
+
+        // Create worktrees for newly added packages in all existing worktree branches
+        let state = WorkspaceState::load(workspace_root)?;
+        for branch in state.worktrees.keys() {
+            let branch_dir = workspace::worktrees_dir(workspace_root).join(branch);
+            std::fs::create_dir_all(&branch_dir)?;
+
+            for pkg_name in &added {
+                let repo_path = workspace::package_path(workspace_root, pkg_name);
+                let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+                match git.worktree_add(&repo_path, &wt_path, branch) {
+                    Ok(()) => {
+                        println!(
+                            "  Created worktree for '{}' on branch '{}'",
+                            pkg_name, branch
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to create worktree for '{}' on branch '{}': {}",
+                            pkg_name, branch, e
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(())

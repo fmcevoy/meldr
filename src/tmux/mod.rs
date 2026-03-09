@@ -251,22 +251,104 @@ impl TmuxOps for RealTmux {
             return Self::create_custom_layout(name, cwd, layout_def, config);
         }
 
-        match config.layout.as_str() {
-            "minimal" => Self::create_minimal_layout(name, cwd),
-            "editor-only" => Self::create_editor_only_layout(name, cwd),
-            _ => Self::create_default_layout(name, cwd),
-        }
-    }
+        // Create window — pane 0 (nvim)
+        let window_id = Self::run(&[
+            "new-window",
+            "-n",
+            name,
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{window_id}",
+        ])?;
+        let pane0 = format!("{}.0", window_id);
 
-    fn has_window(&self, window: &str) -> bool {
-        Self::run(&["list-windows", "-F", "#{window_id}"])
-            .map(|out| out.lines().any(|line| line.trim() == window))
-            .unwrap_or(false)
-    }
+        // Split right for agent — full-height right column, 35% width
+        let agent_pane = Self::run(&[
+            "split-window",
+            "-t",
+            &pane0,
+            "-h",
+            "-p",
+            "35",
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
 
-    fn select_window(&self, window: &str) -> Result<()> {
-        Self::run(&["select-window", "-t", window])?;
-        Ok(())
+        // Split nvim (pane 0) below for left terminal column — 30% height
+        let t1_pane = Self::run(&[
+            "split-window",
+            "-t",
+            &pane0,
+            "-v",
+            "-p",
+            "30",
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
+
+        // Split t1 below for t2
+        let t2_pane = Self::run(&[
+            "split-window",
+            "-t",
+            &t1_pane,
+            "-v",
+            "-p",
+            "50",
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
+
+        // Split t1 right for t3
+        let t3_pane = Self::run(&[
+            "split-window",
+            "-t",
+            &t1_pane,
+            "-h",
+            "-p",
+            "50",
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
+
+        // Split t2 right for t4
+        let t4_pane = Self::run(&[
+            "split-window",
+            "-t",
+            &t2_pane,
+            "-h",
+            "-p",
+            "50",
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
+
+        // Select the nvim pane as active
+        Self::run(&["select-pane", "-t", &pane0])?;
+
+        let nvim_target = pane0;
+        Ok(DevWindowPanes {
+            window_id,
+            nvim: nvim_target,
+            agent: agent_pane,
+            terms: vec![t1_pane, t2_pane, t3_pane, t4_pane],
+        })
     }
 }
 

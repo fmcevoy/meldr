@@ -174,8 +174,92 @@ pub fn add_worktree(
         eprintln!("Warning: {}", error);
     }
 
-    let setup = if needs_tmux {
-        setup_tmux_windows(tmux, manifest, workspace_root, branch, &created, config, global_config)?
+    let ws_name = &manifest.workspace.name;
+    let mut tmux_windows = Vec::new();
+    let mut pane_mappings = HashMap::new();
+
+    if needs_tmux {
+        // Check for layout override in manifest
+        if let Some(ref lo) = manifest.layout {
+            let window_name = format!("{}/{}", ws_name, branch);
+            let window_id = tmux.create_window(&window_name)?;
+
+            let pane_count = lo.panes.len();
+            for _ in 1..pane_count {
+                tmux.split_window(&window_id)?;
+            }
+
+            let layout = crate::tmux::TmuxLayout {
+                definition: lo.definition.clone(),
+                pane_names: lo.panes.clone(),
+            };
+            tmux.apply_layout(&window_id, &layout)?;
+
+            for (i, pkg_name) in lo.panes.iter().enumerate() {
+                if pkg_name.is_empty() {
+                    continue;
+                }
+                let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+                let target = format!("{}.{}", window_id, i);
+                tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
+                if config.should_launch_agent() {
+                    tmux.send_keys(&target, &config.agent_command)?;
+                }
+                pane_mappings.insert(i.to_string(), pkg_name.clone());
+            }
+
+            tmux_windows.push(window_id);
+        } else if created.len() == 1 {
+            // Single package: full dev window with nvim + agent + 4 terminals
+            let pkg_name = &created[0];
+            let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+            let wt_path_str = wt_path.to_string_lossy().to_string();
+            let window_name = format!("{}/{}", ws_name, branch);
+
+            let dev = tmux.create_dev_window(&window_name, &wt_path_str)?;
+
+            tmux.send_keys(&dev.nvim, "nvim .")?;
+            if config.should_launch_agent() {
+                tmux.send_keys(&dev.agent, &config.agent_command)?;
+            }
+
+            pane_mappings.insert(format!("{}:nvim", pkg_name), dev.nvim.clone());
+            pane_mappings.insert(format!("{}:agent", pkg_name), dev.agent.clone());
+            tmux_windows.push(dev.window_id);
+        } else {
+            // Multiple packages: one window with a pane per package
+            let window_name = format!("{}/{}", ws_name, branch);
+            let first_wt = workspace::worktree_path(workspace_root, branch, &created[0]);
+            let first_wt_str = first_wt.to_string_lossy().to_string();
+
+            let window_id = tmux.create_window(&window_name)?;
+            // cd first pane to first package worktree
+            let pane0 = format!("{}.0", window_id);
+            tmux.send_keys(&pane0, &format!("cd {}", first_wt_str))?;
+            if config.should_launch_agent() {
+                tmux.send_keys(&pane0, &config.agent_command)?;
+            }
+            pane_mappings.insert("0".to_string(), created[0].clone());
+
+            for (i, pkg_name) in created.iter().enumerate().skip(1) {
+                let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
+                tmux.split_window(&window_id)?;
+                let target = format!("{}.{}", window_id, i);
+                tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
+                if config.should_launch_agent() {
+                    tmux.send_keys(&target, &config.agent_command)?;
+                }
+                pane_mappings.insert(i.to_string(), pkg_name.clone());
+            }
+
+            tmux_windows.push(window_id);
+        }
+    }
+
+    let tmux_window = if tmux_windows.len() == 1 {
+        Some(tmux_windows.into_iter().next().unwrap())
+    } else if tmux_windows.is_empty() {
+        None
     } else {
         TmuxSetupResult {
             tmux_window: None,
@@ -239,7 +323,10 @@ pub fn remove_worktree(
         let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
         if wt_path.exists() {
             if let Err(e) = git.worktree_remove(&repo_path, &wt_path, force) {
-                eprintln!("Warning: Failed to remove worktree for '{}': {}", pkg.name, e);
+                eprintln!(
+                    "Warning: Failed to remove worktree for '{}': {}",
+                    pkg.name, e
+                );
             }
         }
     }

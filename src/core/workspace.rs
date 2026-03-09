@@ -98,15 +98,16 @@ impl Manifest {
 
     pub fn save(&self, workspace_root: &Path) -> Result<()> {
         let path = workspace_root.join("meldr.toml");
-        let content = toml::to_string_pretty(self).map_err(|e| MeldrError::InvalidManifest(e.to_string()))?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| MeldrError::InvalidManifest(e.to_string()))?;
         std::fs::write(&path, content)?;
         Ok(())
     }
 
     pub fn save_initial(&self, workspace_root: &Path) -> Result<()> {
         let path = workspace_root.join("meldr.toml");
-        let serialized = toml::to_string_pretty(self)
-            .map_err(|e| MeldrError::InvalidManifest(e.to_string()))?;
+        let serialized =
+            toml::to_string_pretty(self).map_err(|e| MeldrError::InvalidManifest(e.to_string()))?;
 
         let defaults_comment = concat!(
             "\n# Uncomment to override defaults:\n",
@@ -238,12 +239,13 @@ mod tests {
     #[test]
     fn test_manifest_roundtrip() {
         let mut manifest = Manifest::new("test-project");
-        manifest.add_package(PackageEntry {
-            name: "frontend".to_string(),
-            url: "https://github.com/org/frontend.git".to_string(),
-            branch: Some("main".to_string()),
-            remote: None,
-        }).unwrap();
+        manifest
+            .add_package(PackageEntry {
+                name: "frontend".to_string(),
+                url: "https://github.com/org/frontend.git".to_string(),
+                branch: Some("main".to_string()),
+            })
+            .unwrap();
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();
         let deserialized: Manifest = toml::from_str(&serialized).unwrap();
@@ -282,12 +284,13 @@ url = "https://github.com/org/backend.git"
     #[test]
     fn test_duplicate_package() {
         let mut manifest = Manifest::new("test");
-        manifest.add_package(PackageEntry {
-            name: "pkg".to_string(),
-            url: "url".to_string(),
-            branch: None,
-            remote: None,
-        }).unwrap();
+        manifest
+            .add_package(PackageEntry {
+                name: "pkg".to_string(),
+                url: "url".to_string(),
+                branch: None,
+            })
+            .unwrap();
 
         let result = manifest.add_package(PackageEntry {
             name: "pkg".to_string(),
@@ -301,12 +304,13 @@ url = "https://github.com/org/backend.git"
     #[test]
     fn test_remove_package() {
         let mut manifest = Manifest::new("test");
-        manifest.add_package(PackageEntry {
-            name: "pkg".to_string(),
-            url: "url".to_string(),
-            branch: None,
-            remote: None,
-        }).unwrap();
+        manifest
+            .add_package(PackageEntry {
+                name: "pkg".to_string(),
+                url: "url".to_string(),
+                branch: None,
+            })
+            .unwrap();
 
         let removed = manifest.remove_package("pkg").unwrap();
         assert_eq!(removed.name, "pkg");
@@ -322,7 +326,10 @@ url = "https://github.com/org/backend.git"
     #[test]
     fn test_path_resolution() {
         let root = Path::new("/workspace");
-        assert_eq!(package_path(root, "frontend"), PathBuf::from("/workspace/packages/frontend"));
+        assert_eq!(
+            package_path(root, "frontend"),
+            PathBuf::from("/workspace/packages/frontend")
+        );
         assert_eq!(
             worktree_path(root, "feature-x", "frontend"),
             PathBuf::from("/workspace/worktrees/feature-x/frontend")
@@ -333,7 +340,10 @@ url = "https://github.com/org/backend.git"
     fn test_detect_current_worktree() {
         let root = Path::new("/workspace");
         let cwd = Path::new("/workspace/worktrees/feature-auth/frontend");
-        assert_eq!(detect_current_worktree(root, cwd), Some("feature-auth".to_string()));
+        assert_eq!(
+            detect_current_worktree(root, cwd),
+            Some("feature-auth".to_string())
+        );
 
         let cwd_packages = Path::new("/workspace/packages/frontend");
         assert_eq!(detect_current_worktree(root, cwd_packages), None);

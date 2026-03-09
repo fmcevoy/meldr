@@ -6,9 +6,7 @@ use crate::error::{MeldrError, Result};
 pub fn run(workspace_root: &Path, name: Option<&str>) -> Result<()> {
     let manifest_path = workspace_root.join("meldr.toml");
     if manifest_path.exists() {
-        return Err(MeldrError::AlreadyInitialized(
-            workspace_root.to_path_buf(),
-        ));
+        return Err(MeldrError::AlreadyInitialized(workspace_root.to_path_buf()));
     }
 
     let workspace_name = name
