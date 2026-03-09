@@ -130,7 +130,7 @@ pub fn add_worktree(
         return Err(MeldrError::NotInTmux);
     }
 
-    let branch_dir = workspace::worktrees_dir(workspace_root).join(branch);
+    let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     std::fs::create_dir_all(&branch_dir)?;
 
     let results: Vec<_> = manifest
@@ -236,7 +236,7 @@ pub fn remove_worktree(
         }
     }
 
-    let branch_dir = workspace::worktrees_dir(workspace_root).join(branch);
+    let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     if branch_dir.exists() {
         let _ = std::fs::remove_dir_all(&branch_dir);
     }

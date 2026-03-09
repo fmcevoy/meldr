@@ -269,7 +269,7 @@ pub fn resolve_config(
 
 /// Returns the default command for known agents, with recommended flags.
 /// These can be overridden via `[agents.<name>]` in `~/.config/meldr/config.toml`.
-fn default_agent_command(agent: &str) -> String {
+pub fn default_agent_command(agent: &str) -> String {
     match agent {
         "claude" => "claude --dangerously-skip-permissions".to_string(),
         "cursor" => "cursor . --yolo".to_string(),
@@ -476,6 +476,7 @@ mod tests {
         let env = HashMap::new();
 
         let config = resolve_config(&global, &workspace, &cli, &env);
+        // Explicit agent config overrides the built-in default
         assert_eq!(config.agent_command, "cursor .");
     }
 

@@ -86,7 +86,26 @@ fn run(cli: Cli) -> error::Result<()> {
                     cli::worktree::add(&git, &tmux, &root, &branch, &config, Some(&global))
                 }
                 WorktreeAction::Remove { branch, force } => {
-                    cli::worktree::remove(&git, &tmux, &root, &branch, force)
+                    let target = match branch {
+                        Some(b) => b,
+                        None => {
+                            let state = core::state::WorkspaceState::load(&root)?;
+                            let dir_name = workspace::detect_current_worktree_dir(&root, &cwd);
+                            dir_name
+                                .and_then(|d| {
+                                    workspace::resolve_branch_from_dir(
+                                        &d,
+                                        state.worktrees.keys().map(|s| s.as_str()),
+                                    )
+                                })
+                                .ok_or_else(|| {
+                                    error::MeldrError::Config(
+                                        "Could not detect current worktree. Specify a branch name.".to_string(),
+                                    )
+                                })?
+                        }
+                    };
+                    cli::worktree::remove(&git, &tmux, &root, &target, force)
                 }
                 WorktreeAction::Open { branch } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
@@ -138,8 +157,14 @@ fn run(cli: Cli) -> error::Result<()> {
                     )?;
                 }
             } else {
-                let target_branch =
-                    branch.or_else(|| workspace::detect_current_worktree(&root, &cwd));
+                let target_branch = branch.or_else(|| {
+                    let dir_name = workspace::detect_current_worktree_dir(&root, &cwd)?;
+                    let state = core::state::WorkspaceState::load(&root).ok()?;
+                    workspace::resolve_branch_from_dir(
+                        &dir_name,
+                        state.worktrees.keys().map(|s| s.as_str()),
+                    )
+                });
                 match target_branch {
                     Some(b) => {
                         core::worktree::sync_worktree(&git, &manifest, &root, &b, &config, method_override, strat_override)?;

@@ -123,10 +123,10 @@ pub enum WorktreeAction {
         /// Branch name for the worktrees
         branch: String,
     },
-    /// Remove worktrees for a branch (checks for dirty state)
+    /// Remove worktrees for a branch (checks for dirty state). Auto-detects branch when run from within a worktree directory.
     Remove {
-        /// Branch name to remove
-        branch: String,
+        /// Branch name to remove (auto-detected from cwd if omitted)
+        branch: Option<String>,
         /// Force removal even with uncommitted changes
         #[arg(long)]
         force: bool,
