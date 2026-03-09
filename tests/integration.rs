@@ -360,7 +360,7 @@ fn test_exec() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("--- frontend ---").and(predicate::str::contains("hello")),
+            predicate::str::contains("[frontend] hello"),
         );
 }
 

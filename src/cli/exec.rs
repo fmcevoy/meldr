@@ -1,11 +1,21 @@
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use rayon::prelude::*;
 
 use crate::core::config::EffectiveConfig;
 use crate::core::workspace::{self, Manifest};
 use crate::error::Result;
+
+enum OutputLine {
+    Stdout(String, String),
+    Stderr(String, String),
+    Done(String, Option<i32>),
+    Error(String, String),
+}
 
 pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
@@ -16,38 +26,102 @@ pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) 
     }
 
     let cmd_str = command.join(" ");
+    let (tx, rx) = mpsc::channel::<OutputLine>();
 
-    let results: Vec<_> = manifest
-        .packages
-        .par_iter()
-        .map(|pkg| {
-            let pkg_path = workspace::package_path(workspace_root, &pkg.name);
-            let output = Command::new(&config.shell)
+    let packages: Vec<_> = manifest.packages.clone();
+    let shell = config.shell.clone();
+    let root = workspace_root.to_path_buf();
+
+    thread::spawn(move || {
+        packages.par_iter().for_each(|pkg| {
+            let tx = tx.clone();
+            let pkg_path = workspace::package_path(&root, &pkg.name);
+            let name = pkg.name.clone();
+
+            let child = Command::new(&shell)
                 .args(["-c", &cmd_str])
                 .current_dir(&pkg_path)
-                .output();
-            (pkg.name.clone(), output)
-        })
-        .collect();
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
 
-    for (name, result) in results {
-        println!("--- {} ---", name);
-        match result {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stdout.is_empty() {
-                    print!("{}", stdout);
+            let mut child = match child {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(OutputLine::Error(name, e.to_string()));
+                    return;
                 }
-                if !stderr.is_empty() {
-                    eprint!("{}", stderr);
+            };
+
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
+            let stdout_name = name.clone();
+            let stdout_tx = tx.clone();
+            let stdout_handle = thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            let _ = stdout_tx
+                                .send(OutputLine::Stdout(stdout_name.clone(), l));
+                        }
+                        Err(_) => break,
+                    }
                 }
-                if !output.status.success() {
-                    eprintln!("(exit code: {})", output.status.code().unwrap_or(-1));
+            });
+
+            let stderr_name = name.clone();
+            let stderr_tx = tx.clone();
+            let stderr_handle = thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            let _ = stderr_tx
+                                .send(OutputLine::Stderr(stderr_name.clone(), l));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+
+            let status = child.wait().ok().and_then(|s| s.code());
+            let _ = tx.send(OutputLine::Done(name, status));
+        });
+    });
+
+    let pkg_count = manifest.packages.len();
+    let mut completed = 0;
+
+    for msg in rx {
+        match msg {
+            OutputLine::Stdout(name, line) => {
+                println!("[{}] {}", name, line);
+            }
+            OutputLine::Stderr(name, line) => {
+                eprintln!("[{}] {}", name, line);
+            }
+            OutputLine::Done(name, status) => {
+                if let Some(code) = status {
+                    if code != 0 {
+                        eprintln!("[{}] exited with code {}", name, code);
+                    }
+                }
+                completed += 1;
+                if completed == pkg_count {
+                    break;
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to execute: {}", e);
+            OutputLine::Error(name, err) => {
+                eprintln!("[{}] failed to execute: {}", name, err);
+                completed += 1;
+                if completed == pkg_count {
+                    break;
+                }
             }
         }
     }
