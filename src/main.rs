@@ -183,11 +183,23 @@ fn run(cli: Cli) -> error::Result<()> {
 
         Commands::Config { action } => {
             let cwd = std::env::current_dir()?;
-            let root = workspace::find_workspace_root(&cwd)?;
+            let workspace_root = workspace::find_workspace_root(&cwd).ok();
             match action {
-                ConfigAction::Set { key, value } => cli::config_cmd::set(&root, &key, &value),
-                ConfigAction::Get { key } => cli::config_cmd::get(&root, &key),
-                ConfigAction::List => cli::config_cmd::list(&root),
+                ConfigAction::Set { key, value, global } => {
+                    cli::config_cmd::set(workspace_root.as_deref(), &key, &value, global)
+                }
+                ConfigAction::Get { key, global } => {
+                    cli::config_cmd::get(workspace_root.as_deref(), &key, global)
+                }
+                ConfigAction::Unset { key, global } => {
+                    cli::config_cmd::unset(workspace_root.as_deref(), &key, global)
+                }
+                ConfigAction::List { global } => {
+                    cli::config_cmd::list(workspace_root.as_deref(), global)
+                }
+                ConfigAction::Show => {
+                    cli::config_cmd::show(workspace_root.as_deref())
+                }
             }
         }
     }
