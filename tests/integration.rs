@@ -341,7 +341,7 @@ fn test_no_workspace_error() {
 }
 
 #[test]
-fn test_exec() {
+fn test_exec_from_worktree() {
     let tmp = TempDir::new().unwrap();
     let repos_dir = TempDir::new().unwrap();
     let repo_url = create_bare_repo(repos_dir.path(), "frontend");
@@ -355,12 +355,177 @@ fn test_exec() {
         .success();
 
     meldr()
-        .args(["exec", "echo", "hello"])
+        .args(["--no-tabs", "worktree", "add", "feature-exec"])
         .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-exec/frontend");
+
+    meldr()
+        .args(["exec", "echo", "hello"])
+        .current_dir(&wt_dir)
         .assert()
         .success()
         .stdout(
             predicate::str::contains("--- frontend ---").and(predicate::str::contains("hello")),
+        );
+}
+
+#[test]
+fn test_exec_fails_outside_worktree() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Running exec from workspace root should fail
+    meldr()
+        .args(["exec", "echo", "hello"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "meldr exec must be run from within a worktree directory",
+        ));
+}
+
+#[test]
+fn test_exec_runs_in_worktree_dir_not_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-pwd"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-pwd/frontend");
+
+    // Create a marker file in the worktree dir to verify exec runs there
+    fs::write(wt_dir.join("worktree-marker.txt"), "in-worktree").unwrap();
+
+    meldr()
+        .args(["exec", "cat", "worktree-marker.txt"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("in-worktree"));
+}
+
+#[test]
+fn test_exec_from_worktree_root() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-root"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Running from the worktree branch root dir (not inside a package subdir)
+    let wt_root = tmp.path().join("worktrees/feature-root");
+
+    meldr()
+        .args(["exec", "echo", "from-root"])
+        .current_dir(&wt_root)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--- frontend ---")
+                .and(predicate::str::contains("from-root")),
+        );
+}
+
+#[test]
+fn test_exec_with_slash_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/exec-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/fm-exec-test/frontend");
+
+    meldr()
+        .args(["exec", "echo", "slash-branch"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("slash-branch"));
+}
+
+#[test]
+fn test_exec_multiple_packages() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo1 = create_bare_repo(repos_dir.path(), "frontend");
+    let repo2 = create_bare_repo(repos_dir.path(), "backend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo1, &repo2])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-multi"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_dir = tmp.path().join("worktrees/feature-multi/frontend");
+
+    meldr()
+        .args(["exec", "echo", "multi"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--- frontend ---")
+                .and(predicate::str::contains("--- backend ---"))
+                .and(predicate::str::contains("multi")),
         );
 }
 
@@ -902,6 +1067,12 @@ fn test_exec_respects_shell_config() {
         .assert()
         .success();
 
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-shell"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
     // Set shell to bash and verify exec still works
     meldr()
         .args(["config", "set", "shell", "bash"])
@@ -909,9 +1080,11 @@ fn test_exec_respects_shell_config() {
         .assert()
         .success();
 
+    let wt_dir = tmp.path().join("worktrees/feature-shell/frontend");
+
     meldr()
         .args(["exec", "echo", "works"])
-        .current_dir(tmp.path())
+        .current_dir(&wt_dir)
         .assert()
         .success()
         .stdout(predicate::str::contains("works"));
