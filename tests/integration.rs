@@ -80,7 +80,9 @@ fn test_init() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Initialized meldr workspace 'my-workspace'"));
+        .stdout(predicate::str::contains(
+            "Initialized meldr workspace 'my-workspace'",
+        ));
 
     assert!(tmp.path().join("meldr.toml").exists());
     assert!(tmp.path().join("packages").exists());
@@ -213,10 +215,7 @@ fn test_worktree_add_no_tabs() {
         .success()
         .stdout(predicate::str::contains("Created worktree 'feature-test'"));
 
-    assert!(tmp
-        .path()
-        .join("worktrees/feature-test/frontend")
-        .exists());
+    assert!(tmp.path().join("worktrees/feature-test/frontend").exists());
 }
 
 #[test]
@@ -361,8 +360,7 @@ fn test_exec() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("--- frontend ---")
-                .and(predicate::str::contains("hello")),
+            predicate::str::contains("--- frontend ---").and(predicate::str::contains("hello")),
         );
 }
 
@@ -505,10 +503,11 @@ fn test_create_with_repos_and_branch() {
                 .and(predicate::str::contains("Created worktree 'feature-x'")),
         );
 
-    assert!(tmp
-        .path()
-        .join("my-ws/worktrees/feature-x/frontend")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("my-ws/worktrees/feature-x/frontend")
+            .exists()
+    );
 }
 
 #[test]
@@ -556,14 +555,16 @@ fn test_create_full_combo() {
                 .and(predicate::str::contains("Created worktree 'feature-y'")),
         );
 
-    assert!(tmp
-        .path()
-        .join("my-ws/worktrees/feature-y/frontend")
-        .exists());
-    assert!(tmp
-        .path()
-        .join("my-ws/worktrees/feature-y/backend")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("my-ws/worktrees/feature-y/frontend")
+            .exists()
+    );
+    assert!(
+        tmp.path()
+            .join("my-ws/worktrees/feature-y/backend")
+            .exists()
+    );
 }
 
 #[test]
@@ -593,7 +594,9 @@ fn test_create_branch_without_repos_warns() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("No packages to create worktrees for"));
+        .stderr(predicate::str::contains(
+            "No packages to create worktrees for",
+        ));
 }
 
 #[test]
@@ -650,16 +653,72 @@ fn test_create_with_agent_sets_setting() {
     let repo_url = create_bare_repo(repos_dir.path(), "frontend");
 
     meldr()
-        .args(["create", "my-ws", "-r", &repo_url, "-a", "cursor", "--no-tabs"])
+        .args([
+            "create",
+            "my-ws",
+            "-r",
+            &repo_url,
+            "-a",
+            "cursor",
+            "--no-tabs",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
 
     // After packages are added, meldr.toml should have the agent setting and package entries
     let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
-    assert!(content.contains("agent = \"cursor\""), "Agent setting should persist");
-    assert!(content.contains("[[package]]"), "Package entries should exist");
-    assert!(content.contains("frontend"), "Package name should be present");
+    assert!(
+        content.contains("agent = \"cursor\""),
+        "Agent setting should persist"
+    );
+    assert!(
+        content.contains("[[package]]"),
+        "Package entries should exist"
+    );
+    assert!(
+        content.contains("frontend"),
+        "Package name should be present"
+    );
+}
+
+#[test]
+fn test_package_add_creates_worktrees_for_existing_branches() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo1 = create_bare_repo(repos_dir.path(), "frontend");
+    let repo2 = create_bare_repo(repos_dir.path(), "backend");
+
+    init_workspace(tmp.path());
+
+    // Add first package and create a worktree
+    meldr()
+        .args(["package", "add", &repo1])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-wt"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(tmp.path().join("worktrees/feature-wt/frontend").exists());
+
+    // Now add a second package — it should auto-create a worktree on "feature-wt"
+    meldr()
+        .args(["package", "add", &repo2])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Added package 'backend'").and(predicate::str::contains(
+                "Created worktree for 'backend' on branch 'feature-wt'",
+            )),
+        );
+
+    assert!(tmp.path().join("worktrees/feature-wt/backend").exists());
 }
 
 #[test]

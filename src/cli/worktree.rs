@@ -53,18 +53,22 @@ pub fn remove(
 }
 
 pub fn open(
+    _git: &dyn GitOps,
     tmux: &dyn TmuxOps,
     workspace_root: &Path,
     branch: &str,
     config: &EffectiveConfig,
-    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::open_worktree(
-        tmux, &manifest, &mut state, workspace_root, branch, config, global_config,
+        tmux,
+        &manifest,
+        &mut state,
+        workspace_root,
+        branch,
+        config,
     )?;
-    println!("Opened worktree '{}'", branch);
     Ok(())
 }
 

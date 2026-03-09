@@ -93,6 +93,10 @@ fn run(cli: Cli) -> error::Result<()> {
                     cli::worktree::open(&tmux, &root, &branch, &config, Some(&global))
                 }
                 WorktreeAction::List => cli::worktree::list(&root),
+                WorktreeAction::Open { branch } => {
+                    let config = build_effective_config(&root, &cli_overrides)?;
+                    cli::worktree::open(&git, &tmux, &root, &branch, &config)
+                }
             }
         }
 

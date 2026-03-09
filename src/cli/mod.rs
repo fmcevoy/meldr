@@ -138,6 +138,11 @@ pub enum WorktreeAction {
     },
     /// List all active worktrees
     List,
+    /// Open tmux windows for an existing worktree (used by session restore)
+    Open {
+        /// Branch name of the worktree to open
+        branch: String,
+    },
 }
 
 #[derive(Subcommand)]
