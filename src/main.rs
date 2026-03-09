@@ -121,11 +121,14 @@ fn run(cli: Cli) -> error::Result<()> {
             cli::status::run(&git, &root)
         }
 
-        Commands::Exec { command } => {
+        Commands::Exec {
+            interactive,
+            command,
+        } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
-            cli::exec::run(&root, &command, &config)
+            cli::exec::run(&root, &command, &config, interactive)
         }
 
         Commands::Sync {

@@ -71,6 +71,10 @@ pub enum Commands {
 
     /// Run a command in every package directory (parallel)
     Exec {
+        /// Launch an interactive shell so aliases and rc files are loaded
+        #[arg(short, long)]
+        interactive: bool,
+
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
