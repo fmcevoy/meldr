@@ -43,10 +43,7 @@ pub fn run(workspace_root: &Path, command: &[String], config: &EffectiveConfig) 
                     eprint!("{}", stderr);
                 }
                 if !output.status.success() {
-                    eprintln!(
-                        "(exit code: {})",
-                        output.status.code().unwrap_or(-1)
-                    );
+                    eprintln!("(exit code: {})", output.status.code().unwrap_or(-1));
                 }
             }
             Err(e) => {

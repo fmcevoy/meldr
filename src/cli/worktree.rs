@@ -18,7 +18,13 @@ pub fn add(
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::add_worktree(
-        git, tmux, &manifest, &mut state, workspace_root, branch, config, global_config,
+        git,
+        tmux,
+        &manifest,
+        &mut state,
+        workspace_root,
+        branch,
+        config,
     )?;
     println!("Created worktree '{}'", branch);
     Ok(())
@@ -34,25 +40,35 @@ pub fn remove(
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::remove_worktree(
-        git, tmux, &manifest, &mut state, workspace_root, branch, force,
+        git,
+        tmux,
+        &manifest,
+        &mut state,
+        workspace_root,
+        branch,
+        force,
     )?;
     println!("Removed worktree '{}'", branch);
     Ok(())
 }
 
 pub fn open(
+    _git: &dyn GitOps,
     tmux: &dyn TmuxOps,
     workspace_root: &Path,
     branch: &str,
     config: &EffectiveConfig,
-    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::open_worktree(
-        tmux, &manifest, &mut state, workspace_root, branch, config, global_config,
+        tmux,
+        &manifest,
+        &mut state,
+        workspace_root,
+        branch,
+        config,
     )?;
-    println!("Opened worktree '{}'", branch);
     Ok(())
 }
 

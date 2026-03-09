@@ -47,13 +47,14 @@ impl GitOps for RealGit {
         let args = ["clone", "--bare", url, &path_str];
         trace::trace_cmd("git", &args, None);
 
-        let output = Command::new("git")
-            .args(args)
-            .output()
-            .map_err(|e| MeldrError::CloneFailed {
-                url: url.to_string(),
-                reason: e.to_string(),
-            })?;
+        let output =
+            Command::new("git")
+                .args(args)
+                .output()
+                .map_err(|e| MeldrError::CloneFailed {
+                    url: url.to_string(),
+                    reason: e.to_string(),
+                })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

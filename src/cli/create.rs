@@ -38,8 +38,7 @@ pub fn run(
     println!("Created workspace '{}'", name);
 
     if !repos.is_empty() {
-        let added =
-            crate::core::package::add_packages(git, &mut manifest, &workspace_root, repos)?;
+        let added = crate::core::package::add_packages(git, &mut manifest, &workspace_root, repos)?;
         for pkg_name in &added {
             println!("Added package '{}'", pkg_name);
         }

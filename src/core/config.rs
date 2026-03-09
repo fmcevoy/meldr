@@ -257,28 +257,27 @@ pub fn resolve_config(
     config.no_agent = cli.no_agent;
     config.no_tabs = cli.no_tabs;
 
-    // Resolve agent command
+    // Resolve agent command: user config > built-in defaults > agent name
     config.agent_command = global
         .agents
         .get(&config.agent)
         .map(|a| a.command.clone())
-        .unwrap_or_else(|| config.agent.clone());
+        .unwrap_or_else(|| default_agent_command(&config.agent));
 
     config
 }
 
-const VALID_SETTINGS_KEYS: &[&str] = &[
-    "agent",
-    "mode",
-    "sync_method",
-    "sync_strategy",
-    "editor",
-    "default_branch",
-    "remote",
-    "shell",
-    "layout",
-    "window_name",
-];
+/// Returns the default command for known agents, with recommended flags.
+/// These can be overridden via `[agents.<name>]` in `~/.config/meldr/config.toml`.
+fn default_agent_command(agent: &str) -> String {
+    match agent {
+        "claude" => "claude --dangerously-skip-permissions".to_string(),
+        "cursor" => "cursor . --yolo".to_string(),
+        _ => agent.to_string(),
+    }
+}
+
+const VALID_SETTINGS_KEYS: &[&str] = &["agent", "mode", "sync_method", "sync_strategy"];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
     if !VALID_SETTINGS_KEYS.contains(&key) {
@@ -300,7 +299,8 @@ pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
         table.insert(key.to_string(), toml::Value::String(value.to_string()));
     }
 
-    let new_content = toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
+    let new_content =
+        toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
     std::fs::write(&manifest_path, new_content)?;
     Ok(())
 }
@@ -328,10 +328,21 @@ mod tests {
         let config = EffectiveConfig::default();
         assert_eq!(config.agent, "claude");
         assert_eq!(config.mode, "full");
+        assert_eq!(config.agent_command, "claude");
         assert_eq!(config.sync_method, "rebase");
         assert_eq!(config.sync_strategy, "theirs");
         assert!(!config.no_agent);
         assert!(!config.no_tabs);
+    }
+
+    #[test]
+    fn test_default_agent_commands() {
+        assert_eq!(
+            default_agent_command("claude"),
+            "claude --dangerously-skip-permissions"
+        );
+        assert_eq!(default_agent_command("cursor"), "cursor . --yolo");
+        assert_eq!(default_agent_command("custom-agent"), "custom-agent");
     }
 
     #[test]
@@ -407,6 +418,36 @@ mod tests {
 
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "none");
+    }
+
+    #[test]
+    fn test_default_claude_command_resolved() {
+        let global = GlobalConfig::default(); // no [agents.claude] entry
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "claude");
+        assert_eq!(
+            config.agent_command,
+            "claude --dangerously-skip-permissions"
+        );
+    }
+
+    #[test]
+    fn test_default_cursor_command_resolved() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            agent: "cursor".to_string(),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "cursor");
+        assert_eq!(config.agent_command, "cursor . --yolo");
     }
 
     #[test]
