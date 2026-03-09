@@ -93,10 +93,6 @@ fn run(cli: Cli) -> error::Result<()> {
                     cli::worktree::open(&tmux, &root, &branch, &config, Some(&global))
                 }
                 WorktreeAction::List => cli::worktree::list(&root),
-                WorktreeAction::Open { branch } => {
-                    let config = build_effective_config(&root, &cli_overrides)?;
-                    cli::worktree::open(&git, &tmux, &root, &branch, &config)
-                }
             }
         }
 
@@ -146,7 +142,7 @@ fn run(cli: Cli) -> error::Result<()> {
                     branch.or_else(|| workspace::detect_current_worktree(&root, &cwd));
                 match target_branch {
                     Some(b) => {
-                        core::worktree::sync_worktree(&git, &manifest, &root, &b, method, strat)?;
+                        core::worktree::sync_worktree(&git, &manifest, &root, &b, &config, method_override, strat_override)?;
                         println!("Synced worktree '{}'", b);
                     }
                     None => {

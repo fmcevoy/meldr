@@ -345,10 +345,19 @@ impl TmuxOps for RealTmux {
         let nvim_target = pane0;
         Ok(DevWindowPanes {
             window_id,
-            nvim: nvim_target,
-            agent: agent_pane,
+            editor: Some(nvim_target),
+            agent: Some(agent_pane),
             terms: vec![t1_pane, t2_pane, t3_pane, t4_pane],
         })
+    }
+
+    fn has_window(&self, window: &str) -> bool {
+        Self::run(&["has-session", "-t", window]).is_ok()
+    }
+
+    fn select_window(&self, window: &str) -> Result<()> {
+        Self::run(&["select-window", "-t", window])?;
+        Ok(())
     }
 }
 

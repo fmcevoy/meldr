@@ -277,7 +277,10 @@ fn default_agent_command(agent: &str) -> String {
     }
 }
 
-const VALID_SETTINGS_KEYS: &[&str] = &["agent", "mode", "sync_method", "sync_strategy"];
+const VALID_SETTINGS_KEYS: &[&str] = &[
+    "agent", "mode", "sync_method", "sync_strategy",
+    "editor", "default_branch", "remote", "shell", "layout", "window_name",
+];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
     if !VALID_SETTINGS_KEYS.contains(&key) {
