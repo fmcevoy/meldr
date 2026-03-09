@@ -381,7 +381,7 @@ fn test_config_set_and_get() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("agent = cursor"));
+        .stdout(predicate::str::contains("cursor"));
 }
 
 #[test]
@@ -852,7 +852,7 @@ fn test_config_set_new_keys() {
             .current_dir(tmp.path())
             .assert()
             .success()
-            .stdout(predicate::str::contains(format!("{} = {}", key, value)));
+            .stdout(predicate::str::contains(*value));
     }
 }
 
@@ -1001,4 +1001,338 @@ fn test_sync_works_after_package_add() {
         .current_dir(tmp.path())
         .assert()
         .success();
+}
+
+// ─── Global config tests ───────────────────────────────────────
+
+/// Helper to run meldr with a custom HOME directory so global config
+/// writes go to a temp dir instead of the real ~/.meldr.
+fn meldr_with_home(home: &std::path::Path) -> Command {
+    let mut cmd = meldr();
+    cmd.env("HOME", home);
+    cmd
+}
+
+#[test]
+fn test_config_set_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "editor", "code ."])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set editor = code . (global)"));
+
+    // Verify the file was created
+    assert!(home.path().join(".meldr/config.toml").exists());
+}
+
+#[test]
+fn test_config_get_global() {
+    let home = TempDir::new().unwrap();
+
+    // Set first
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "remote", "upstream"])
+        .assert()
+        .success();
+
+    // Get
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "remote"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("upstream"));
+}
+
+#[test]
+fn test_config_unset_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "layout", "minimal"])
+        .assert()
+        .success();
+
+    meldr_with_home(home.path())
+        .args(["config", "unset", "--global", "layout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unset layout (global)"));
+
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "layout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not set"));
+}
+
+#[test]
+fn test_config_list_global() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "agent", "cursor"])
+        .assert()
+        .success();
+
+    meldr_with_home(home.path())
+        .args(["config", "list", "--global"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Global configuration")
+                .and(predicate::str::contains("agent = cursor")),
+        );
+}
+
+#[test]
+fn test_config_unset_workspace() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "unset", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unset agent (workspace)"));
+
+    meldr()
+        .args(["config", "get", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not set"));
+}
+
+#[test]
+fn test_config_show_sources() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace with custom HOME
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global editor
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "editor", "code ."])
+        .assert()
+        .success();
+
+    // Set workspace agent
+    meldr_with_home(home.path())
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Show should display sources
+    meldr_with_home(home.path())
+        .args(["config", "show"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = cursor (workspace)")
+                .and(predicate::str::contains("editor = code . (global)"))
+                .and(predicate::str::contains("remote = origin (default)")),
+        );
+}
+
+#[test]
+fn test_config_precedence_ws_over_global() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global default_branch
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "default_branch", "develop"])
+        .assert()
+        .success();
+
+    // Set workspace default_branch (should override global)
+    meldr_with_home(home.path())
+        .args(["config", "set", "default_branch", "staging"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // List effective config — workspace should win
+    meldr_with_home(home.path())
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default_branch = staging"));
+}
+
+#[test]
+fn test_config_global_overrides_default() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Init workspace
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Set global shell
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "shell", "/bin/zsh"])
+        .assert()
+        .success();
+
+    // Effective config should reflect global override
+    meldr_with_home(home.path())
+        .args(["config", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shell = /bin/zsh"));
+}
+
+#[test]
+fn test_config_global_without_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // Should work even without a workspace
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "agent", "none"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set agent = none (global)"));
+
+    meldr_with_home(home.path())
+        .args(["config", "get", "--global", "agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("none"));
+}
+
+#[test]
+fn test_config_workspace_without_global_flag_needs_workspace() {
+    let tmp = TempDir::new().unwrap();
+
+    // Without --global and outside a workspace, should fail
+    meldr()
+        .args(["config", "set", "agent", "cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Not in a meldr workspace"));
+}
+
+#[test]
+fn test_config_set_global_invalid_key() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "bogus", "value"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_config_unset_global_invalid_key() {
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["config", "unset", "--global", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_init_creates_global_config_dir() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    meldr_with_home(home.path())
+        .args(["init", "--name", "test-ws"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(home.path().join(".meldr").exists());
+    assert!(home.path().join(".meldr/config.toml").exists());
+}
+
+#[test]
+fn test_global_config_default_file_contents() {
+    let home = TempDir::new().unwrap();
+
+    // Trigger global config creation
+    meldr_with_home(home.path())
+        .args(["config", "list", "--global"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(home.path().join(".meldr/config.toml")).unwrap();
+    assert!(content.contains("# agent = \"claude\""));
+    assert!(content.contains("# editor = \"nvim .\""));
+    assert!(content.contains("# default_branch = \"main\""));
+}
+
+#[test]
+fn test_config_set_all_global_keys() {
+    let home = TempDir::new().unwrap();
+
+    for (key, value) in &[
+        ("agent", "cursor"),
+        ("mode", "no-tabs"),
+        ("editor", "hx ."),
+        ("default_branch", "develop"),
+        ("remote", "upstream"),
+        ("shell", "/bin/fish"),
+        ("layout", "minimal"),
+        ("window_name", "[{branch}]"),
+    ] {
+        meldr_with_home(home.path())
+            .args(["config", "set", "--global", key, value])
+            .assert()
+            .success();
+
+        meldr_with_home(home.path())
+            .args(["config", "get", "--global", key])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(*value));
+    }
+}
+
+#[test]
+fn test_config_sync_method_not_in_global() {
+    let home = TempDir::new().unwrap();
+
+    // sync_method and sync_strategy are workspace-only settings
+    meldr_with_home(home.path())
+        .args(["config", "set", "--global", "sync_method", "merge"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown setting"));
 }

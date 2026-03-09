@@ -145,11 +145,45 @@ pub struct CliOverrides {
     pub no_tabs: bool,
 }
 
+pub fn global_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".meldr")
+}
+
 pub fn global_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("meldr")
-        .join("config.toml")
+    global_config_dir().join("config.toml")
+}
+
+/// Ensure the global config directory and default config file exist.
+/// Creates `~/.meldr/config.toml` with commented-out defaults if missing.
+pub fn ensure_global_config() -> Result<()> {
+    let dir = global_config_dir();
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+    }
+    let path = dir.join("config.toml");
+    if !path.exists() {
+        let default_content = concat!(
+            "# Meldr global configuration\n",
+            "# These defaults apply to all workspaces unless overridden.\n",
+            "#\n",
+            "# [defaults]\n",
+            "# agent = \"claude\"\n",
+            "# mode = \"full\"\n",
+            "# editor = \"nvim .\"\n",
+            "# default_branch = \"main\"\n",
+            "# remote = \"origin\"\n",
+            "# shell = \"sh\"\n",
+            "# layout = \"default\"\n",
+            "# window_name = \"{ws}/{branch}:{pkg}\"\n",
+            "#\n",
+            "# [agents.claude]\n",
+            "# command = \"claude --dangerously-skip-permissions\"\n",
+        );
+        std::fs::write(&path, default_content)?;
+    }
+    Ok(())
 }
 
 pub fn load_global_config() -> Result<GlobalConfig> {
@@ -319,6 +353,104 @@ pub fn config_get(workspace_root: &Path, key: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+pub fn config_unset(workspace_root: &Path, key: &str) -> Result<()> {
+    if !VALID_SETTINGS_KEYS.contains(&key) {
+        return Err(MeldrError::Config(format!(
+            "Unknown setting '{}'. Valid keys: {}",
+            key,
+            VALID_SETTINGS_KEYS.join(", ")
+        )));
+    }
+    let manifest_path = workspace_root.join("meldr.toml");
+    let content = std::fs::read_to_string(&manifest_path)?;
+    let mut doc: toml::Table = toml::from_str(&content)?;
+
+    if let Some(toml::Value::Table(table)) = doc.get_mut("settings") {
+        table.remove(key);
+    }
+
+    let new_content =
+        toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
+    std::fs::write(&manifest_path, new_content)?;
+    Ok(())
+}
+
+/// Valid keys for the `[defaults]` section in global config.
+const VALID_GLOBAL_KEYS: &[&str] = &[
+    "agent", "mode", "editor", "default_branch", "remote", "shell", "layout", "window_name",
+];
+
+pub fn global_config_set(key: &str, value: &str) -> Result<()> {
+    if !VALID_GLOBAL_KEYS.contains(&key) {
+        return Err(MeldrError::Config(format!(
+            "Unknown setting '{}'. Valid keys: {}",
+            key,
+            VALID_GLOBAL_KEYS.join(", ")
+        )));
+    }
+    ensure_global_config()?;
+    let path = global_config_path();
+    let content = std::fs::read_to_string(&path)?;
+    let mut doc: toml::Table = toml::from_str(&content)?;
+
+    let defaults = doc
+        .entry("defaults")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+
+    if let toml::Value::Table(table) = defaults {
+        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+    }
+
+    let new_content =
+        toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
+    std::fs::write(&path, new_content)?;
+    Ok(())
+}
+
+pub fn global_config_get(key: &str) -> Result<Option<String>> {
+    let path = global_config_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path)?;
+    let doc: toml::Table = toml::from_str(&content)?;
+
+    if let Some(toml::Value::Table(defaults)) = doc.get("defaults") {
+        if let Some(toml::Value::String(val)) = defaults.get(key) {
+            return Ok(Some(val.clone()));
+        }
+    }
+    Ok(None)
+}
+
+pub fn global_config_unset(key: &str) -> Result<()> {
+    if !VALID_GLOBAL_KEYS.contains(&key) {
+        return Err(MeldrError::Config(format!(
+            "Unknown setting '{}'. Valid keys: {}",
+            key,
+            VALID_GLOBAL_KEYS.join(", ")
+        )));
+    }
+    ensure_global_config()?;
+    let path = global_config_path();
+    let content = std::fs::read_to_string(&path)?;
+    let mut doc: toml::Table = toml::from_str(&content)?;
+
+    if let Some(toml::Value::Table(table)) = doc.get_mut("defaults") {
+        table.remove(key);
+    }
+
+    let new_content =
+        toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
+    std::fs::write(&path, new_content)?;
+    Ok(())
+}
+
+pub fn global_config_list() -> Result<GlobalConfig> {
+    ensure_global_config()?;
+    load_global_config()
 }
 
 #[cfg(test)]
@@ -560,5 +692,52 @@ mod tests {
         assert!(VALID_SETTINGS_KEYS.contains(&"shell"));
         assert!(VALID_SETTINGS_KEYS.contains(&"layout"));
         assert!(VALID_SETTINGS_KEYS.contains(&"window_name"));
+    }
+
+    #[test]
+    fn test_valid_global_keys() {
+        // Global keys should be a subset of settings keys (minus sync_method, sync_strategy)
+        for key in VALID_GLOBAL_KEYS {
+            assert!(
+                VALID_SETTINGS_KEYS.contains(key),
+                "Global key '{}' should also be a valid settings key",
+                key
+            );
+        }
+        assert!(!VALID_GLOBAL_KEYS.contains(&"sync_method"));
+        assert!(!VALID_GLOBAL_KEYS.contains(&"sync_strategy"));
+    }
+
+    #[test]
+    fn test_config_set_and_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = r#"
+[workspace]
+name = "test"
+
+[settings]
+agent = "cursor"
+"#;
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+
+        // Verify set
+        assert_eq!(
+            config_get(tmp.path(), "agent").unwrap(),
+            Some("cursor".to_string())
+        );
+
+        // Unset
+        config_unset(tmp.path(), "agent").unwrap();
+        assert_eq!(config_get(tmp.path(), "agent").unwrap(), None);
+    }
+
+    #[test]
+    fn test_config_unset_invalid_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = "[workspace]\nname = \"test\"\n";
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+
+        let result = config_unset(tmp.path(), "bogus");
+        assert!(result.is_err());
     }
 }
