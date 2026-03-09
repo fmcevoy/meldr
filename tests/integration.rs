@@ -635,6 +635,111 @@ fn test_version_flag() {
 }
 
 #[test]
+fn test_worktree_add_with_slash_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/whatever"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created worktree 'fm/whatever'"));
+
+    // Directory should use sanitized name (/ replaced with -)
+    assert!(tmp
+        .path()
+        .join("worktrees/fm-whatever/frontend")
+        .exists());
+    // Should NOT have a nested fm/whatever directory
+    assert!(!tmp.path().join("worktrees/fm/whatever").exists());
+}
+
+#[test]
+fn test_worktree_remove_with_slash_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "remove", "fm/feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed worktree 'fm/feature'"));
+
+    assert!(!tmp.path().join("worktrees/fm-feature").exists());
+}
+
+#[test]
+fn test_worktree_remove_auto_detect_from_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/auto-rm"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Run remove from within the worktree directory (no branch arg)
+    let wt_dir = tmp.path().join("worktrees/fm-auto-rm/frontend");
+    assert!(wt_dir.exists());
+
+    meldr()
+        .args(["--no-tabs", "worktree", "remove"])
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed worktree 'fm/auto-rm'"));
+}
+
+#[test]
+fn test_worktree_remove_no_branch_outside_worktree_fails() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["worktree", "remove"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Could not detect current worktree"));
+}
+
+#[test]
 fn test_init_toml_has_commented_defaults() {
     let tmp = TempDir::new().unwrap();
     init_workspace(tmp.path());

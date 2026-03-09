@@ -184,8 +184,44 @@ pub fn package_path(workspace_root: &Path, name: &str) -> PathBuf {
     packages_dir(workspace_root).join(name)
 }
 
+/// Sanitize a branch name for use as a filesystem directory name.
+///
+/// Replaces `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, and spaces with `-`.
+/// Collapses consecutive `-` into a single `-` and trims leading/trailing `-`.
+pub fn sanitize_branch_for_dir(branch: &str) -> String {
+    let sanitized: String = branch
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | ' ' => '-',
+            _ => c,
+        })
+        .collect();
+    // Collapse consecutive dashes and trim
+    let mut result = String::with_capacity(sanitized.len());
+    let mut prev_dash = false;
+    for c in sanitized.chars() {
+        if c == '-' {
+            if !prev_dash {
+                result.push('-');
+            }
+            prev_dash = true;
+        } else {
+            result.push(c);
+            prev_dash = false;
+        }
+    }
+    result.trim_matches('-').to_string()
+}
+
 pub fn worktree_path(workspace_root: &Path, branch: &str, package: &str) -> PathBuf {
-    worktrees_dir(workspace_root).join(branch).join(package)
+    worktrees_dir(workspace_root)
+        .join(sanitize_branch_for_dir(branch))
+        .join(package)
+}
+
+/// Return the sanitized directory name for a branch under `worktrees/`.
+pub fn worktree_branch_dir(workspace_root: &Path, branch: &str) -> PathBuf {
+    worktrees_dir(workspace_root).join(sanitize_branch_for_dir(branch))
 }
 
 pub fn find_workspace_root(start: &Path) -> Result<PathBuf> {
@@ -200,7 +236,11 @@ pub fn find_workspace_root(start: &Path) -> Result<PathBuf> {
     }
 }
 
-pub fn detect_current_worktree(workspace_root: &Path, cwd: &Path) -> Option<String> {
+/// Detect the current worktree by matching the cwd against the `worktrees/` directory.
+///
+/// Returns the sanitized directory name (e.g. `fm-whatever` for branch `fm/whatever`).
+/// Callers should use [`resolve_branch_from_dir`] to map back to the real branch name.
+pub fn detect_current_worktree_dir(workspace_root: &Path, cwd: &Path) -> Option<String> {
     let worktrees = worktrees_dir(workspace_root);
     if let Ok(stripped) = cwd.strip_prefix(&worktrees) {
         stripped
@@ -210,6 +250,15 @@ pub fn detect_current_worktree(workspace_root: &Path, cwd: &Path) -> Option<Stri
     } else {
         None
     }
+}
+
+/// Given a sanitized directory name (from `detect_current_worktree_dir`), find the
+/// actual branch name by comparing against known branches.
+pub fn resolve_branch_from_dir<'a>(dir_name: &str, branches: impl Iterator<Item = &'a str>) -> Option<String> {
+    branches
+        .into_iter()
+        .find(|b| sanitize_branch_for_dir(b) == dir_name)
+        .map(|b| b.to_string())
 }
 
 #[cfg(test)]
@@ -340,16 +389,76 @@ url = "https://github.com/org/backend.git"
     }
 
     #[test]
-    fn test_detect_current_worktree() {
+    fn test_path_resolution_with_slashes() {
+        let root = Path::new("/workspace");
+        assert_eq!(
+            worktree_path(root, "fm/whatever", "frontend"),
+            PathBuf::from("/workspace/worktrees/fm-whatever/frontend")
+        );
+        assert_eq!(
+            worktree_path(root, "fm/deep/branch", "backend"),
+            PathBuf::from("/workspace/worktrees/fm-deep-branch/backend")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_branch_for_dir() {
+        assert_eq!(sanitize_branch_for_dir("fm/whatever"), "fm-whatever");
+        assert_eq!(sanitize_branch_for_dir("feature-x"), "feature-x");
+        assert_eq!(sanitize_branch_for_dir("a/b/c"), "a-b-c");
+        assert_eq!(sanitize_branch_for_dir("branch:name"), "branch-name");
+        assert_eq!(sanitize_branch_for_dir("has spaces"), "has-spaces");
+        assert_eq!(sanitize_branch_for_dir("a//b"), "a-b");
+        assert_eq!(sanitize_branch_for_dir("/leading"), "leading");
+        assert_eq!(sanitize_branch_for_dir("trailing/"), "trailing");
+        assert_eq!(sanitize_branch_for_dir("normal-branch"), "normal-branch");
+    }
+
+    #[test]
+    fn test_worktree_branch_dir() {
+        let root = Path::new("/workspace");
+        assert_eq!(
+            worktree_branch_dir(root, "fm/whatever"),
+            PathBuf::from("/workspace/worktrees/fm-whatever")
+        );
+    }
+
+    #[test]
+    fn test_detect_current_worktree_dir() {
         let root = Path::new("/workspace");
         let cwd = Path::new("/workspace/worktrees/feature-auth/frontend");
         assert_eq!(
-            detect_current_worktree(root, cwd),
+            detect_current_worktree_dir(root, cwd),
             Some("feature-auth".to_string())
         );
 
         let cwd_packages = Path::new("/workspace/packages/frontend");
-        assert_eq!(detect_current_worktree(root, cwd_packages), None);
+        assert_eq!(detect_current_worktree_dir(root, cwd_packages), None);
+    }
+
+    #[test]
+    fn test_detect_current_worktree_dir_sanitized() {
+        let root = Path::new("/workspace");
+        // After sanitization, fm/whatever becomes fm-whatever on disk
+        let cwd = Path::new("/workspace/worktrees/fm-whatever/frontend");
+        assert_eq!(detect_current_worktree_dir(root, cwd), Some("fm-whatever".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_branch_from_dir() {
+        let branches = vec!["fm/whatever", "feature-x", "main"];
+        assert_eq!(
+            resolve_branch_from_dir("fm-whatever", branches.iter().copied()),
+            Some("fm/whatever".to_string())
+        );
+        assert_eq!(
+            resolve_branch_from_dir("feature-x", branches.iter().copied()),
+            Some("feature-x".to_string())
+        );
+        assert_eq!(
+            resolve_branch_from_dir("nonexistent", branches.iter().copied()),
+            None
+        );
     }
 
     #[test]
