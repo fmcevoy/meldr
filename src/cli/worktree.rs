@@ -25,6 +25,7 @@ pub fn add(
         workspace_root,
         branch,
         config,
+        global_config,
     )?;
     println!("Created worktree '{}'", branch);
     Ok(())
@@ -53,11 +54,11 @@ pub fn remove(
 }
 
 pub fn open(
-    _git: &dyn GitOps,
     tmux: &dyn TmuxOps,
     workspace_root: &Path,
     branch: &str,
     config: &EffectiveConfig,
+    global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let mut state = WorkspaceState::load(workspace_root)?;
@@ -68,6 +69,7 @@ pub fn open(
         workspace_root,
         branch,
         config,
+        global_config,
     )?;
     Ok(())
 }

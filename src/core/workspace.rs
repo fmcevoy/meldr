@@ -244,6 +244,7 @@ mod tests {
                 name: "frontend".to_string(),
                 url: "https://github.com/org/frontend.git".to_string(),
                 branch: Some("main".to_string()),
+                remote: None,
             })
             .unwrap();
 
@@ -289,6 +290,7 @@ url = "https://github.com/org/backend.git"
                 name: "pkg".to_string(),
                 url: "url".to_string(),
                 branch: None,
+                remote: None,
             })
             .unwrap();
 
@@ -309,6 +311,7 @@ url = "https://github.com/org/backend.git"
                 name: "pkg".to_string(),
                 url: "url".to_string(),
                 branch: None,
+                remote: None,
             })
             .unwrap();
 

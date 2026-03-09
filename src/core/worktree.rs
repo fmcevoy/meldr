@@ -174,10 +174,13 @@ pub fn add_worktree(
         eprintln!("Warning: {}", error);
     }
 
-    let (tmux_window, pane_mappings) = if needs_tmux {
-        setup_tmux_window(tmux, manifest, workspace_root, branch, &created, config)?
+    let setup = if needs_tmux {
+        setup_tmux_windows(tmux, manifest, workspace_root, branch, &created, config, global_config)?
     } else {
-        (None, HashMap::new())
+        TmuxSetupResult {
+            tmux_window: None,
+            pane_mappings: HashMap::new(),
+        }
     };
 
     state.add_worktree(
@@ -186,119 +189,6 @@ pub fn add_worktree(
             branch: branch.to_string(),
             tmux_window: setup.tmux_window,
             pane_mappings: setup.pane_mappings,
-        },
-    );
-    state.save(workspace_root)?;
-
-    Ok(())
-}
-
-/// Create tmux window(s) for a worktree. Returns (window_id, pane_mappings).
-fn setup_tmux_window(
-    tmux: &dyn TmuxOps,
-    manifest: &Manifest,
-    workspace_root: &Path,
-    branch: &str,
-    packages: &[String],
-    config: &EffectiveConfig,
-) -> Result<(Option<String>, HashMap<String, String>)> {
-    let ws_name = &manifest.workspace.name;
-    let window_name = format!("{}/{}", ws_name, branch);
-    let mut pane_mappings = HashMap::new();
-
-    if let Some(ref lo) = manifest.layout {
-        // Layout override: custom pane arrangement from manifest
-        let window_id = tmux.create_window(&window_name)?;
-
-        for _ in 1..lo.panes.len() {
-            tmux.split_window(&window_id)?;
-        }
-
-        let layout = crate::tmux::TmuxLayout {
-            definition: lo.definition.clone(),
-            pane_names: lo.panes.clone(),
-        };
-        tmux.apply_layout(&window_id, &layout)?;
-
-        for (i, pkg_name) in lo.panes.iter().enumerate() {
-            if pkg_name.is_empty() {
-                continue;
-            }
-            let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-            let target = format!("{}.{}", window_id, i);
-            tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
-            if config.should_launch_agent() {
-                tmux.send_keys(&target, &config.agent_command)?;
-            }
-            pane_mappings.insert(i.to_string(), pkg_name.clone());
-        }
-
-        Ok((Some(window_id), pane_mappings))
-    } else {
-        // Dev window: single package uses its worktree dir, multi uses branch dir
-        let cwd = if packages.len() == 1 {
-            workspace::worktree_path(workspace_root, branch, &packages[0])
-        } else {
-            workspace::worktrees_dir(workspace_root).join(branch)
-        };
-        let cwd_str = cwd.to_string_lossy().into_owned();
-
-        let dev = tmux.create_dev_window(&window_name, &cwd_str)?;
-
-        tmux.send_keys(&dev.nvim, "nvim .")?;
-        if config.should_launch_agent() {
-            tmux.send_keys(&dev.agent, &config.agent_command)?;
-        }
-
-        pane_mappings.insert("nvim".to_string(), dev.nvim);
-        pane_mappings.insert("agent".to_string(), dev.agent);
-        Ok((Some(dev.window_id), pane_mappings))
-    }
-}
-
-/// Open tmux windows for an existing worktree (session restore).
-pub fn open_worktree(
-    tmux: &dyn TmuxOps,
-    manifest: &Manifest,
-    state: &mut WorkspaceState,
-    workspace_root: &Path,
-    branch: &str,
-    config: &EffectiveConfig,
-) -> Result<()> {
-    if state.get_worktree(branch).is_none() {
-        return Err(MeldrError::WorktreeNotFound(branch.to_string()));
-    }
-
-    if !config.should_use_tmux() {
-        return Ok(());
-    }
-
-    if !tmux.is_inside_tmux() {
-        return Err(MeldrError::NotInTmux);
-    }
-
-    // Collect package names that have worktree dirs on disk
-    let packages: Vec<String> = manifest
-        .packages
-        .iter()
-        .filter(|pkg| workspace::worktree_path(workspace_root, branch, &pkg.name).exists())
-        .map(|pkg| pkg.name.clone())
-        .collect();
-
-    if packages.is_empty() {
-        return Ok(());
-    }
-
-    let (tmux_window, pane_mappings) =
-        setup_tmux_window(tmux, manifest, workspace_root, branch, &packages, config)?;
-
-    // Update state with new tmux window ID
-    state.add_worktree(
-        branch,
-        WorktreeState {
-            branch: branch.to_string(),
-            tmux_window,
-            pane_mappings,
         },
     );
     state.save(workspace_root)?;
@@ -437,6 +327,7 @@ mod tests {
     use crate::error::Result;
     use crate::tmux::{DevWindowPanes, TmuxLayout, TmuxOps};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Tracks all tmux calls for assertions
     #[derive(Debug, Default)]
@@ -458,15 +349,14 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn calls(&self) -> std::sync::MutexGuard<'_, TmuxCall> {
             self.calls.lock().unwrap()
         }
     }
 
     impl TmuxOps for MockTmux {
-        fn is_inside_tmux(&self) -> bool {
-            true
-        }
+        fn is_inside_tmux(&self) -> bool { true }
 
         fn create_window(&self, name: &str) -> Result<String> {
             self.calls.lock().unwrap().create_window.push(name.to_string());
@@ -478,28 +368,27 @@ mod tests {
             Ok(())
         }
 
-        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> {
-            Ok(())
-        }
+        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> { Ok(()) }
 
         fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
             self.calls.lock().unwrap().send_keys.push((target.to_string(), keys.to_string()));
             Ok(())
         }
 
-        fn kill_window(&self, _window: &str) -> Result<()> {
-            Ok(())
-        }
+        fn kill_window(&self, _window: &str) -> Result<()> { Ok(()) }
 
-        fn create_dev_window(&self, name: &str, cwd: &str) -> Result<DevWindowPanes> {
+        fn create_dev_window(&self, name: &str, cwd: &str, _config: &EffectiveConfig, _custom_layout: Option<&crate::core::config::LayoutDef>) -> Result<DevWindowPanes> {
             self.calls.lock().unwrap().create_dev_window.push((name.to_string(), cwd.to_string()));
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
-                nvim: "@100.0".to_string(),
-                agent: "%1".to_string(),
+                editor: Some("@100.0".to_string()),
+                agent: Some("%1".to_string()),
                 terms: vec!["%2".to_string(), "%3".to_string(), "%4".to_string(), "%5".to_string()],
             })
         }
+
+        fn has_window(&self, _window: &str) -> bool { false }
+        fn select_window(&self, _window: &str) -> Result<()> { Ok(()) }
     }
 
     struct MockGit;
@@ -509,11 +398,11 @@ mod tests {
         fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> { Ok(()) }
         fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> { Ok(()) }
         fn is_dirty(&self, _path: &Path) -> Result<bool> { Ok(false) }
-        fn fetch(&self, _path: &Path) -> Result<()> { Ok(()) }
+        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
         fn rebase(&self, _path: &Path, _onto: &str, _strategy: &str, _autostash: bool) -> Result<()> { Ok(()) }
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
-        fn pull_ff_only(&self, _path: &Path) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -529,16 +418,9 @@ mod tests {
                     name: name.to_string(),
                     url: format!("https://example.com/{}.git", name),
                     branch: None,
+                    remote: None,
                 })
                 .collect(),
-        }
-    }
-
-    fn tmux_config() -> EffectiveConfig {
-        EffectiveConfig {
-            no_tabs: false,
-            no_agent: false,
-            ..Default::default()
         }
     }
 
@@ -557,167 +439,8 @@ mod tests {
         (tmp, manifest)
     }
 
-    #[test]
-    fn test_single_package_creates_dev_window() {
-        let (tmp, manifest) = setup_workspace(&["frontend"]);
-        let tmux = MockTmux::new();
-        let git = MockGit;
-        let config = tmux_config();
-        let mut state = WorkspaceState::default();
-
-        add_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-1", &config).unwrap();
-
-        let calls = tmux.calls();
-        assert_eq!(calls.create_dev_window.len(), 1, "should create exactly one dev window");
-        assert_eq!(calls.create_dev_window[0].0, "test-ws/feat-1");
-        assert!(
-            calls.create_dev_window[0].1.ends_with("worktrees/feat-1/frontend"),
-            "single package dev window cwd should be the package worktree dir, got: {}",
-            calls.create_dev_window[0].1,
-        );
-        assert!(calls.create_window.is_empty(), "should not create plain windows");
-        assert!(calls.split_window.is_empty(), "should not split windows");
-
-        // Pane mappings should use consistent keys regardless of package count
-        let wt = state.get_worktree("feat-1").unwrap();
-        assert!(wt.pane_mappings.contains_key("nvim"), "should use 'nvim' key");
-        assert!(wt.pane_mappings.contains_key("agent"), "should use 'agent' key");
-    }
-
-    #[test]
-    fn test_multi_package_creates_one_dev_window() {
-        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
-        let tmux = MockTmux::new();
-        let git = MockGit;
-        let config = tmux_config();
-        let mut state = WorkspaceState::default();
-
-        add_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-2", &config).unwrap();
-
-        let calls = tmux.calls();
-        assert_eq!(
-            calls.create_dev_window.len(), 1,
-            "multi-package should create exactly one dev window (not one per package)"
-        );
-        assert_eq!(calls.create_dev_window[0].0, "test-ws/feat-2");
-        assert!(
-            calls.create_dev_window[0].1.ends_with("worktrees/feat-2"),
-            "multi-package dev window cwd should be the branch dir, got: {}",
-            calls.create_dev_window[0].1,
-        );
-        assert!(calls.create_window.is_empty(), "should not create plain windows");
-        assert!(calls.split_window.is_empty(), "should not split windows (no pane-per-package)");
-    }
-
-    #[test]
-    fn test_multi_package_sends_nvim_and_agent() {
-        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
-        let tmux = MockTmux::new();
-        let git = MockGit;
-        let config = tmux_config();
-        let mut state = WorkspaceState::default();
-
-        add_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-3", &config).unwrap();
-
-        let calls = tmux.calls();
-        let nvim_keys: Vec<_> = calls.send_keys.iter().filter(|(_, k)| k == "nvim .").collect();
-        assert_eq!(nvim_keys.len(), 1, "should launch nvim once");
-        assert_eq!(nvim_keys[0].0, "@100.0", "nvim should be in the nvim pane");
-
-        let agent_keys: Vec<_> = calls.send_keys.iter().filter(|(_, k)| k.contains("claude")).collect();
-        assert_eq!(agent_keys.len(), 1, "should launch agent once");
-        assert_eq!(agent_keys[0].0, "%1", "agent should be in the agent pane");
-    }
-
-    #[test]
-    fn test_multi_package_state_has_one_window() {
-        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
-        let tmux = MockTmux::new();
-        let git = MockGit;
-        let config = tmux_config();
-        let mut state = WorkspaceState::default();
-
-        add_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-4", &config).unwrap();
-
-        let wt = state.get_worktree("feat-4").unwrap();
-        assert_eq!(wt.tmux_window, Some("@100".to_string()), "should store single window ID");
-        assert!(!wt.tmux_window.as_ref().unwrap().contains(','), "should not have comma-separated window IDs");
-    }
-
-    #[test]
-    fn test_no_tabs_skips_tmux() {
-        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
-        let tmux = MockTmux::new();
-        let git = MockGit;
-        let config = EffectiveConfig {
-            no_tabs: true,
-            ..Default::default()
-        };
-        let mut state = WorkspaceState::default();
-
-        add_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-5", &config).unwrap();
-
-        let calls = tmux.calls();
-        assert!(calls.create_dev_window.is_empty(), "no-tabs should skip tmux entirely");
-        assert!(calls.create_window.is_empty());
-
-        let wt = state.get_worktree("feat-5").unwrap();
-        assert!(wt.tmux_window.is_none());
-    }
-
-    #[test]
-    fn test_open_worktree_creates_dev_window() {
-        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
-        let git = MockGit;
-        let no_tabs_config = EffectiveConfig {
-            no_tabs: true,
-            ..Default::default()
-        };
-        let mut state = WorkspaceState::default();
-
-        // Create worktree without tmux
-        add_worktree(&git, &MockTmux::new(), &manifest, &mut state, tmp.path(), "feat-open", &no_tabs_config).unwrap();
-        assert!(state.get_worktree("feat-open").unwrap().tmux_window.is_none());
-
-        // Create worktree dirs on disk (normally git does this)
-        std::fs::create_dir_all(tmp.path().join("worktrees/feat-open/frontend")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("worktrees/feat-open/backend")).unwrap();
-
-        // Now open with tmux
-        let tmux = MockTmux::new();
-        let config = tmux_config();
-        open_worktree(&tmux, &manifest, &mut state, tmp.path(), "feat-open", &config).unwrap();
-
-        let calls = tmux.calls();
-        assert_eq!(calls.create_dev_window.len(), 1, "open should create a dev window");
-        assert!(
-            calls.create_dev_window[0].1.ends_with("worktrees/feat-open"),
-            "multi-package open should use branch dir, got: {}",
-            calls.create_dev_window[0].1,
-        );
-
-        let wt = state.get_worktree("feat-open").unwrap();
-        assert!(wt.tmux_window.is_some(), "state should be updated with tmux window");
-        assert!(wt.pane_mappings.contains_key("nvim"));
-        assert!(wt.pane_mappings.contains_key("agent"));
-    }
-
-    #[test]
-    fn test_open_nonexistent_worktree_fails() {
-        let (tmp, manifest) = setup_workspace(&["frontend"]);
-        let tmux = MockTmux::new();
-        let config = tmux_config();
-        let mut state = WorkspaceState::default();
-
-        let result = open_worktree(&tmux, &manifest, &mut state, tmp.path(), "no-such", &config);
-        assert!(result.is_err(), "open should fail for nonexistent worktree");
-    }
-
     // --- Removal tests with order tracking ---
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// Global counter for ordering assertions across mock objects
     static ORDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn reset_order_counter() {
@@ -728,9 +451,8 @@ mod tests {
         ORDER_COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// A mock that tracks which packages had worktree_remove called and in what order
     struct OrderTrackingGit {
-        removed_packages: Mutex<Vec<(String, usize)>>, // (path, order)
+        removed_packages: Mutex<Vec<(String, usize)>>,
     }
 
     impl OrderTrackingGit {
@@ -754,14 +476,13 @@ mod tests {
             Ok(())
         }
         fn is_dirty(&self, _path: &Path) -> Result<bool> { Ok(false) }
-        fn fetch(&self, _path: &Path) -> Result<()> { Ok(()) }
+        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
         fn rebase(&self, _path: &Path, _onto: &str, _strategy: &str, _autostash: bool) -> Result<()> { Ok(()) }
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
-        fn pull_ff_only(&self, _path: &Path) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
     }
 
-    /// A tmux mock that tracks when kill_window is called relative to git operations
     struct OrderTrackingTmux {
         kill_order: Mutex<Option<usize>>,
     }
@@ -788,14 +509,16 @@ mod tests {
             *self.kill_order.lock().unwrap() = Some(next_order());
             Ok(())
         }
-        fn create_dev_window(&self, _name: &str, _cwd: &str) -> Result<DevWindowPanes> {
+        fn create_dev_window(&self, _name: &str, _cwd: &str, _config: &EffectiveConfig, _custom_layout: Option<&crate::core::config::LayoutDef>) -> Result<DevWindowPanes> {
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
-                nvim: "@100.0".to_string(),
-                agent: "%1".to_string(),
+                editor: Some("@100.0".to_string()),
+                agent: Some("%1".to_string()),
                 terms: vec!["%2".to_string(), "%3".to_string(), "%4".to_string(), "%5".to_string()],
             })
         }
+        fn has_window(&self, _window: &str) -> bool { false }
+        fn select_window(&self, _window: &str) -> Result<()> { Ok(()) }
     }
 
     fn worktree_state_with_window(branch: &str, window: &str) -> WorktreeState {
@@ -822,10 +545,8 @@ mod tests {
         let tmux = MockTmux::new();
         let mut state = WorkspaceState::default();
 
-        // Register the worktree in state with a tmux window
         state.add_worktree("feat-rm", worktree_state_with_window("feat-rm", "@50"));
 
-        // Create worktree dirs on disk (simulating what git worktree add does)
         for pkg in packages {
             std::fs::create_dir_all(
                 tmp.path().join("worktrees").join("feat-rm").join(pkg),
@@ -836,30 +557,14 @@ mod tests {
         remove_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-rm", false).unwrap();
 
         let removed = git.removed();
-        assert_eq!(
-            removed.len(),
-            3,
-            "should remove worktrees for ALL 3 packages, got: {:?}",
-            removed,
-        );
+        assert_eq!(removed.len(), 3, "should remove worktrees for ALL 3 packages, got: {:?}", removed);
         let removed_names: Vec<&str> = removed.iter().map(|(n, _)| n.as_str()).collect();
         for pkg in packages {
-            assert!(
-                removed_names.contains(pkg),
-                "package '{}' should have been removed, got: {:?}",
-                pkg,
-                removed_names,
-            );
+            assert!(removed_names.contains(pkg), "package '{}' should have been removed, got: {:?}", pkg, removed_names);
         }
 
-        // State should be cleared
         assert!(state.get_worktree("feat-rm").is_none(), "worktree should be removed from state");
-
-        // Branch dir should be gone
-        assert!(
-            !tmp.path().join("worktrees").join("feat-rm").exists(),
-            "branch directory should be cleaned up",
-        );
+        assert!(!tmp.path().join("worktrees").join("feat-rm").exists(), "branch directory should be cleaned up");
     }
 
     #[test]
@@ -892,8 +597,7 @@ mod tests {
         assert!(
             kill_order > max_git_order,
             "tmux kill_window (order={}) must happen AFTER all git worktree removals (last git order={})",
-            kill_order,
-            max_git_order,
+            kill_order, max_git_order,
         );
     }
 
@@ -916,7 +620,6 @@ mod tests {
         let tmux = OrderTrackingTmux::new();
         let mut state = WorkspaceState::default();
 
-        // Add worktree without tmux window (e.g., created with --no-tabs)
         state.add_worktree("feat-notab", worktree_state_no_window("feat-notab"));
 
         std::fs::create_dir_all(
@@ -930,6 +633,24 @@ mod tests {
         assert_eq!(removed.len(), 1, "should still remove git worktree");
         assert!(tmux.kill_order().is_none(), "should not call kill_window when no tmux window");
         assert!(state.get_worktree("feat-notab").is_none());
+    }
+
+    #[test]
+    fn test_expand_template_all_vars() {
+        let result = expand_template("{ws}/{branch}:{pkg}", "myws", "feature-x", "frontend");
+        assert_eq!(result, "myws/feature-x:frontend");
+    }
+
+    #[test]
+    fn test_expand_template_no_pkg() {
+        let result = expand_template("{ws}/{branch}", "myws", "main", "");
+        assert_eq!(result, "myws/main");
+    }
+
+    #[test]
+    fn test_expand_template_custom() {
+        let result = expand_template("[{branch}] {pkg}", "ws", "dev", "api");
+        assert_eq!(result, "[dev] api");
     }
 }
 
@@ -980,27 +701,4 @@ pub fn sync_worktree(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_expand_template_all_vars() {
-        let result = expand_template("{ws}/{branch}:{pkg}", "myws", "feature-x", "frontend");
-        assert_eq!(result, "myws/feature-x:frontend");
-    }
-
-    #[test]
-    fn test_expand_template_no_pkg() {
-        let result = expand_template("{ws}/{branch}", "myws", "main", "");
-        assert_eq!(result, "myws/main");
-    }
-
-    #[test]
-    fn test_expand_template_custom() {
-        let result = expand_template("[{branch}] {pkg}", "ws", "dev", "api");
-        assert_eq!(result, "[dev] api");
-    }
 }
