@@ -69,7 +69,7 @@ pub enum Commands {
     #[command(alias = "st")]
     Status,
 
-    /// Run a command in every package directory (parallel)
+    /// Run a command in every package's worktree directory (must be run from within a worktree)
     Exec {
         /// Launch an interactive shell so aliases and rc files are loaded
         #[arg(short, long)]

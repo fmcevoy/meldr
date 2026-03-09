@@ -5,10 +5,11 @@ use rayon::prelude::*;
 
 use crate::core::config::EffectiveConfig;
 use crate::core::workspace::{self, Manifest};
-use crate::error::Result;
+use crate::error::{MeldrError, Result};
 
 pub fn run(
     workspace_root: &Path,
+    cwd: &Path,
     command: &[String],
     config: &EffectiveConfig,
     interactive: bool,
@@ -20,6 +21,13 @@ pub fn run(
         return Ok(());
     }
 
+    let worktree_dir_name = workspace::detect_current_worktree_dir(workspace_root, cwd)
+        .ok_or_else(|| {
+            MeldrError::Config(
+                "meldr exec must be run from within a worktree directory.".to_string(),
+            )
+        })?;
+
     let cmd_str = command.join(" ");
 
     let shell_args: Vec<&str> = if interactive {
@@ -28,11 +36,13 @@ pub fn run(
         vec!["-c", &cmd_str]
     };
 
+    let worktree_base = workspace::worktrees_dir(workspace_root).join(&worktree_dir_name);
+
     let results: Vec<_> = manifest
         .packages
         .par_iter()
         .map(|pkg| {
-            let pkg_path = workspace::package_path(workspace_root, &pkg.name);
+            let pkg_path = worktree_base.join(&pkg.name);
             let output = Command::new(&config.shell)
                 .args(&shell_args)
                 .current_dir(&pkg_path)

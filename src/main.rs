@@ -128,7 +128,7 @@ fn run(cli: Cli) -> error::Result<()> {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
-            cli::exec::run(&root, &command, &config, interactive)
+            cli::exec::run(&root, &cwd, &command, &config, interactive)
         }
 
         Commands::Sync {
