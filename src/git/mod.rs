@@ -14,6 +14,7 @@ pub trait GitOps: Send + Sync {
     fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()>;
     fn status_porcelain(&self, path: &Path) -> Result<String>;
     fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String>;
+    fn ensure_remote_tracking(&self, path: &Path, remote: &str) -> Result<()>;
 }
 
 pub struct RealGit;
@@ -63,6 +64,11 @@ impl GitOps for RealGit {
                 reason: stderr,
             });
         }
+
+        // Bare clones don't set up remote tracking refs by default.
+        // Configure the fetch refspec so `git fetch` populates refs/remotes/origin/*.
+        self.ensure_remote_tracking(path, "origin")?;
+
         Ok(())
     }
 
@@ -100,6 +106,8 @@ impl GitOps for RealGit {
     }
 
     fn fetch(&self, path: &Path, remote: &str) -> Result<()> {
+        // Ensure remote tracking is configured (handles repos cloned before the fix)
+        self.ensure_remote_tracking(path, remote)?;
         Self::run(&["fetch", remote], path)?;
         Ok(())
     }
@@ -137,5 +145,40 @@ impl GitOps for RealGit {
         // Output is like "refs/remotes/origin/main" — extract the branch name
         let prefix = format!("refs/remotes/{}/", remote);
         output.strip_prefix(&prefix).map(|s| s.to_string())
+    }
+
+    fn ensure_remote_tracking(&self, path: &Path, remote: &str) -> Result<()> {
+        let refspec_key = format!("remote.{}.fetch", remote);
+        let expected_refspec = format!(
+            "+refs/heads/*:refs/remotes/{}/*",
+            remote
+        );
+
+        // Check if the fetch refspec is already configured
+        let current = Self::run(&["config", "--get-all", &refspec_key], path)
+            .unwrap_or_default();
+
+        if !current.lines().any(|line| line.trim() == expected_refspec) {
+            // Set the fetch refspec so `git fetch` populates refs/remotes/<remote>/*
+            Self::run(
+                &["config", &refspec_key, &expected_refspec],
+                path,
+            )?;
+
+            // Fetch to populate the remote tracking refs now
+            Self::run(&["fetch", remote], path)?;
+        }
+
+        // Ensure refs/remotes/<remote>/HEAD is set
+        let head_ref = format!("refs/remotes/{}/HEAD", remote);
+        if Self::run(&["symbolic-ref", &head_ref], path).is_err() {
+            // Detect the default branch from the remote and set HEAD
+            let _ = Self::run(
+                &["remote", "set-head", remote, "--auto"],
+                path,
+            );
+        }
+
+        Ok(())
     }
 }

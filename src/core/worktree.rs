@@ -396,6 +396,7 @@ mod tests {
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
         fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -474,6 +475,7 @@ mod tests {
         fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
         fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
         fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
     }
 
     struct OrderTrackingTmux {

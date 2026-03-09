@@ -916,3 +916,89 @@ fn test_exec_respects_shell_config() {
         .success()
         .stdout(predicate::str::contains("works"));
 }
+
+#[test]
+fn test_bare_clone_has_remote_tracking_refs() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "myrepo");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let pkg_path = tmp.path().join("packages/myrepo");
+
+    // Verify fetch refspec is configured for remote tracking
+    let refspec = process::Command::new("git")
+        .args(["config", "--get-all", "remote.origin.fetch"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    let refspec_str = String::from_utf8_lossy(&refspec.stdout);
+    assert!(
+        refspec_str.contains("+refs/heads/*:refs/remotes/origin/*"),
+        "Bare clone should have fetch refspec for remote tracking, got: {}",
+        refspec_str
+    );
+
+    // Verify refs/remotes/origin/HEAD is set
+    let head_ref = process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    assert!(
+        head_ref.status.success(),
+        "refs/remotes/origin/HEAD should be set after clone"
+    );
+    let head_str = String::from_utf8_lossy(&head_ref.stdout);
+    assert!(
+        head_str.contains("refs/remotes/origin/"),
+        "HEAD should point to a remote tracking ref, got: {}",
+        head_str
+    );
+
+    // Verify refs/remotes/origin/main exists
+    let remote_main = process::Command::new("git")
+        .args(["rev-parse", "refs/remotes/origin/main"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+    assert!(
+        remote_main.status.success(),
+        "refs/remotes/origin/main should exist after clone"
+    );
+}
+
+#[test]
+fn test_sync_works_after_package_add() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "test-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Sync should succeed — this would fail without remote tracking refs
+    meldr()
+        .args(["sync", "test-sync"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
