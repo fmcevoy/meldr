@@ -70,6 +70,8 @@ fn run(cli: Cli) -> error::Result<()> {
         Commands::Package { action } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
+            let (config, _) = build_effective_config(&root, &cli_overrides)?;
+            warn_if_out_of_sync(&git, &root, &config);
             match action {
                 PackageAction::Add { urls } => cli::package::add(&git, &root, &urls),
                 PackageAction::Remove { names } => cli::package::remove(&root, &names),
@@ -80,6 +82,8 @@ fn run(cli: Cli) -> error::Result<()> {
         Commands::Worktree { action } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
+            let (wt_config, _) = build_effective_config(&root, &cli_overrides)?;
+            warn_if_out_of_sync(&git, &root, &wt_config);
             match action {
                 WorktreeAction::Add { branch } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
@@ -118,6 +122,8 @@ fn run(cli: Cli) -> error::Result<()> {
         Commands::Status => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
+            let (config, _) = build_effective_config(&root, &cli_overrides)?;
+            warn_if_out_of_sync(&git, &root, &config);
             cli::status::run(&git, &root)
         }
 
@@ -128,6 +134,7 @@ fn run(cli: Cli) -> error::Result<()> {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
+            warn_if_out_of_sync(&git, &root, &config);
             cli::exec::run(&root, &cwd, &command, &config, interactive)
         }
 
@@ -193,6 +200,21 @@ fn run(cli: Cli) -> error::Result<()> {
                 let target = resolve_sync_branch(&root, branch.as_deref(), &cwd)?;
                 vec![target]
             };
+
+            // When no worktrees exist, still fetch all packages
+            if branches_to_sync.is_empty() {
+                println!("No active worktrees. Fetching all packages...\n");
+                for pkg in &manifest.packages {
+                    let repo_path = workspace::package_path(&root, &pkg.name);
+                    let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+                    eprint!("  Fetching {} ... ", pkg.name);
+                    match git.fetch(&repo_path, remote) {
+                        Ok(()) => eprintln!("done"),
+                        Err(e) => eprintln!("failed: {}", e),
+                    }
+                }
+                return Ok(());
+            }
 
             for branch_name in &branches_to_sync {
                 if branches_to_sync.len() > 1 {
@@ -279,6 +301,43 @@ fn run(cli: Cli) -> error::Result<()> {
             }
         }
     }
+}
+
+fn warn_if_out_of_sync(git: &dyn GitOps, root: &Path, config: &config::EffectiveConfig) {
+    let state = match core::state::WorkspaceState::load(root) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if state.worktrees.is_empty() {
+        return;
+    }
+    let manifest = match Manifest::load(root) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let branches: Vec<String> = state.worktrees.keys().cloned().collect();
+    let stale = core::worktree::check_worktree_staleness(git, &manifest, root, &branches, config);
+    if stale.is_empty() {
+        return;
+    }
+    use console::style;
+    eprintln!(
+        "{}",
+        style("Warning: some worktrees are behind upstream:").yellow()
+    );
+    for (branch, pkg, behind) in &stale {
+        eprintln!(
+            "  {} ({}) is {} commit{} behind",
+            style(branch).bold(),
+            pkg,
+            behind,
+            if *behind == 1 { "" } else { "s" }
+        );
+    }
+    eprintln!(
+        "{}",
+        style("Run 'meldr sync --all' to update.\n").dim()
+    );
 }
 
 fn resolve_sync_branch(

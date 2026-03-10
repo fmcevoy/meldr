@@ -1202,12 +1202,13 @@ fn test_sync_all_no_worktrees_succeeds() {
         .assert()
         .success();
 
-    // --all with no worktrees should succeed (nothing to sync)
+    // --all with no worktrees should succeed and fetch packages
     meldr()
         .args(["sync", "--all"])
         .current_dir(tmp.path())
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("No active worktrees. Fetching all packages"));
 }
 
 #[test]
@@ -1269,6 +1270,94 @@ fn test_sync_all_with_worktrees() {
             predicate::str::contains("frontend")
                 .and(predicate::str::contains("up-to-date")),
         );
+}
+
+#[test]
+fn test_out_of_sync_warning_on_status() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-warn"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Push an upstream commit to make the worktree behind
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "warn-file.txt",
+        "trigger warning",
+    );
+
+    // Fetch so local refs know about the new commit
+    meldr()
+        .args(["sync", "feat-warn"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Push another commit — after sync the worktree is up to date,
+    // so push again and fetch (without syncing) to make it behind
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "warn-file2.txt",
+        "trigger warning 2",
+    );
+
+    // Fetch the bare repo directly so refs update without syncing the worktree
+    let pkg_path = tmp.path().join("packages/frontend");
+    std::process::Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+
+    // Now `status` should show the warning
+    meldr()
+        .args(["status"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("behind"));
+}
+
+#[test]
+fn test_no_warning_when_up_to_date() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-ok"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Status should NOT show a warning when worktree is up to date
+    meldr()
+        .args(["status"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("behind").not());
 }
 
 // ─── Global config tests ───────────────────────────────────────
