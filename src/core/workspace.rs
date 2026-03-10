@@ -72,6 +72,8 @@ pub struct PackageEntry {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_strategy: Option<String>,
 }
 
 impl Manifest {
@@ -114,7 +116,7 @@ impl Manifest {
             "# agent = \"claude\"          # \"claude\" | \"cursor\" | \"none\"\n",
             "# mode = \"full\"             # \"full\" | \"no-agent\" | \"no-tabs\"\n",
             "# sync_method = \"rebase\"    # \"rebase\" | \"merge\"\n",
-            "# sync_strategy = \"theirs\"  # \"theirs\" | \"ours\" | \"manual\"\n",
+            "# sync_strategy = \"safe\"    # \"safe\" | \"theirs\" | \"ours\" | \"manual\"\n",
             "# editor = \"nvim .\"         # editor command (or uses $EDITOR/$VISUAL)\n",
             "# default_branch = \"main\"   # fallback branch for sync\n",
             "# remote = \"origin\"         # default git remote\n",
@@ -294,6 +296,7 @@ mod tests {
                 url: "https://github.com/org/frontend.git".to_string(),
                 branch: Some("main".to_string()),
                 remote: None,
+                sync_strategy: None,
             })
             .unwrap();
 
@@ -340,6 +343,7 @@ url = "https://github.com/org/backend.git"
                 url: "url".to_string(),
                 branch: None,
                 remote: None,
+                sync_strategy: None,
             })
             .unwrap();
 
@@ -348,6 +352,7 @@ url = "https://github.com/org/backend.git"
             url: "url2".to_string(),
             branch: None,
             remote: None,
+            sync_strategy: None,
         });
         assert!(result.is_err());
     }
@@ -361,6 +366,7 @@ url = "https://github.com/org/backend.git"
                 url: "url".to_string(),
                 branch: None,
                 remote: None,
+                sync_strategy: None,
             })
             .unwrap();
 

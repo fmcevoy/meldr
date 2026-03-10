@@ -15,6 +15,16 @@ pub trait GitOps: Send + Sync {
     fn status_porcelain(&self, path: &Path) -> Result<String>;
     fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String>;
     fn ensure_remote_tracking(&self, path: &Path, remote: &str) -> Result<()>;
+    /// Returns (ahead, behind) commit counts relative to upstream.
+    fn divergence(&self, path: &Path, upstream: &str) -> Result<(u32, u32)>;
+    /// Check for merge conflicts without modifying the working tree.
+    /// Returns a list of conflicting file paths. Empty means clean merge.
+    /// Uses `git merge-tree --write-tree` (Git 2.38+). Falls back gracefully on older Git.
+    fn check_merge_conflicts(&self, path: &Path, upstream: &str) -> Result<Vec<String>>;
+    /// Returns the current HEAD commit SHA.
+    fn current_head(&self, path: &Path) -> Result<String>;
+    /// Hard-reset to a specific commit.
+    fn reset_hard(&self, path: &Path, commit: &str) -> Result<()>;
 }
 
 pub struct RealGit;
@@ -179,6 +189,64 @@ impl GitOps for RealGit {
             );
         }
 
+        Ok(())
+    }
+
+    fn divergence(&self, path: &Path, upstream: &str) -> Result<(u32, u32)> {
+        let range = format!("HEAD...{}", upstream);
+        let output = Self::run(&["rev-list", "--left-right", "--count", &range], path)?;
+        let parts: Vec<&str> = output.split_whitespace().collect();
+        if parts.len() != 2 {
+            return Ok((0, 0));
+        }
+        let ahead = parts[0].parse::<u32>().unwrap_or(0);
+        let behind = parts[1].parse::<u32>().unwrap_or(0);
+        Ok((ahead, behind))
+    }
+
+    fn check_merge_conflicts(&self, path: &Path, upstream: &str) -> Result<Vec<String>> {
+        trace::trace_cmd(
+            "git",
+            &["merge-tree", "--write-tree", "HEAD", upstream],
+            Some(&path.to_string_lossy()),
+        );
+
+        let output = Command::new("git")
+            .args(["merge-tree", "--write-tree", "HEAD", upstream])
+            .current_dir(path)
+            .output()
+            .map_err(|e| MeldrError::Git(format!("Failed to run git merge-tree: {}", e)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Git < 2.38 doesn't support --write-tree; fall back gracefully
+        if stderr.contains("unrecognized argument")
+            || stderr.contains("unknown option")
+            || stderr.contains("not a git command")
+        {
+            return Ok(vec![]);
+        }
+
+        if output.status.success() {
+            return Ok(vec![]);
+        }
+
+        let conflicts: Vec<String> = stdout
+            .lines()
+            .filter(|line| line.starts_with("CONFLICT"))
+            .filter_map(|line| line.rfind(" in ").map(|pos| line[pos + 4..].to_string()))
+            .collect();
+
+        Ok(conflicts)
+    }
+
+    fn current_head(&self, path: &Path) -> Result<String> {
+        Self::run(&["rev-parse", "HEAD"], path)
+    }
+
+    fn reset_hard(&self, path: &Path, commit: &str) -> Result<()> {
+        Self::run(&["reset", "--hard", commit], path)?;
         Ok(())
     }
 }

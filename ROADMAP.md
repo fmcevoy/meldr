@@ -1,5 +1,10 @@
 # Meldr Roadmap
 
+## Recently Completed
+
+- [x] **Smart sync with conflict detection** (was Priority 2)
+  Default strategy changed from `theirs` to `safe`. Pre-sync conflict detection via `git merge-tree --write-tree`. Dry-run mode, parallel fetch, sync snapshots with undo, per-package strategy overrides, selective sync (--only/--exclude), summary table, and sync logging.
+
 ## Priority 1 — Table Stakes (competitive parity)
 
 - [ ] **Repo groups / subset targeting**
@@ -16,7 +21,7 @@
 
 ## Priority 2 — Safety & Usability
 
-- [ ] **Smart sync with conflict detection**
+- [x] **Smart sync with conflict detection**
   Warn or refuse when sync would cause non-trivial merges instead of silently applying `--strategy theirs`. Offer interactive resolution or at minimum surface a clear warning.
 
 - [ ] **Manifest sharing / URL-based init**
