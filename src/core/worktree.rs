@@ -1272,6 +1272,42 @@ pub fn fetch_packages(
     Ok(())
 }
 
+/// Check which worktrees have packages that are behind upstream.
+/// Returns a list of (branch, package, behind_count) tuples.
+/// This does NOT fetch — it only checks against already-fetched refs.
+pub fn check_worktree_staleness(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    worktree_branches: &[String],
+    config: &EffectiveConfig,
+) -> Vec<(String, String, u32)> {
+    let mut stale = Vec::new();
+    for branch in worktree_branches {
+        for pkg in &manifest.packages {
+            let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
+            if !wt_path.exists() {
+                continue;
+            }
+            let repo_path = workspace::package_path(workspace_root, &pkg.name);
+            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+            let detected = git.detect_default_branch(&repo_path, remote);
+            let default_branch = pkg
+                .branch
+                .as_deref()
+                .or(detected.as_deref())
+                .unwrap_or(&config.default_branch);
+            let upstream = format!("{}/{}", remote, default_branch);
+            if let Ok((_ahead, behind)) = git.divergence(&wt_path, &upstream) {
+                if behind > 0 {
+                    stale.push((branch.clone(), pkg.name.clone(), behind));
+                }
+            }
+        }
+    }
+    stale
+}
+
 pub fn sync_worktree(
     git: &dyn GitOps,
     manifest: &Manifest,
