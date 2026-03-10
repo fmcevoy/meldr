@@ -38,6 +38,9 @@ pub enum MeldrError {
     #[error("Config error: {0}")]
     Config(String),
 
+    #[error("No sync snapshot found for branch '{0}'")]
+    NoSyncSnapshot(String),
+
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
 

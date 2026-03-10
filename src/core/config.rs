@@ -7,7 +7,7 @@ use crate::error::{MeldrError, Result};
 pub const DEFAULT_AGENT: &str = "claude";
 pub const DEFAULT_MODE: &str = "full";
 pub const DEFAULT_SYNC_METHOD: &str = "rebase";
-pub const DEFAULT_SYNC_STRATEGY: &str = "theirs";
+pub const DEFAULT_SYNC_STRATEGY: &str = "safe";
 pub const DEFAULT_EDITOR: &str = "nvim .";
 pub const DEFAULT_BRANCH: &str = "main";
 pub const DEFAULT_REMOTE: &str = "origin";
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(config.mode, "full");
         assert_eq!(config.agent_command, "claude");
         assert_eq!(config.sync_method, "rebase");
-        assert_eq!(config.sync_strategy, "theirs");
+        assert_eq!(config.sync_strategy, "safe");
         assert!(!config.no_agent);
         assert!(!config.no_tabs);
     }

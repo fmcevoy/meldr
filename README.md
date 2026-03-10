@@ -5,7 +5,7 @@ Workspace management tool for multi-repo projects with git worktrees and tmux in
 ## Prerequisites
 
 - **Rust** (1.85+ for edition 2024)
-- **Git** (2.20+)
+- **Git** (2.20+ (2.38+ recommended for conflict detection))
 - **tmux** (optional, for tab/pane management)
 
 ## Build & Test
@@ -96,7 +96,7 @@ name = "my-project"
 # agent = "claude"          # "claude" | "cursor" | "none"
 # mode = "full"             # "full" | "no-agent" | "no-tabs"
 # sync_method = "rebase"    # "rebase" | "merge"
-# sync_strategy = "theirs"  # "theirs" | "ours" | "manual"
+# sync_strategy = "safe"    # "safe" | "theirs" | "ours" | "manual"
 # editor = "nvim ."         # editor command (or uses $EDITOR/$VISUAL)
 # default_branch = "main"   # fallback branch for sync
 # remote = "origin"         # default git remote
@@ -113,6 +113,7 @@ branch = "main"
 [[package]]
 name = "backend"
 url = "https://github.com/org/backend.git"
+# sync_strategy = "theirs"  # per-package strategy override
 ```
 
 ## Configuration
@@ -124,7 +125,7 @@ url = "https://github.com/org/backend.git"
 | `agent` | `claude` | `MELDR_AGENT` | AI agent to launch |
 | `mode` | `full` | `MELDR_MODE` | `full`, `no-agent`, or `no-tabs` |
 | `sync_method` | `rebase` | | `rebase` or `merge` |
-| `sync_strategy` | `theirs` | | `theirs`, `ours`, or `manual` |
+| `sync_strategy` | `safe` | | `"safe"`, `"theirs"`, `"ours"`, or `"manual"` |
 | `editor` | `nvim .` | `MELDR_EDITOR`, `$VISUAL`, `$EDITOR` | Editor command for tmux panes |
 | `default_branch` | `main` | `MELDR_DEFAULT_BRANCH` | Fallback branch for sync (auto-detected when possible) |
 | `remote` | `origin` | `MELDR_REMOTE` | Default git remote name |
@@ -245,11 +246,51 @@ meldr sync feature-auth
 # Sync all worktrees
 meldr sync --all
 
+# Preview what would happen (no changes)
+meldr sync --dry-run
+
+# Only sync specific packages
+meldr sync --only frontend,auth
+
+# Exclude packages from sync
+meldr sync --exclude legacy-api
+
 # Use merge instead of rebase
 meldr sync --merge
 
-# Custom strategy
-meldr sync --strategy ours
+# Override strategy
+meldr sync --strategy theirs
+
+# Undo the last sync
+meldr sync --undo
 ```
 
-The sync command auto-detects the default branch from the remote when possible, falling back to the configured `default_branch` (default: `main`). Per-package `branch` and `remote` overrides in `meldr.toml` are respected.
+### Sync strategies
+
+| Strategy | Default | Behavior |
+|----------|---------|----------|
+| `safe` | Yes | Checks for conflicts before syncing. Refuses if local commits conflict with upstream. No `-X` flag passed to git. |
+| `theirs` | | Auto-resolves conflicts in favor of upstream (`-Xtheirs`). |
+| `ours` | | Auto-resolves conflicts in favor of local changes (`-Xours`). |
+| `manual` | | No `-X` flag. Git stops on conflicts for manual resolution. |
+
+### Per-package strategy
+
+Override the sync strategy for individual packages in `meldr.toml`:
+
+```toml
+[[package]]
+name = "vendor-lib"
+url = "https://github.com/org/vendor-lib.git"
+sync_strategy = "theirs"  # always take upstream for this package
+```
+
+### Sync safety features
+
+- **Pre-sync snapshots**: Before every sync, package HEAD SHAs are saved to `.meldr/sync-snapshots/`. Use `meldr sync --undo` to roll back.
+- **Conflict detection**: With the `safe` strategy (default), meldr checks for merge conflicts before attempting a sync using `git merge-tree --write-tree` (Git 2.38+).
+- **Parallel fetch**: All package fetches run in parallel for faster syncs.
+- **Summary table**: After sync, a color-coded table shows status, ahead/behind counts, and method for each package.
+- **Sync log**: Operations are logged to `.meldr/sync-log.jsonl` for debugging.
+
+The sync command auto-detects the default branch from the remote when possible, falling back to the configured `default_branch` (default: `main`). Per-package `branch`, `remote`, and `sync_strategy` overrides in `meldr.toml` are respected.

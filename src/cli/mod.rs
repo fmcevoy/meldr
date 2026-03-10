@@ -87,12 +87,24 @@ pub enum Commands {
         /// Sync all active worktrees
         #[arg(long)]
         all: bool,
-        /// Override merge strategy (theirs, ours, manual)
+        /// Override merge strategy (safe, theirs, ours, manual)
         #[arg(long)]
         strategy: Option<String>,
         /// Use merge instead of rebase
         #[arg(long)]
         merge: bool,
+        /// Preview what sync would do without making changes
+        #[arg(long)]
+        dry_run: bool,
+        /// Only sync these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages from sync (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Undo the last sync (reset to pre-sync state)
+        #[arg(long)]
+        undo: bool,
     },
 
     /// View or modify workspace configuration
