@@ -34,7 +34,15 @@
 
 - [ ] **Directory names** — hardcoded `"packages"`, `"worktrees"`, `".meldr"` in `workspace.rs` and `state.rs`. Configurable in `[workspace]` section. Requires threading config through all path helpers.
 
-## Priority 4 — Nice to Have
+## Priority 4 — Remote Control
+
+- [ ] **Create remote control sessions**
+  `meldr remote` creates a remote control session for a worktree, enabling external tools and editors to interact with the workspace remotely.
+
+- [ ] **Name remote control sessions after worktree**
+  Remote control sessions automatically inherit the name of the worktree they are associated with, making it easy to identify and manage multiple concurrent sessions.
+
+## Priority 5 — Nice to Have
 
 - [ ] **Topological task ordering**
   If packages have inter-dependencies, `meldr exec` runs commands in dependency order. Optional dependency declaration in `meldr.toml`.
