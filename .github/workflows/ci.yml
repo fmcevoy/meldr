@@ -36,11 +36,9 @@ jobs:
           toolchain: "1.88"
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: meldr
 
       - name: Build
-        run: cargo build --manifest-path meldr/Cargo.toml
+        run: cargo build
 
   lint:
     name: lint
@@ -54,11 +52,9 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: meldr
 
       - name: Clippy
-        run: cargo clippy --manifest-path meldr/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   format:
     name: format
@@ -72,7 +68,7 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --manifest-path meldr/Cargo.toml --check
+        run: cargo fmt --check
 
   # ── Stage 2: Unit tests (needs Stage 1) ─────────────────────────
 
@@ -88,8 +84,6 @@ jobs:
           toolchain: "1.88"
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: meldr
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y git tmux
@@ -100,7 +94,7 @@ jobs:
           git config --global user.name "CI"
 
       - name: Run unit tests
-        run: cargo test --manifest-path meldr/Cargo.toml --bin meldr
+        run: cargo test --bin meldr
 
   # ── Stage 3: All integration tests in Docker (needs Stage 2) ────
 
@@ -112,4 +106,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run all integration tests in Docker
-        run: cd meldr && ./run-docker-tests.sh
+        run: ./run-docker-tests.sh
