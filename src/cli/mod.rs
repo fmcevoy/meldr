@@ -4,6 +4,7 @@ pub mod exec;
 pub mod init;
 pub mod package;
 pub mod status;
+pub mod sync;
 pub mod worktree;
 
 use clap::{Parser, Subcommand};

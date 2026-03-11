@@ -35,7 +35,6 @@ fn setup_tmux_windows(
     manifest: &Manifest,
     workspace_root: &Path,
     branch: &str,
-    _pkg_names: &[String],
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
 ) -> Result<TmuxSetupResult> {
@@ -172,7 +171,6 @@ pub fn add_worktree(
             manifest,
             workspace_root,
             branch,
-            &created,
             config,
             global_config,
         )?
@@ -296,13 +294,11 @@ pub fn open_worktree(
         return Err(MeldrError::NotInTmux);
     }
 
-    let packages: Vec<String> = manifest.packages.iter().map(|p| p.name.clone()).collect();
     let setup = setup_tmux_windows(
         tmux,
         manifest,
         workspace_root,
         branch,
-        &packages,
         config,
         global_config,
     )?;
@@ -1544,7 +1540,7 @@ pub fn fetch_packages(
     for pkg in &manifest.packages {
         let repo_path = workspace::package_path(workspace_root, &pkg.name);
         let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-        println!("Fetching {}...", pkg.name);
+        eprintln!("Fetching {}...", pkg.name);
         git.fetch(&repo_path, remote)?;
     }
     Ok(())

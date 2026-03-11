@@ -28,7 +28,7 @@ pub fn run(
 
     let mut manifest = Manifest::new(name);
     if let Some(agent_name) = agent {
-        manifest.settings.agent = agent_name.to_string();
+        manifest.settings.agent = Some(agent_name.to_string());
     }
     manifest.save_initial(&workspace_root)?;
 

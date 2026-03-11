@@ -21,14 +21,14 @@ pub struct WorkspaceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub agent: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub mode: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_method: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_strategy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,10 +45,10 @@ pub struct Settings {
 
 impl Settings {
     pub fn is_empty(&self) -> bool {
-        self.agent.is_empty()
-            && self.mode.is_empty()
-            && self.sync_method.is_empty()
-            && self.sync_strategy.is_empty()
+        self.agent.is_none()
+            && self.mode.is_none()
+            && self.sync_method.is_none()
+            && self.sync_strategy.is_none()
             && self.editor.is_none()
             && self.default_branch.is_none()
             && self.remote.is_none()
@@ -258,10 +258,9 @@ pub fn detect_current_worktree_dir(workspace_root: &Path, cwd: &Path) -> Option<
 /// actual branch name by comparing against known branches.
 pub fn resolve_branch_from_dir<'a>(
     dir_name: &str,
-    branches: impl Iterator<Item = &'a str>,
+    mut branches: impl Iterator<Item = &'a str>,
 ) -> Option<String> {
     branches
-        .into_iter()
         .find(|b| sanitize_branch_for_dir(b) == dir_name)
         .map(|b| b.to_string())
 }

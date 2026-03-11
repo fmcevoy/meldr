@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::{MeldrError, Result};
+use crate::error::Result;
 
 /// A snapshot of package HEAD SHAs taken before a sync operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,8 +112,7 @@ pub fn append_log(workspace_root: &Path, entry: &SyncLogEntry) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
-        .map_err(MeldrError::Io)?;
+        .open(&path)?;
     writeln!(file, "{line}")?;
     Ok(())
 }

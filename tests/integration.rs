@@ -1243,7 +1243,7 @@ fn test_sync_all_no_worktrees_succeeds() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(
+        .stderr(predicate::str::contains(
             "No active worktrees. Fetching all packages",
         ));
 }

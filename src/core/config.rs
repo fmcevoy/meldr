@@ -227,17 +227,17 @@ pub fn resolve_config(
     }
 
     // Layer 3: Workspace settings
-    if !workspace_settings.agent.is_empty() {
-        config.agent = workspace_settings.agent.clone();
+    if let Some(ref v) = workspace_settings.agent {
+        config.agent = v.clone();
     }
-    if !workspace_settings.mode.is_empty() {
-        config.mode = workspace_settings.mode.clone();
+    if let Some(ref v) = workspace_settings.mode {
+        config.mode = v.clone();
     }
-    if !workspace_settings.sync_method.is_empty() {
-        config.sync_method = workspace_settings.sync_method.clone();
+    if let Some(ref v) = workspace_settings.sync_method {
+        config.sync_method = v.clone();
     }
-    if !workspace_settings.sync_strategy.is_empty() {
-        config.sync_strategy = workspace_settings.sync_strategy.clone();
+    if let Some(ref v) = workspace_settings.sync_strategy {
+        config.sync_strategy = v.clone();
     }
     if let Some(ref v) = workspace_settings.editor {
         config.editor = v.clone();
@@ -463,6 +463,28 @@ pub fn global_config_unset(key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Collect environment variable overrides relevant to meldr configuration.
+pub fn collect_env_overrides() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    for key in &[
+        "MELDR_AGENT",
+        "MELDR_MODE",
+        "MELDR_EDITOR",
+        "MELDR_DEFAULT_BRANCH",
+        "MELDR_REMOTE",
+        "MELDR_SHELL",
+        "MELDR_LAYOUT",
+        "VISUAL",
+        "EDITOR",
+        "SHELL",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            env.insert(key.to_string(), val);
+        }
+    }
+    env
+}
+
 pub fn global_config_list() -> Result<GlobalConfig> {
     ensure_global_config()?;
     load_global_config()
@@ -507,8 +529,8 @@ mod tests {
         };
 
         let workspace = Settings {
-            agent: "claude".to_string(),
-            mode: "no-tabs".to_string(),
+            agent: Some("claude".into()),
+            mode: Some("no-tabs".into()),
             ..Default::default()
         };
 
@@ -558,7 +580,7 @@ mod tests {
     fn test_env_overrides_workspace() {
         let global = GlobalConfig::default();
         let workspace = Settings {
-            agent: "cursor".to_string(),
+            agent: Some("cursor".into()),
             ..Default::default()
         };
 
@@ -589,7 +611,7 @@ mod tests {
     fn test_default_cursor_command_resolved() {
         let global = GlobalConfig::default();
         let workspace = Settings {
-            agent: "cursor".to_string(),
+            agent: Some("cursor".into()),
             ..Default::default()
         };
         let cli = CliOverrides::default();

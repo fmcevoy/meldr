@@ -27,6 +27,7 @@ pub trait GitOps: Send + Sync {
     fn reset_hard(&self, path: &Path, commit: &str) -> Result<()>;
 }
 
+#[derive(Default)]
 pub struct RealGit;
 
 impl RealGit {
@@ -122,25 +123,25 @@ impl GitOps for RealGit {
     }
 
     fn rebase(&self, path: &Path, onto: &str, strategy: &str, autostash: bool) -> Result<()> {
-        let mut args = vec!["rebase".to_string(), onto.to_string()];
+        let strategy_flag = format!("-X{strategy}");
+        let mut args = vec!["rebase", onto];
         if strategy != "manual" {
-            args.push(format!("-X{strategy}"));
+            args.push(&strategy_flag);
         }
         if autostash {
-            args.push("--autostash".to_string());
+            args.push("--autostash");
         }
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        Self::run(&arg_refs, path)?;
+        Self::run(&args, path)?;
         Ok(())
     }
 
     fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()> {
-        let mut args = vec!["merge".to_string(), branch.to_string()];
+        let strategy_flag = format!("-X{strategy}");
+        let mut args = vec!["merge", branch];
         if strategy != "manual" {
-            args.push(format!("-X{strategy}"));
+            args.push(&strategy_flag);
         }
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        Self::run(&arg_refs, path)?;
+        Self::run(&args, path)?;
         Ok(())
     }
 
