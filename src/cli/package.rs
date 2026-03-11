@@ -18,7 +18,7 @@ pub fn add(git: &dyn GitOps, workspace_root: &Path, urls: &[String]) -> Result<(
         // Create worktrees for newly added packages in all existing worktree branches
         let state = WorkspaceState::load(workspace_root)?;
         for branch in state.worktrees.keys() {
-            let branch_dir = workspace::worktrees_dir(workspace_root).join(branch);
+            let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
             std::fs::create_dir_all(&branch_dir)?;
 
             for pkg_name in &added {

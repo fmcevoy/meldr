@@ -5,7 +5,6 @@ mod git;
 mod tmux;
 mod trace;
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use clap::Parser;
@@ -150,133 +149,8 @@ fn run(cli: Cli) -> error::Result<()> {
         } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
-            let manifest = Manifest::load(&root)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
-
-            // Handle --undo
-            if undo {
-                let target_branch = resolve_sync_branch(&root, branch.as_deref(), &cwd)?;
-                let snapshot =
-                    core::sync_history::load_latest_snapshot(&root, &target_branch)?
-                        .ok_or_else(|| {
-                            error::MeldrError::NoSyncSnapshot(target_branch.clone())
-                        })?;
-
-                println!(
-                    "Undoing sync for '{}' (restoring to snapshot from {})",
-                    target_branch, snapshot.timestamp
-                );
-                let results =
-                    core::worktree::undo_sync(&git, &root, &target_branch, &snapshot)?;
-                for (pkg, result) in &results {
-                    match result {
-                        Ok(()) => println!("  {} reset to {}", pkg, &snapshot.packages[pkg][..8.min(snapshot.packages[pkg].len())]),
-                        Err(e) => eprintln!("  {} failed: {}", pkg, e),
-                    }
-                }
-                return Ok(());
-            }
-
-            let sync_options = core::worktree::SyncOptions {
-                method_override: if merge {
-                    Some("merge".to_string())
-                } else {
-                    None
-                },
-                strategy_override: strategy,
-                dry_run,
-                only,
-                exclude,
-            };
-
-            if dry_run {
-                println!("Dry run — no changes will be made.\n");
-            }
-
-            let branches_to_sync: Vec<String> = if all {
-                let state = core::state::WorkspaceState::load(&root)?;
-                state.worktrees.keys().cloned().collect()
-            } else {
-                let target = resolve_sync_branch(&root, branch.as_deref(), &cwd)?;
-                vec![target]
-            };
-
-            // When no worktrees exist, still fetch all packages
-            if branches_to_sync.is_empty() {
-                println!("No active worktrees. Fetching all packages...\n");
-                for pkg in &manifest.packages {
-                    let repo_path = workspace::package_path(&root, &pkg.name);
-                    let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-                    eprint!("  Fetching {} ... ", pkg.name);
-                    match git.fetch(&repo_path, remote) {
-                        Ok(()) => eprintln!("done"),
-                        Err(e) => eprintln!("failed: {}", e),
-                    }
-                }
-                return Ok(());
-            }
-
-            for branch_name in &branches_to_sync {
-                if branches_to_sync.len() > 1 {
-                    println!("--- Worktree '{}' ---", branch_name);
-                }
-
-                // Save pre-sync snapshot (unless dry run)
-                if !dry_run {
-                    let mut pkg_heads = std::collections::HashMap::new();
-                    for pkg in &manifest.packages {
-                        let wt_path =
-                            workspace::worktree_path(&root, branch_name, &pkg.name);
-                        if wt_path.exists() {
-                            if let Ok(sha) = git.current_head(&wt_path) {
-                                pkg_heads.insert(pkg.name.clone(), sha);
-                            }
-                        }
-                    }
-                    if !pkg_heads.is_empty() {
-                        let snapshot = core::sync_history::SyncSnapshot {
-                            timestamp: core::sync_history::unix_timestamp(),
-                            branch: branch_name.clone(),
-                            packages: pkg_heads,
-                        };
-                        let _ = core::sync_history::save_snapshot(&root, &snapshot);
-                        let _ = core::sync_history::prune_snapshots(&root, 10);
-                    }
-                }
-
-                let outcomes = core::worktree::sync_worktree(
-                    &git,
-                    &manifest,
-                    &root,
-                    branch_name,
-                    &config,
-                    &sync_options,
-                )?;
-
-                // Log the sync
-                if !dry_run {
-                    let log_entry = core::sync_history::SyncLogEntry {
-                        timestamp: core::sync_history::unix_timestamp(),
-                        branch: branch_name.clone(),
-                        outcomes: outcomes
-                            .iter()
-                            .map(|o| core::sync_history::PackageSyncLogEntry {
-                                package: o.package.clone(),
-                                status: o.status.to_string(),
-                                method: o.method.clone(),
-                                ahead: o.ahead,
-                                behind: o.behind,
-                            })
-                            .collect(),
-                    };
-                    let _ = core::sync_history::append_log(&root, &log_entry);
-                }
-
-                // Print summary table
-                print_sync_summary(&outcomes, dry_run);
-            }
-
-            Ok(())
+            cli::sync::run(&git, &root, &cwd, &config, branch, all, strategy, merge, dry_run, only, exclude, undo)
         }
 
         Commands::Config { action } => {
@@ -340,131 +214,6 @@ fn warn_if_out_of_sync(git: &dyn GitOps, root: &Path, config: &config::Effective
     );
 }
 
-fn resolve_sync_branch(
-    root: &Path,
-    branch: Option<&str>,
-    cwd: &Path,
-) -> error::Result<String> {
-    if let Some(b) = branch {
-        return Ok(b.to_string());
-    }
-    let dir_name = workspace::detect_current_worktree_dir(root, cwd);
-    let state = core::state::WorkspaceState::load(root)?;
-    dir_name
-        .and_then(|d| {
-            workspace::resolve_branch_from_dir(&d, state.worktrees.keys().map(|s| s.as_str()))
-        })
-        .ok_or_else(|| {
-            error::MeldrError::Config(
-                "Could not detect current worktree. Specify a branch or use --all.".to_string(),
-            )
-        })
-}
-
-fn print_sync_summary(outcomes: &[core::worktree::PackageSyncOutcome], dry_run: bool) {
-    use console::style;
-    use core::worktree::SyncStatus;
-
-    let label = if dry_run { "Would" } else { "Sync" };
-
-    println!();
-    println!(
-        "  {:<20} {:<16} {:>6} {:>7}  {}",
-        style("Package").bold(),
-        style("Status").bold(),
-        style("Ahead").bold(),
-        style("Behind").bold(),
-        style("Method").bold(),
-    );
-    println!("  {}", "-".repeat(66));
-
-    for o in outcomes {
-        let status_str = match &o.status {
-            SyncStatus::Synced => style("synced".to_string()).green().to_string(),
-            SyncStatus::UpToDate => style("up-to-date".to_string()).green().to_string(),
-            SyncStatus::Skipped(r) => style(format!("{}", r)).yellow().to_string(),
-            SyncStatus::Conflict(files) => {
-                style(format!("conflict ({})", files.len())).red().to_string()
-            }
-            SyncStatus::Failed(msg) => {
-                let short = if msg.len() > 30 {
-                    format!("{}...", &msg[..27])
-                } else {
-                    msg.clone()
-                };
-                style(format!("{}", short)).red().to_string()
-            }
-        };
-
-        let ahead = o
-            .ahead
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let behind = o
-            .behind
-            .map(|b| b.to_string())
-            .unwrap_or_else(|| "-".to_string());
-
-        println!(
-            "  {:<20} {:<16} {:>6} {:>7}  {}",
-            o.package, status_str, ahead, behind, o.method,
-        );
-    }
-
-    // Print conflict details
-    let conflicts: Vec<_> = outcomes
-        .iter()
-        .filter(|o| matches!(&o.status, SyncStatus::Conflict(_)))
-        .collect();
-    if !conflicts.is_empty() {
-        println!();
-        for o in conflicts {
-            if let SyncStatus::Conflict(files) = &o.status {
-                eprintln!(
-                    "  {} has conflicts in: {}",
-                    style(&o.package).red().bold(),
-                    files.join(", ")
-                );
-            }
-        }
-        eprintln!();
-        eprintln!(
-            "  {}",
-            style("Use --strategy theirs to auto-resolve in favor of upstream,").dim()
-        );
-        eprintln!(
-            "  {}",
-            style("or --strategy manual to attempt merge and resolve manually.").dim()
-        );
-    }
-
-    println!();
-    println!(
-        "  {} summary: {} synced, {} up-to-date, {} conflicts, {} skipped, {} failed",
-        label,
-        outcomes
-            .iter()
-            .filter(|o| o.status == SyncStatus::Synced)
-            .count(),
-        outcomes
-            .iter()
-            .filter(|o| o.status == SyncStatus::UpToDate)
-            .count(),
-        outcomes
-            .iter()
-            .filter(|o| matches!(o.status, SyncStatus::Conflict(_)))
-            .count(),
-        outcomes
-            .iter()
-            .filter(|o| matches!(o.status, SyncStatus::Skipped(_)))
-            .count(),
-        outcomes
-            .iter()
-            .filter(|o| matches!(o.status, SyncStatus::Failed(_)))
-            .count(),
-    );
-}
-
 fn build_effective_config(
     workspace_root: &Path,
     cli_overrides: &CliOverrides,
@@ -472,23 +221,7 @@ fn build_effective_config(
     let global = config::load_global_config()?;
     let manifest = Manifest::load(workspace_root)?;
 
-    let mut env_overrides = HashMap::new();
-    for key in &[
-        "MELDR_AGENT",
-        "MELDR_MODE",
-        "MELDR_EDITOR",
-        "MELDR_DEFAULT_BRANCH",
-        "MELDR_REMOTE",
-        "MELDR_SHELL",
-        "MELDR_LAYOUT",
-        "VISUAL",
-        "EDITOR",
-        "SHELL",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            env_overrides.insert(key.to_string(), val);
-        }
-    }
+    let env_overrides = config::collect_env_overrides();
 
     let effective = config::resolve_config(
         &global,

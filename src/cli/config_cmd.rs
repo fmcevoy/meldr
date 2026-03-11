@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::core::config::{self, CliOverrides};
@@ -62,7 +61,7 @@ pub fn list(workspace_root: Option<&Path>, global: bool) -> Result<()> {
         let global_cfg = config::load_global_config()?;
         let manifest = Manifest::load(root)?;
         let cli = CliOverrides::default();
-        let env = HashMap::new();
+        let env = config::collect_env_overrides();
         let effective = config::resolve_config(&global_cfg, &manifest.settings, &cli, &env);
 
         println!("Effective configuration:");
@@ -128,10 +127,10 @@ fn print_opt(label: &str, val: &Option<String>) {
 
 fn ws_setting(settings: &crate::core::workspace::Settings, key: &str) -> Option<String> {
     match key {
-        "agent" if !settings.agent.is_empty() => Some(settings.agent.clone()),
-        "mode" if !settings.mode.is_empty() => Some(settings.mode.clone()),
-        "sync_method" if !settings.sync_method.is_empty() => Some(settings.sync_method.clone()),
-        "sync_strategy" if !settings.sync_strategy.is_empty() => Some(settings.sync_strategy.clone()),
+        "agent" => settings.agent.clone(),
+        "mode" => settings.mode.clone(),
+        "sync_method" => settings.sync_method.clone(),
+        "sync_strategy" => settings.sync_strategy.clone(),
         "editor" => settings.editor.clone(),
         "default_branch" => settings.default_branch.clone(),
         "remote" => settings.remote.clone(),
