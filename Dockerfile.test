@@ -1,0 +1,45 @@
+# Docker image for running ALL meldr integration tests.
+# Pre-clones repos at build time (cached layer) so tests are fast.
+# Runs both integration.rs (local bare repos) and docker_integration.rs (real GitHub repos).
+#
+# Usage:
+#   ./run-docker-tests.sh           # run all integration tests
+#   ./run-docker-tests.sh <filter>  # run tests matching <filter>
+
+FROM rust:1.88-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    pkg-config \
+    tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure git for test operations
+RUN git config --global user.email "test@meldr.dev" && \
+    git config --global user.name "Meldr Test" && \
+    git config --global init.defaultBranch main
+
+# Pre-clone small, well-known GitHub repos (cached Docker layer).
+# All are official GitHub octocat repos — guaranteed public and stable.
+# Each test copies these to temp dirs so mutations are isolated.
+RUN mkdir -p /test-repos && \
+    git clone --bare https://github.com/octocat/Hello-World.git /test-repos/hello-world.git && \
+    git clone --bare https://github.com/octocat/Spoon-Knife.git /test-repos/spoon-knife.git && \
+    git clone --bare https://github.com/octocat/git-consortium.git /test-repos/git-consortium.git && \
+    git clone --bare https://github.com/octocat/boysenberry-repo-1.git /test-repos/boysenberry-repo-1.git
+
+WORKDIR /app
+
+# Cache dependency compilation by copying manifests first
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && \
+    cargo build --tests 2>/dev/null || true && \
+    rm -rf src
+
+# Copy full source and build
+COPY . .
+RUN cargo build --tests
+
+# Default: run ALL integration tests with high parallelism
+ENV MELDR_TEST_REPOS=/test-repos
+CMD ["cargo", "test", "--test", "docker_integration", "--test", "integration", "--", "--test-threads=8"]

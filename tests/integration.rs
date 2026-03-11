@@ -28,7 +28,7 @@ fn create_bare_repo(dir: &std::path::Path, name: &str) -> String {
         .unwrap();
 
     // Create a temporary clone to add an initial commit
-    let tmp_clone = dir.join(format!("{}-tmp", name));
+    let tmp_clone = dir.join(format!("{name}-tmp"));
     process::Command::new("git")
         .args([
             "clone",
@@ -215,7 +215,22 @@ fn test_worktree_add_no_tabs() {
         .success()
         .stdout(predicate::str::contains("Created worktree 'feature-test'"));
 
-    assert!(tmp.path().join("worktrees/feature-test/frontend").exists());
+    let wt_dir = tmp.path().join("worktrees/feature-test/frontend");
+    assert!(wt_dir.exists(), "Worktree dir should exist on filesystem");
+    assert!(
+        wt_dir.join(".git").exists(),
+        "Worktree should have a .git file (git worktree link)"
+    );
+
+    // Verify checked-out files exist
+    let entries: Vec<_> = fs::read_dir(&wt_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "Worktree should contain checked-out files"
+    );
 }
 
 #[test]
@@ -238,12 +253,30 @@ fn test_worktree_remove_no_tabs() {
         .assert()
         .success();
 
+    let wt_dir = tmp.path().join("worktrees/feature-rm");
+    let wt_pkg_dir = wt_dir.join("frontend");
+    assert!(wt_dir.exists(), "Worktree dir should exist before remove");
+    assert!(
+        wt_pkg_dir.exists(),
+        "Worktree package dir should exist before remove"
+    );
+
     meldr()
         .args(["--no-tabs", "worktree", "remove", "feature-rm"])
         .current_dir(tmp.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("Removed worktree 'feature-rm'"));
+
+    // Verify the directory is actually gone after remove
+    assert!(
+        !wt_dir.exists(),
+        "Worktree directory should be gone after remove"
+    );
+    assert!(
+        !wt_pkg_dir.exists(),
+        "Worktree package dir should be gone after remove"
+    );
 }
 
 #[test]
@@ -367,9 +400,7 @@ fn test_exec_from_worktree() {
         .current_dir(&wt_dir)
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("[frontend] hello"),
-        );
+        .stdout(predicate::str::contains("[frontend] hello"));
 }
 
 #[test]
@@ -458,9 +489,7 @@ fn test_exec_from_worktree_root() {
         .current_dir(&wt_root)
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("[frontend] from-root"),
-        );
+        .stdout(predicate::str::contains("[frontend] from-root"));
 }
 
 #[test]
@@ -545,6 +574,13 @@ fn test_config_set_and_get() {
         .assert()
         .success()
         .stdout(predicate::str::contains("cursor"));
+
+    // Verify the config file on disk contains the expected value
+    let toml_content = fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+    assert!(
+        toml_content.contains("cursor"),
+        "meldr.toml should contain 'cursor' after config set, got: {toml_content}"
+    );
 }
 
 #[test]
@@ -819,10 +855,7 @@ fn test_worktree_add_with_slash_branch() {
         .stdout(predicate::str::contains("Created worktree 'fm/whatever'"));
 
     // Directory should use sanitized name (/ replaced with -)
-    assert!(tmp
-        .path()
-        .join("worktrees/fm-whatever/frontend")
-        .exists());
+    assert!(tmp.path().join("worktrees/fm-whatever/frontend").exists());
     // Should NOT have a nested fm/whatever directory
     assert!(!tmp.path().join("worktrees/fm/whatever").exists());
 }
@@ -899,7 +932,9 @@ fn test_worktree_remove_no_branch_outside_worktree_fails() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Could not detect current worktree"));
+        .stderr(predicate::str::contains(
+            "Could not detect current worktree",
+        ));
 }
 
 #[test]
@@ -1008,7 +1043,7 @@ fn test_config_set_new_keys() {
             .current_dir(tmp.path())
             .assert()
             .success()
-            .stdout(predicate::str::contains(format!("Set {} = {}", key, value)));
+            .stdout(predicate::str::contains(format!("Set {key} = {value}")));
 
         meldr()
             .args(["config", "get", key])
@@ -1113,8 +1148,7 @@ fn test_bare_clone_has_remote_tracking_refs() {
     let refspec_str = String::from_utf8_lossy(&refspec.stdout);
     assert!(
         refspec_str.contains("+refs/heads/*:refs/remotes/origin/*"),
-        "Bare clone should have fetch refspec for remote tracking, got: {}",
-        refspec_str
+        "Bare clone should have fetch refspec for remote tracking, got: {refspec_str}"
     );
 
     // Verify refs/remotes/origin/HEAD is set
@@ -1130,8 +1164,7 @@ fn test_bare_clone_has_remote_tracking_refs() {
     let head_str = String::from_utf8_lossy(&head_ref.stdout);
     assert!(
         head_str.contains("refs/remotes/origin/"),
-        "HEAD should point to a remote tracking ref, got: {}",
-        head_str
+        "HEAD should point to a remote tracking ref, got: {head_str}"
     );
 
     // Verify refs/remotes/origin/main exists
@@ -1185,7 +1218,9 @@ fn test_sync_no_worktrees_at_root() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Could not detect current worktree"));
+        .stderr(predicate::str::contains(
+            "Could not detect current worktree",
+        ));
 }
 
 #[test]
@@ -1208,7 +1243,9 @@ fn test_sync_all_no_worktrees_succeeds() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No active worktrees. Fetching all packages"));
+        .stdout(predicate::str::contains(
+            "No active worktrees. Fetching all packages",
+        ));
 }
 
 #[test]
@@ -1237,7 +1274,9 @@ fn test_sync_at_workspace_root_with_worktrees() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Could not detect current worktree"));
+        .stderr(predicate::str::contains(
+            "Could not detect current worktree",
+        ));
 }
 
 #[test]
@@ -1266,10 +1305,7 @@ fn test_sync_all_with_worktrees() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("frontend")
-                .and(predicate::str::contains("up-to-date")),
-        );
+        .stdout(predicate::str::contains("frontend").and(predicate::str::contains("up-to-date")));
 }
 
 #[test]
@@ -1322,13 +1358,23 @@ fn test_out_of_sync_warning_on_status() {
         .output()
         .unwrap();
 
-    // Now `status` should show the warning
-    meldr()
+    // Now `status` should show the warning with specific staleness info
+    let output = meldr()
         .args(["status"])
         .current_dir(tmp.path())
         .assert()
-        .success()
-        .stderr(predicate::str::contains("behind"));
+        .success();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("behind"),
+        "Status should warn about being behind, got stderr: {stderr}"
+    );
+    // Staleness warning should mention the package name
+    assert!(
+        stderr.contains("frontend"),
+        "Staleness warning should mention the package name 'frontend', got stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -1732,7 +1778,7 @@ fn push_upstream_commit(bare_repo_path: &std::path::Path, filename: &str, conten
         .output()
         .unwrap();
     process::Command::new("git")
-        .args(["commit", "-m", &format!("add {}", filename)])
+        .args(["commit", "-m", &format!("add {filename}")])
         .current_dir(&tmp_clone_dir)
         .output()
         .unwrap();
@@ -1775,6 +1821,9 @@ fn test_sync_basic() {
         .assert()
         .success();
 
+    let wt_path = tmp.path().join("worktrees/feature-test/frontend");
+    let head_before = git_head(&wt_path);
+
     // Push an upstream commit so there is something to sync
     push_upstream_commit(
         std::path::Path::new(&repo_url),
@@ -1792,6 +1841,19 @@ fn test_sync_basic() {
                 .and(predicate::str::contains("Package"))
                 .and(predicate::str::contains("Status")),
         );
+
+    // HEAD SHA should have changed after sync
+    let head_after = git_head(&wt_path);
+    assert_ne!(
+        head_before, head_after,
+        "HEAD should have changed after syncing upstream changes"
+    );
+
+    // The new file should exist in the worktree
+    assert!(
+        wt_path.join("new-file.txt").exists(),
+        "Synced file should exist in worktree"
+    );
 }
 
 #[test]
@@ -1861,21 +1923,31 @@ fn test_sync_all() {
         .assert()
         .success();
 
-    push_upstream_commit(
-        std::path::Path::new(&repo_url),
-        "all-file.txt",
-        "sync all",
-    );
+    let wt_a = tmp.path().join("worktrees/branch-a/frontend");
+    let wt_b = tmp.path().join("worktrees/branch-b/frontend");
+    let head_a_before = git_head(&wt_a);
+    let head_b_before = git_head(&wt_b);
+
+    push_upstream_commit(std::path::Path::new(&repo_url), "all-file.txt", "sync all");
 
     meldr()
         .args(["--no-tabs", "sync", "--all"])
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("branch-a")
-                .and(predicate::str::contains("branch-b")),
-        );
+        .stdout(predicate::str::contains("branch-a").and(predicate::str::contains("branch-b")));
+
+    // HEAD SHA should have changed for both worktrees
+    let head_a_after = git_head(&wt_a);
+    let head_b_after = git_head(&wt_b);
+    assert_ne!(
+        head_a_before, head_a_after,
+        "branch-a HEAD should have changed after sync --all"
+    );
+    assert_ne!(
+        head_b_before, head_b_after,
+        "branch-b HEAD should have changed after sync --all"
+    );
 }
 
 #[test]
@@ -1898,6 +1970,9 @@ fn test_sync_with_strategy_theirs() {
         .assert()
         .success();
 
+    let wt_path = tmp.path().join("worktrees/feature-test/frontend");
+    let head_before = git_head(&wt_path);
+
     push_upstream_commit(
         std::path::Path::new(&repo_url),
         "theirs-file.txt",
@@ -1910,6 +1985,19 @@ fn test_sync_with_strategy_theirs() {
         .assert()
         .success()
         .stdout(predicate::str::contains("synced"));
+
+    // HEAD SHA should have changed after sync
+    let head_after = git_head(&wt_path);
+    assert_ne!(
+        head_before, head_after,
+        "HEAD should have changed after syncing with theirs strategy"
+    );
+
+    // The synced file should exist
+    assert!(
+        wt_path.join("theirs-file.txt").exists(),
+        "Synced file should exist after theirs strategy sync"
+    );
 }
 
 #[test]
@@ -1944,14 +2032,13 @@ fn test_sync_only_filter() {
         "only backend",
     );
 
+    let wt_fe = tmp.path().join("worktrees/feature-test/frontend");
+    let wt_be = tmp.path().join("worktrees/feature-test/backend");
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
     let output = meldr()
-        .args([
-            "--no-tabs",
-            "sync",
-            "feature-test",
-            "--only",
-            "frontend",
-        ])
+        .args(["--no-tabs", "sync", "feature-test", "--only", "frontend"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -1960,6 +2047,18 @@ fn test_sync_only_filter() {
     assert!(
         stdout.contains("frontend"),
         "Output should mention frontend"
+    );
+
+    // frontend HEAD should have changed, backend should not
+    let head_fe_after = git_head(&wt_fe);
+    let head_be_after = git_head(&wt_be);
+    assert_ne!(
+        head_fe_before, head_fe_after,
+        "frontend HEAD should change when synced with --only frontend"
+    );
+    assert_eq!(
+        head_be_before, head_be_after,
+        "backend HEAD should NOT change when synced with --only frontend"
     );
 }
 
@@ -1995,14 +2094,13 @@ fn test_sync_exclude_filter() {
         "exclude test be",
     );
 
+    let wt_fe = tmp.path().join("worktrees/feature-test/frontend");
+    let wt_be = tmp.path().join("worktrees/feature-test/backend");
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
     let output = meldr()
-        .args([
-            "--no-tabs",
-            "sync",
-            "feature-test",
-            "--exclude",
-            "backend",
-        ])
+        .args(["--no-tabs", "sync", "feature-test", "--exclude", "backend"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -2011,6 +2109,18 @@ fn test_sync_exclude_filter() {
     assert!(
         stdout.contains("frontend"),
         "Output should mention frontend"
+    );
+
+    // frontend HEAD should have changed, backend should not
+    let head_fe_after = git_head(&wt_fe);
+    let head_be_after = git_head(&wt_be);
+    assert_ne!(
+        head_fe_before, head_fe_after,
+        "frontend HEAD should change when synced with --exclude backend"
+    );
+    assert_eq!(
+        head_be_before, head_be_after,
+        "backend HEAD should NOT change when excluded"
     );
 }
 
@@ -2053,10 +2163,7 @@ fn test_sync_undo() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("Undoing")
-                .and(predicate::str::contains("reset to")),
-        );
+        .stdout(predicate::str::contains("Undoing").and(predicate::str::contains("reset to")));
 }
 
 #[test]

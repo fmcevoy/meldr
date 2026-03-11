@@ -27,7 +27,7 @@ pub fn add(
         config,
         global_config,
     )?;
-    println!("Created worktree '{}'", branch);
+    println!("Created worktree '{branch}'");
     Ok(())
 }
 
@@ -49,7 +49,7 @@ pub fn remove(
         branch,
         force,
     )?;
-    println!("Removed worktree '{}'", branch);
+    println!("Removed worktree '{branch}'");
     Ok(())
 }
 

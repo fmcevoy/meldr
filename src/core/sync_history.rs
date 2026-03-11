@@ -53,10 +53,7 @@ pub fn save_snapshot(workspace_root: &Path, snapshot: &SyncSnapshot) -> Result<(
     Ok(())
 }
 
-pub fn load_latest_snapshot(
-    workspace_root: &Path,
-    branch: &str,
-) -> Result<Option<SyncSnapshot>> {
+pub fn load_latest_snapshot(workspace_root: &Path, branch: &str) -> Result<Option<SyncSnapshot>> {
     let dir = snapshots_dir(workspace_root);
     if !dir.exists() {
         return Ok(None);
@@ -116,8 +113,8 @@ pub fn append_log(workspace_root: &Path, entry: &SyncLogEntry) -> Result<()> {
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|e| MeldrError::Io(e))?;
-    writeln!(file, "{}", line)?;
+        .map_err(MeldrError::Io)?;
+    writeln!(file, "{line}")?;
     Ok(())
 }
 
@@ -241,11 +238,26 @@ mod tests {
         prune_snapshots(root, 2).unwrap();
 
         let dir = snapshots_dir(root);
-        let remaining: Vec<_> = std::fs::read_dir(&dir)
+        let mut remaining: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
+        remaining.sort();
         assert_eq!(remaining.len(), 2);
+        // The two newest snapshots (4000, 5000) should be kept
+        assert_eq!(remaining, vec!["4000.json", "5000.json"]);
+
+        // Verify the oldest snapshots were actually removed
+        assert!(!dir.join("1000.json").exists());
+        assert!(!dir.join("2000.json").exists());
+        assert!(!dir.join("3000.json").exists());
+
+        // Verify kept files are valid and contain expected data
+        let content = std::fs::read_to_string(dir.join("5000.json")).unwrap();
+        let snap: SyncSnapshot = serde_json::from_str(&content).unwrap();
+        assert_eq!(snap.timestamp, 5000);
+        assert_eq!(snap.branch, "main");
     }
 
     #[test]
@@ -272,6 +284,31 @@ mod tests {
         let content = std::fs::read_to_string(sync_log_path(root)).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
+
+        // Each line should be valid JSON
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+
+            // Verify expected top-level fields
+            assert_eq!(parsed["timestamp"], 1000);
+            assert_eq!(parsed["branch"], "feature-x");
+
+            // Verify outcomes array
+            let outcomes = parsed["outcomes"].as_array().unwrap();
+            assert_eq!(outcomes.len(), 1);
+            assert_eq!(outcomes[0]["package"], "frontend");
+            assert_eq!(outcomes[0]["status"], "synced");
+            assert_eq!(outcomes[0]["method"], "rebase");
+            assert_eq!(outcomes[0]["ahead"], 0);
+            assert_eq!(outcomes[0]["behind"], 3);
+        }
+
+        // Verify each line can be deserialized back to SyncLogEntry
+        let deserialized: SyncLogEntry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(deserialized.branch, "feature-x");
+        assert_eq!(deserialized.outcomes[0].package, "frontend");
+        assert_eq!(deserialized.outcomes[0].ahead, Some(0));
+        assert_eq!(deserialized.outcomes[0].behind, Some(3));
     }
 
     #[test]

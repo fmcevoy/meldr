@@ -84,8 +84,7 @@ pub fn run(
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            let _ = stdout_tx
-                                .send(OutputLine::Stdout(stdout_name.clone(), l));
+                            let _ = stdout_tx.send(OutputLine::Stdout(stdout_name.clone(), l));
                         }
                         Err(_) => break,
                     }
@@ -99,8 +98,7 @@ pub fn run(
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            let _ = stderr_tx
-                                .send(OutputLine::Stderr(stderr_name.clone(), l));
+                            let _ = stderr_tx.send(OutputLine::Stderr(stderr_name.clone(), l));
                         }
                         Err(_) => break,
                     }
@@ -121,16 +119,16 @@ pub fn run(
     for msg in rx {
         match msg {
             OutputLine::Stdout(name, line) => {
-                println!("[{}] {}", name, line);
+                println!("[{name}] {line}");
             }
             OutputLine::Stderr(name, line) => {
-                eprintln!("[{}] {}", name, line);
+                eprintln!("[{name}] {line}");
             }
             OutputLine::Done(name, status) => {
-                if let Some(code) = status {
-                    if code != 0 {
-                        eprintln!("[{}] exited with code {}", name, code);
-                    }
+                if let Some(code) = status
+                    && code != 0
+                {
+                    eprintln!("[{name}] exited with code {code}");
                 }
                 completed += 1;
                 if completed == pkg_count {
@@ -138,7 +136,7 @@ pub fn run(
                 }
             }
             OutputLine::Error(name, err) => {
-                eprintln!("[{}] failed to execute: {}", name, err);
+                eprintln!("[{name}] failed to execute: {err}");
                 completed += 1;
                 if completed == pkg_count {
                     break;
