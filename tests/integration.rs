@@ -2314,8 +2314,7 @@ fn make_local_commit(wt_path: &std::path::Path, filename: &str, content: &str) {
 
 #[test]
 fn test_sync_multiple_packages_with_upstream_changes() {
-    let (tmp, _repos_dir, frontend_bare, backend_bare) =
-        setup_two_package_workspace("feat-multi");
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-multi");
 
     let wt_fe = tmp.path().join("worktrees/feat-multi/frontend");
     let wt_be = tmp.path().join("worktrees/feat-multi/backend");
@@ -2348,8 +2347,7 @@ fn test_sync_multiple_packages_with_upstream_changes() {
 
 #[test]
 fn test_sync_all_multiple_packages_with_upstream_changes() {
-    let (tmp, _repos_dir, frontend_bare, backend_bare) =
-        setup_two_package_workspace("branch-x");
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("branch-x");
 
     // Add a second worktree
     meldr()
@@ -2425,10 +2423,7 @@ fn test_sync_with_merge_method() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("synced")
-                .and(predicate::str::contains("merge")),
-        );
+        .stdout(predicate::str::contains("synced").and(predicate::str::contains("merge")));
 
     assert_ne!(head_before, git_head(&wt_path));
     assert!(wt_path.join("merge-file.txt").exists());
@@ -2609,9 +2604,7 @@ fn test_sync_all_from_worktree_cwd() {
         .current_dir(&wt_a)
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("wt-a").and(predicate::str::contains("wt-b")),
-        );
+        .stdout(predicate::str::contains("wt-a").and(predicate::str::contains("wt-b")));
 
     assert!(wt_a.join("from-inside.txt").exists());
     assert!(wt_b.join("from-inside.txt").exists());
@@ -2688,11 +2681,7 @@ fn test_sync_sequential_syncs() {
     let wt_path = tmp.path().join("worktrees/feat-seq/frontend");
 
     // First upstream change + sync
-    push_upstream_commit(
-        std::path::Path::new(&repo_url),
-        "seq-1.txt",
-        "first change",
-    );
+    push_upstream_commit(std::path::Path::new(&repo_url), "seq-1.txt", "first change");
 
     meldr()
         .args(["--no-tabs", "sync", "feat-seq"])
@@ -2816,7 +2805,10 @@ fn test_sync_undo_restores_head() {
         .success();
 
     let head_after_sync = git_head(&wt_path);
-    assert_ne!(head_before_sync, head_after_sync, "sync should advance HEAD");
+    assert_ne!(
+        head_before_sync, head_after_sync,
+        "sync should advance HEAD"
+    );
 
     // Undo should restore to pre-sync state
     meldr()
@@ -2834,8 +2826,7 @@ fn test_sync_undo_restores_head() {
 
 #[test]
 fn test_sync_only_with_multiple_packages() {
-    let (tmp, _repos_dir, frontend_bare, backend_bare) =
-        setup_two_package_workspace("feat-only2");
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-only2");
 
     let wt_fe = tmp.path().join("worktrees/feat-only2/frontend");
     let wt_be = tmp.path().join("worktrees/feat-only2/backend");
@@ -2868,8 +2859,7 @@ fn test_sync_only_with_multiple_packages() {
 
 #[test]
 fn test_sync_exclude_with_multiple_packages() {
-    let (tmp, _repos_dir, frontend_bare, backend_bare) =
-        setup_two_package_workspace("feat-excl2");
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-excl2");
 
     let wt_fe = tmp.path().join("worktrees/feat-excl2/frontend");
     let wt_be = tmp.path().join("worktrees/feat-excl2/backend");
@@ -2882,13 +2872,7 @@ fn test_sync_exclude_with_multiple_packages() {
 
     // Exclude frontend
     meldr()
-        .args([
-            "--no-tabs",
-            "sync",
-            "feat-excl2",
-            "--exclude",
-            "frontend",
-        ])
+        .args(["--no-tabs", "sync", "feat-excl2", "--exclude", "frontend"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -2991,10 +2975,7 @@ fn test_sync_merge_with_local_commits() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("synced")
-                .and(predicate::str::contains("merge")),
-        );
+        .stdout(predicate::str::contains("synced").and(predicate::str::contains("merge")));
 
     // Both files should exist
     assert!(
@@ -3009,8 +2990,7 @@ fn test_sync_merge_with_local_commits() {
 
 #[test]
 fn test_sync_snapshot_contains_correct_data() {
-    let (tmp, _repos_dir, frontend_bare, backend_bare) =
-        setup_two_package_workspace("feat-snap");
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-snap");
 
     let wt_fe = tmp.path().join("worktrees/feat-snap/frontend");
     let wt_be = tmp.path().join("worktrees/feat-snap/backend");
