@@ -2257,3 +2257,778 @@ fn test_sync_creates_snapshot() {
         "There should be at least one snapshot file"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Robust sync tests — multi-package, merge method, diverged state, edge cases
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a workspace with two packages (frontend + backend) and a worktree.
+/// Returns (tmp_dir, repos_dir, frontend_bare_path, backend_bare_path).
+fn setup_two_package_workspace(
+    branch: &str,
+) -> (TempDir, TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let frontend_url = create_bare_repo(repos_dir.path(), "frontend");
+    let backend_url = create_bare_repo(repos_dir.path(), "backend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &frontend_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["package", "add", &backend_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", branch])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let frontend_bare = std::path::PathBuf::from(&frontend_url);
+    let backend_bare = std::path::PathBuf::from(&backend_url);
+    (tmp, repos_dir, frontend_bare, backend_bare)
+}
+
+/// Helper: create a local commit in a worktree directory.
+fn make_local_commit(wt_path: &std::path::Path, filename: &str, content: &str) {
+    fs::write(wt_path.join(filename), content).unwrap();
+    process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(wt_path)
+        .output()
+        .unwrap();
+    process::Command::new("git")
+        .args(["commit", "-m", &format!("local: add {filename}")])
+        .current_dir(wt_path)
+        .output()
+        .unwrap();
+}
+
+#[test]
+fn test_sync_multiple_packages_with_upstream_changes() {
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-multi");
+
+    let wt_fe = tmp.path().join("worktrees/feat-multi/frontend");
+    let wt_be = tmp.path().join("worktrees/feat-multi/backend");
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
+    // Push upstream changes to both repos
+    push_upstream_commit(&frontend_bare, "fe-update.txt", "frontend upstream");
+    push_upstream_commit(&backend_bare, "be-update.txt", "backend upstream");
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-multi"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("frontend")
+                .and(predicate::str::contains("backend"))
+                .and(predicate::str::contains("synced")),
+        );
+
+    // Both packages should have advanced
+    assert_ne!(head_fe_before, git_head(&wt_fe), "frontend should sync");
+    assert_ne!(head_be_before, git_head(&wt_be), "backend should sync");
+
+    // Files should exist in worktrees
+    assert!(wt_fe.join("fe-update.txt").exists());
+    assert!(wt_be.join("be-update.txt").exists());
+}
+
+#[test]
+fn test_sync_all_multiple_packages_with_upstream_changes() {
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("branch-x");
+
+    // Add a second worktree
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "branch-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_x_fe = tmp.path().join("worktrees/branch-x/frontend");
+    let wt_x_be = tmp.path().join("worktrees/branch-x/backend");
+    let wt_y_fe = tmp.path().join("worktrees/branch-y/frontend");
+    let wt_y_be = tmp.path().join("worktrees/branch-y/backend");
+
+    let heads_before = (
+        git_head(&wt_x_fe),
+        git_head(&wt_x_be),
+        git_head(&wt_y_fe),
+        git_head(&wt_y_be),
+    );
+
+    push_upstream_commit(&frontend_bare, "all-fe.txt", "all sync fe");
+    push_upstream_commit(&backend_bare, "all-be.txt", "all sync be");
+
+    meldr()
+        .args(["--no-tabs", "sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("branch-x")
+                .and(predicate::str::contains("branch-y"))
+                .and(predicate::str::contains("synced")),
+        );
+
+    // All four worktree/package combos should have advanced
+    assert_ne!(heads_before.0, git_head(&wt_x_fe));
+    assert_ne!(heads_before.1, git_head(&wt_x_be));
+    assert_ne!(heads_before.2, git_head(&wt_y_fe));
+    assert_ne!(heads_before.3, git_head(&wt_y_be));
+}
+
+#[test]
+fn test_sync_with_merge_method() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-merge"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-merge/frontend");
+    let head_before = git_head(&wt_path);
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "merge-file.txt",
+        "merge content",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-merge", "--merge"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced").and(predicate::str::contains("merge")));
+
+    assert_ne!(head_before, git_head(&wt_path));
+    assert!(wt_path.join("merge-file.txt").exists());
+}
+
+#[test]
+fn test_sync_with_local_commits_ahead() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-ahead"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-ahead/frontend");
+
+    // Make a local commit (ahead of upstream)
+    make_local_commit(&wt_path, "local-work.txt", "my local changes");
+
+    // Push an upstream commit (behind upstream)
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "upstream-new.txt",
+        "upstream work",
+    );
+
+    // Sync should rebase local commits on top of upstream
+    meldr()
+        .args(["--no-tabs", "sync", "feat-ahead"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    // Both files should exist after sync
+    assert!(
+        wt_path.join("local-work.txt").exists(),
+        "local commit should survive rebase"
+    );
+    assert!(
+        wt_path.join("upstream-new.txt").exists(),
+        "upstream changes should be applied"
+    );
+}
+
+#[test]
+fn test_sync_detects_worktree_from_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-detect"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-detect/frontend");
+    let head_before = git_head(&wt_path);
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "detect-file.txt",
+        "detect test",
+    );
+
+    // Run sync from inside the worktree dir (no explicit branch)
+    meldr()
+        .args(["--no-tabs", "sync"])
+        .current_dir(&wt_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    assert_ne!(head_before, git_head(&wt_path));
+}
+
+#[test]
+fn test_sync_slash_branch_name() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/sync-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Worktree dir should be sanitized
+    let wt_path = tmp.path().join("worktrees/fm-sync-test/frontend");
+    assert!(wt_path.exists(), "sanitized worktree dir should exist");
+
+    let head_before = git_head(&wt_path);
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "slash-file.txt",
+        "slash branch",
+    );
+
+    // Sync using the original branch name (with slash)
+    meldr()
+        .args(["--no-tabs", "sync", "fm/sync-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    assert_ne!(head_before, git_head(&wt_path));
+}
+
+#[test]
+fn test_sync_all_from_worktree_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "wt-a"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "wt-b"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_a = tmp.path().join("worktrees/wt-a/frontend");
+    let wt_b = tmp.path().join("worktrees/wt-b/frontend");
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "from-inside.txt",
+        "from inside worktree",
+    );
+
+    // Run --all from INSIDE a worktree dir — should still sync both
+    meldr()
+        .args(["--no-tabs", "sync", "--all"])
+        .current_dir(&wt_a)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wt-a").and(predicate::str::contains("wt-b")));
+
+    assert!(wt_a.join("from-inside.txt").exists());
+    assert!(wt_b.join("from-inside.txt").exists());
+}
+
+#[test]
+fn test_sync_dry_run_does_not_change_head() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-dry"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-dry/frontend");
+    let head_before = git_head(&wt_path);
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "dry-file.txt",
+        "dry run content",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-dry", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dry run"));
+
+    // HEAD should NOT change in dry run
+    assert_eq!(
+        head_before,
+        git_head(&wt_path),
+        "dry run should not modify HEAD"
+    );
+    assert!(
+        !wt_path.join("dry-file.txt").exists(),
+        "dry run should not create files"
+    );
+}
+
+#[test]
+fn test_sync_sequential_syncs() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-seq"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-seq/frontend");
+
+    // First upstream change + sync
+    push_upstream_commit(std::path::Path::new(&repo_url), "seq-1.txt", "first change");
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-seq"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    assert!(wt_path.join("seq-1.txt").exists());
+    let head_after_first = git_head(&wt_path);
+
+    // Second upstream change + sync
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "seq-2.txt",
+        "second change",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-seq"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    assert!(wt_path.join("seq-2.txt").exists());
+    assert_ne!(
+        head_after_first,
+        git_head(&wt_path),
+        "HEAD should advance after second sync"
+    );
+
+    // Third sync with no changes — should be up-to-date
+    meldr()
+        .args(["--no-tabs", "sync", "feat-seq"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("up-to-date"));
+}
+
+#[test]
+fn test_sync_log_created() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-log"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "log-file.txt",
+        "log content",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-log"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let log_path = tmp.path().join(".meldr/sync-log.jsonl");
+    assert!(log_path.exists(), "sync log should be created after sync");
+
+    let log_content = fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log_content.contains("feat-log"),
+        "sync log should contain the branch name"
+    );
+    assert!(
+        log_content.contains("frontend"),
+        "sync log should contain the package name"
+    );
+}
+
+#[test]
+fn test_sync_undo_restores_head() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-undo2"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-undo2/frontend");
+    let head_before_sync = git_head(&wt_path);
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "undo-file.txt",
+        "will be undone",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-undo2"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let head_after_sync = git_head(&wt_path);
+    assert_ne!(
+        head_before_sync, head_after_sync,
+        "sync should advance HEAD"
+    );
+
+    // Undo should restore to pre-sync state
+    meldr()
+        .args(["--no-tabs", "sync", "feat-undo2", "--undo"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        head_before_sync,
+        git_head(&wt_path),
+        "undo should restore HEAD to pre-sync value"
+    );
+}
+
+#[test]
+fn test_sync_only_with_multiple_packages() {
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-only2");
+
+    let wt_fe = tmp.path().join("worktrees/feat-only2/frontend");
+    let wt_be = tmp.path().join("worktrees/feat-only2/backend");
+
+    push_upstream_commit(&frontend_bare, "only-fe.txt", "only frontend");
+    push_upstream_commit(&backend_bare, "only-be.txt", "only backend");
+
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
+    // Only sync backend
+    meldr()
+        .args(["--no-tabs", "sync", "feat-only2", "--only", "backend"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"));
+
+    assert_eq!(
+        head_fe_before,
+        git_head(&wt_fe),
+        "frontend should NOT be synced with --only backend"
+    );
+    assert_ne!(
+        head_be_before,
+        git_head(&wt_be),
+        "backend should be synced with --only backend"
+    );
+}
+
+#[test]
+fn test_sync_exclude_with_multiple_packages() {
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-excl2");
+
+    let wt_fe = tmp.path().join("worktrees/feat-excl2/frontend");
+    let wt_be = tmp.path().join("worktrees/feat-excl2/backend");
+
+    push_upstream_commit(&frontend_bare, "excl-fe.txt", "exclude fe");
+    push_upstream_commit(&backend_bare, "excl-be.txt", "exclude be");
+
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
+    // Exclude frontend
+    meldr()
+        .args(["--no-tabs", "sync", "feat-excl2", "--exclude", "frontend"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        head_fe_before,
+        git_head(&wt_fe),
+        "frontend should NOT be synced with --exclude frontend"
+    );
+    assert_ne!(
+        head_be_before,
+        git_head(&wt_be),
+        "backend should be synced with --exclude frontend"
+    );
+}
+
+#[test]
+fn test_sync_all_with_slash_branches() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/branch-a"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fm/branch-b"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_a = tmp.path().join("worktrees/fm-branch-a/frontend");
+    let wt_b = tmp.path().join("worktrees/fm-branch-b/frontend");
+    assert!(wt_a.exists(), "sanitized worktree dir a should exist");
+    assert!(wt_b.exists(), "sanitized worktree dir b should exist");
+
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "slash-all.txt",
+        "slash all",
+    );
+
+    meldr()
+        .args(["--no-tabs", "sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    assert!(wt_a.join("slash-all.txt").exists());
+    assert!(wt_b.join("slash-all.txt").exists());
+}
+
+#[test]
+fn test_sync_merge_with_local_commits() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-merge-local"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_path = tmp.path().join("worktrees/feat-merge-local/frontend");
+
+    // Make local commit
+    make_local_commit(&wt_path, "local-merge.txt", "local for merge");
+
+    // Push upstream change
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "upstream-merge.txt",
+        "upstream for merge",
+    );
+
+    // Sync using merge method
+    meldr()
+        .args(["--no-tabs", "sync", "feat-merge-local", "--merge"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced").and(predicate::str::contains("merge")));
+
+    // Both files should exist
+    assert!(
+        wt_path.join("local-merge.txt").exists(),
+        "local commit should survive merge"
+    );
+    assert!(
+        wt_path.join("upstream-merge.txt").exists(),
+        "upstream changes should be merged"
+    );
+}
+
+#[test]
+fn test_sync_snapshot_contains_correct_data() {
+    let (tmp, _repos_dir, frontend_bare, backend_bare) = setup_two_package_workspace("feat-snap");
+
+    let wt_fe = tmp.path().join("worktrees/feat-snap/frontend");
+    let wt_be = tmp.path().join("worktrees/feat-snap/backend");
+    let head_fe_before = git_head(&wt_fe);
+    let head_be_before = git_head(&wt_be);
+
+    push_upstream_commit(&frontend_bare, "snap-fe.txt", "snapshot fe");
+    push_upstream_commit(&backend_bare, "snap-be.txt", "snapshot be");
+
+    meldr()
+        .args(["--no-tabs", "sync", "feat-snap"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Verify snapshot file content
+    let snapshot_dir = tmp.path().join(".meldr/sync-snapshots");
+    assert!(snapshot_dir.exists());
+
+    let mut snapshots: Vec<_> = fs::read_dir(&snapshot_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(!snapshots.is_empty());
+
+    // Read the latest snapshot
+    snapshots.sort_by_key(|e| e.file_name());
+    let latest = snapshots.last().unwrap();
+    let content = fs::read_to_string(latest.path()).unwrap();
+
+    // Snapshot should contain the pre-sync HEADs
+    assert!(
+        content.contains(&head_fe_before),
+        "snapshot should contain frontend pre-sync HEAD"
+    );
+    assert!(
+        content.contains(&head_be_before),
+        "snapshot should contain backend pre-sync HEAD"
+    );
+    assert!(content.contains("feat-snap"));
+}
