@@ -2145,7 +2145,7 @@ fn test_sync_all_no_worktrees_fetches_real_repos() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(
+        .stderr(predicate::str::contains(
             "No active worktrees. Fetching all packages",
         ));
 }
