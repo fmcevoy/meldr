@@ -123,7 +123,7 @@ impl GitOps for RealGit {
     }
 
     fn rebase(&self, path: &Path, onto: &str, strategy: &str, autostash: bool) -> Result<()> {
-        let strategy_flag = format!("-X{}", strategy);
+        let strategy_flag = format!("-X{strategy}");
         let mut args = vec!["rebase", onto];
         if strategy != "manual" {
             args.push(&strategy_flag);
@@ -136,7 +136,7 @@ impl GitOps for RealGit {
     }
 
     fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()> {
-        let strategy_flag = format!("-X{}", strategy);
+        let strategy_flag = format!("-X{strategy}");
         let mut args = vec!["merge", branch];
         if strategy != "manual" {
             args.push(&strategy_flag);
