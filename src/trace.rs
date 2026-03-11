@@ -16,7 +16,12 @@ pub fn trace_cmd(program: &str, args: &[&str], cwd: Option<&str>) {
 fn shell_join(args: &[&str]) -> String {
     args.iter()
         .map(|a| {
-            if a.contains(' ') || a.contains('$') || a.contains('{') || a.contains('#') || a.contains('\'') {
+            if a.contains(' ')
+                || a.contains('$')
+                || a.contains('{')
+                || a.contains('#')
+                || a.contains('\'')
+            {
                 format!("'{}'", a.replace('\'', "'\\''"))
             } else {
                 a.to_string()

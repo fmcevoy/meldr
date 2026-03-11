@@ -30,22 +30,22 @@ pub fn run(
     // Handle --undo
     if undo {
         let target_branch = resolve_sync_branch(root, branch.as_deref(), cwd)?;
-        let snapshot =
-            sync_history::load_latest_snapshot(root, &target_branch)?
-                .ok_or_else(|| {
-                    error::MeldrError::NoSyncSnapshot(target_branch.clone())
-                })?;
+        let snapshot = sync_history::load_latest_snapshot(root, &target_branch)?
+            .ok_or_else(|| error::MeldrError::NoSyncSnapshot(target_branch.clone()))?;
 
         println!(
             "Undoing sync for '{}' (restoring to snapshot from {})",
             target_branch, snapshot.timestamp
         );
-        let results =
-            worktree::undo_sync(git, root, &target_branch, &snapshot)?;
+        let results = worktree::undo_sync(git, root, &target_branch, &snapshot)?;
         for (pkg, result) in &results {
             match result {
-                Ok(()) => println!("  {} reset to {}", pkg, &snapshot.packages[pkg][..8.min(snapshot.packages[pkg].len())]),
-                Err(e) => eprintln!("  {} failed: {}", pkg, e),
+                Ok(()) => println!(
+                    "  {} reset to {}",
+                    pkg,
+                    &snapshot.packages[pkg][..8.min(snapshot.packages[pkg].len())]
+                ),
+                Err(e) => eprintln!("  {pkg} failed: {e}"),
             }
         }
         return Ok(());
@@ -84,7 +84,7 @@ pub fn run(
             eprint!("  Fetching {} ... ", pkg.name);
             match git.fetch(&repo_path, remote) {
                 Ok(()) => eprintln!("done"),
-                Err(e) => eprintln!("failed: {}", e),
+                Err(e) => eprintln!("failed: {e}"),
             }
         }
         return Ok(());
@@ -92,15 +92,14 @@ pub fn run(
 
     for branch_name in &branches_to_sync {
         if branches_to_sync.len() > 1 {
-            println!("--- Worktree '{}' ---", branch_name);
+            println!("--- Worktree '{branch_name}' ---");
         }
 
         // Save pre-sync snapshot (unless dry run)
         if !dry_run {
             let mut pkg_heads = std::collections::HashMap::new();
             for pkg in &manifest.packages {
-                let wt_path =
-                    workspace::worktree_path(root, branch_name, &pkg.name);
+                let wt_path = workspace::worktree_path(root, branch_name, &pkg.name);
                 if wt_path.exists()
                     && let Ok(sha) = git.current_head(&wt_path)
                 {
@@ -118,14 +117,8 @@ pub fn run(
             }
         }
 
-        let outcomes = worktree::sync_worktree(
-            git,
-            &manifest,
-            root,
-            branch_name,
-            config,
-            &sync_options,
-        )?;
+        let outcomes =
+            worktree::sync_worktree(git, &manifest, root, branch_name, config, &sync_options)?;
 
         // Log the sync
         if !dry_run {
@@ -153,11 +146,7 @@ pub fn run(
     Ok(())
 }
 
-fn resolve_sync_branch(
-    root: &Path,
-    branch: Option<&str>,
-    cwd: &Path,
-) -> error::Result<String> {
+fn resolve_sync_branch(root: &Path, branch: Option<&str>, cwd: &Path) -> error::Result<String> {
     if let Some(b) = branch {
         return Ok(b.to_string());
     }
@@ -193,9 +182,9 @@ fn print_sync_summary(outcomes: &[PackageSyncOutcome], dry_run: bool) {
             SyncStatus::Synced => style("synced".to_string()).green().to_string(),
             SyncStatus::UpToDate => style("up-to-date".to_string()).green().to_string(),
             SyncStatus::Skipped(r) => style(r.to_string()).yellow().to_string(),
-            SyncStatus::Conflict(files) => {
-                style(format!("conflict ({})", files.len())).red().to_string()
-            }
+            SyncStatus::Conflict(files) => style(format!("conflict ({})", files.len()))
+                .red()
+                .to_string(),
             SyncStatus::Failed(msg) => {
                 let short = if msg.len() > 30 {
                     format!("{}...", &msg[..27])
@@ -206,12 +195,8 @@ fn print_sync_summary(outcomes: &[PackageSyncOutcome], dry_run: bool) {
             }
         };
 
-        let ahead = o
-            .ahead
-            .map_or("-".to_string(), |a| a.to_string());
-        let behind = o
-            .behind
-            .map_or("-".to_string(), |b| b.to_string());
+        let ahead = o.ahead.map_or("-".to_string(), |a| a.to_string());
+        let behind = o.behind.map_or("-".to_string(), |b| b.to_string());
 
         println!(
             "  {:<20} {:<16} {:>6} {:>7}  {}",

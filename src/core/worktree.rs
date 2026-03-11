@@ -166,7 +166,14 @@ pub fn add_worktree(
     }
 
     let setup = if needs_tmux {
-        setup_tmux_windows(tmux, manifest, workspace_root, branch, config, global_config)?
+        setup_tmux_windows(
+            tmux,
+            manifest,
+            workspace_root,
+            branch,
+            config,
+            global_config,
+        )?
     } else {
         TmuxSetupResult {
             tmux_window: None,
@@ -288,7 +295,12 @@ pub fn open_worktree(
     }
 
     let setup = setup_tmux_windows(
-        tmux, manifest, workspace_root, branch, config, global_config,
+        tmux,
+        manifest,
+        workspace_root,
+        branch,
+        config,
+        global_config,
     )?;
 
     state.add_worktree(
