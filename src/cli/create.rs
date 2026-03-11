@@ -7,6 +7,7 @@ use crate::error::{MeldrError, Result};
 use crate::git::GitOps;
 use crate::tmux::TmuxOps;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,

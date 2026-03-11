@@ -84,8 +84,7 @@ pub fn run(
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            let _ = stdout_tx
-                                .send(OutputLine::Stdout(stdout_name.clone(), l));
+                            let _ = stdout_tx.send(OutputLine::Stdout(stdout_name.clone(), l));
                         }
                         Err(_) => break,
                     }
@@ -99,8 +98,7 @@ pub fn run(
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            let _ = stderr_tx
-                                .send(OutputLine::Stderr(stderr_name.clone(), l));
+                            let _ = stderr_tx.send(OutputLine::Stderr(stderr_name.clone(), l));
                         }
                         Err(_) => break,
                     }
@@ -127,10 +125,10 @@ pub fn run(
                 eprintln!("[{}] {}", name, line);
             }
             OutputLine::Done(name, status) => {
-                if let Some(code) = status {
-                    if code != 0 {
-                        eprintln!("[{}] exited with code {}", name, code);
-                    }
+                if let Some(code) = status
+                    && code != 0
+                {
+                    eprintln!("[{}] exited with code {}", name, code);
                 }
                 completed += 1;
                 if completed == pkg_count {

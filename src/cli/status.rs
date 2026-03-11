@@ -44,10 +44,10 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
             let mut dirty_pkgs = Vec::new();
             for pkg in &manifest.packages {
                 let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-                if wt_path.exists() {
-                    if let Ok(true) = git.is_dirty(&wt_path) {
-                        dirty_pkgs.push(pkg.name.clone());
-                    }
+                if wt_path.exists()
+                    && let Ok(true) = git.is_dirty(&wt_path)
+                {
+                    dirty_pkgs.push(pkg.name.clone());
                 }
             }
 
