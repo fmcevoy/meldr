@@ -18,7 +18,7 @@ use tmux::RealTmux;
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -46,9 +46,11 @@ fn run(cli: Cli) -> error::Result<()> {
         } => {
             let cwd = std::env::current_dir()?;
             let global = config::load_global_config()?;
-            let mut config = config::EffectiveConfig::default();
-            config.no_agent = cli_overrides.no_agent;
-            config.no_tabs = cli_overrides.no_tabs;
+            let mut config = config::EffectiveConfig {
+                no_agent: cli_overrides.no_agent,
+                no_tabs: cli_overrides.no_tabs,
+                ..Default::default()
+            };
             if let Some(ref a) = agent {
                 config.agent = a.clone();
                 config.agent_command = a.clone();
@@ -103,7 +105,8 @@ fn run(cli: Cli) -> error::Result<()> {
                                 })
                                 .ok_or_else(|| {
                                     error::MeldrError::Config(
-                                        "Could not detect current worktree. Specify a branch name.".to_string(),
+                                        "Could not detect current worktree. Specify a branch name."
+                                            .to_string(),
                                     )
                                 })?
                         }
@@ -150,7 +153,10 @@ fn run(cli: Cli) -> error::Result<()> {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
-            cli::sync::run(&git, &root, &cwd, &config, branch, all, strategy, merge, dry_run, only, exclude, undo)
+            cli::sync::run(
+                &git, &root, &cwd, &config, branch, all, strategy, merge, dry_run, only, exclude,
+                undo,
+            )
         }
 
         Commands::Config { action } => {
@@ -169,9 +175,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 ConfigAction::List { global } => {
                     cli::config_cmd::list(workspace_root.as_deref(), global)
                 }
-                ConfigAction::Show => {
-                    cli::config_cmd::show(workspace_root.as_deref())
-                }
+                ConfigAction::Show => cli::config_cmd::show(workspace_root.as_deref()),
             }
         }
     }
@@ -208,10 +212,7 @@ fn warn_if_out_of_sync(git: &dyn GitOps, root: &Path, config: &config::Effective
             if *behind == 1 { "" } else { "s" }
         );
     }
-    eprintln!(
-        "{}",
-        style("Run 'meldr sync --all' to update.\n").dim()
-    );
+    eprintln!("{}", style("Run 'meldr sync --all' to update.\n").dim());
 }
 
 fn build_effective_config(
@@ -223,11 +224,7 @@ fn build_effective_config(
 
     let env_overrides = config::collect_env_overrides();
 
-    let effective = config::resolve_config(
-        &global,
-        &manifest.settings,
-        cli_overrides,
-        &env_overrides,
-    );
+    let effective =
+        config::resolve_config(&global, &manifest.settings, cli_overrides, &env_overrides);
     Ok((effective, global))
 }

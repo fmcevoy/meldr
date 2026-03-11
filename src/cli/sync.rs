@@ -10,6 +10,7 @@ use crate::core::{sync_history, worktree};
 use crate::error;
 use crate::git::GitOps;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     git: &dyn GitOps,
     root: &Path,
@@ -100,10 +101,10 @@ pub fn run(
             for pkg in &manifest.packages {
                 let wt_path =
                     workspace::worktree_path(root, branch_name, &pkg.name);
-                if wt_path.exists() {
-                    if let Ok(sha) = git.current_head(&wt_path) {
-                        pkg_heads.insert(pkg.name.clone(), sha);
-                    }
+                if wt_path.exists()
+                    && let Ok(sha) = git.current_head(&wt_path)
+                {
+                    pkg_heads.insert(pkg.name.clone(), sha);
                 }
             }
             if !pkg_heads.is_empty() {
@@ -191,7 +192,7 @@ fn print_sync_summary(outcomes: &[PackageSyncOutcome], dry_run: bool) {
         let status_str = match &o.status {
             SyncStatus::Synced => style("synced".to_string()).green().to_string(),
             SyncStatus::UpToDate => style("up-to-date".to_string()).green().to_string(),
-            SyncStatus::Skipped(r) => style(format!("{}", r)).yellow().to_string(),
+            SyncStatus::Skipped(r) => style(r.to_string()).yellow().to_string(),
             SyncStatus::Conflict(files) => {
                 style(format!("conflict ({})", files.len())).red().to_string()
             }
@@ -201,7 +202,7 @@ fn print_sync_summary(outcomes: &[PackageSyncOutcome], dry_run: bool) {
                 } else {
                     msg.clone()
                 };
-                style(format!("{}", short)).red().to_string()
+                style(short).red().to_string()
             }
         };
 

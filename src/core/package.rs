@@ -20,7 +20,7 @@ pub fn add_packages(
         let name = workspace::derive_package_name(url);
 
         if manifest.find_package(&name).is_some() {
-            errors.push(format!("Package '{}' already exists, skipping", name));
+            errors.push(format!("Package '{name}' already exists, skipping"));
             continue;
         }
 
@@ -38,7 +38,7 @@ pub fn add_packages(
                 added.push(name);
             }
             Err(e) => {
-                errors.push(format!("Failed to clone '{}': {}", url, e));
+                errors.push(format!("Failed to clone '{url}': {e}"));
                 let _ = std::fs::remove_dir_all(&dest);
             }
         }
@@ -49,7 +49,7 @@ pub fn add_packages(
     }
 
     for error in &errors {
-        eprintln!("Warning: {}", error);
+        eprintln!("Warning: {error}");
     }
 
     Ok(added)
@@ -72,7 +72,7 @@ pub fn remove_packages(
                 removed.push(name.clone());
             }
             Err(MeldrError::PackageNotFound(n)) => {
-                eprintln!("Warning: Package '{}' not found, skipping", n);
+                eprintln!("Warning: Package '{n}' not found, skipping");
             }
             Err(e) => return Err(e),
         }

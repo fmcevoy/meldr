@@ -6,9 +6,9 @@ use console::style;
 pub fn trace_cmd(program: &str, args: &[&str], cwd: Option<&str>) {
     let cmd = format!("{} {}", program, shell_join(args));
     let line = if let Some(dir) = cwd {
-        format!("  $ {} (in {})", cmd, dir)
+        format!("  $ {cmd} (in {dir})")
     } else {
-        format!("  $ {}", cmd)
+        format!("  $ {cmd}")
     };
     eprintln!("{}", style(line).dim());
 }

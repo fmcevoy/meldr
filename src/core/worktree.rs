@@ -61,7 +61,7 @@ fn setup_tmux_windows(
                 continue;
             }
             let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-            let target = format!("{}.{}", window_id, i);
+            let target = format!("{window_id}.{i}");
             tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
             if config.should_launch_agent() {
                 tmux.send_keys(&target, &config.agent_command)?;
@@ -75,21 +75,19 @@ fn setup_tmux_windows(
         let wt_dir = workspace::worktree_branch_dir(workspace_root, branch);
         let wt_dir_str = wt_dir.to_string_lossy().to_string();
 
-        let window_name =
-            expand_template(&config.window_name_template, ws_name, branch, "");
+        let window_name = expand_template(&config.window_name_template, ws_name, branch, "");
 
-        let dev =
-            tmux.create_dev_window(&window_name, &wt_dir_str, config, custom_layout)?;
+        let dev = tmux.create_dev_window(&window_name, &wt_dir_str, config, custom_layout)?;
 
         if let Some(ref editor_pane) = dev.editor {
             tmux.send_keys(editor_pane, &config.editor)?;
             pane_mappings.insert("editor".to_string(), editor_pane.clone());
         }
 
-        if config.should_launch_agent() {
-            if let Some(ref agent_pane) = dev.agent {
-                tmux.send_keys(agent_pane, &config.agent_command)?;
-            }
+        if config.should_launch_agent()
+            && let Some(ref agent_pane) = dev.agent
+        {
+            tmux.send_keys(agent_pane, &config.agent_command)?;
         }
         if let Some(ref agent_pane) = dev.agent {
             pane_mappings.insert("agent".to_string(), agent_pane.clone());
@@ -110,6 +108,7 @@ fn setup_tmux_windows(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_worktree(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,
@@ -151,7 +150,7 @@ pub fn add_worktree(
     for result in results {
         match result {
             Ok(name) => created.push(name),
-            Err((name, e)) => errors.push(format!("{}: {}", name, e)),
+            Err((name, e)) => errors.push(format!("{name}: {e}")),
         }
     }
 
@@ -163,7 +162,7 @@ pub fn add_worktree(
     }
 
     for error in &errors {
-        eprintln!("Warning: {}", error);
+        eprintln!("Warning: {error}");
     }
 
     let setup = if needs_tmux {
@@ -204,13 +203,13 @@ pub fn remove_worktree(
     if !force {
         for pkg in &manifest.packages {
             let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-            if wt_path.exists() {
-                if let Ok(true) = git.is_dirty(&wt_path) {
-                    return Err(MeldrError::DirtyWorktree(
-                        branch.to_string(),
-                        pkg.name.clone(),
-                    ));
-                }
+            if wt_path.exists()
+                && let Ok(true) = git.is_dirty(&wt_path)
+            {
+                return Err(MeldrError::DirtyWorktree(
+                    branch.to_string(),
+                    pkg.name.clone(),
+                ));
             }
         }
     }
@@ -226,13 +225,13 @@ pub fn remove_worktree(
     for pkg in &manifest.packages {
         let repo_path = workspace::package_path(workspace_root, &pkg.name);
         let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-        if wt_path.exists() {
-            if let Err(e) = git.worktree_remove(&repo_path, &wt_path, force) {
-                eprintln!(
-                    "Warning: Failed to remove worktree for '{}': {}",
-                    pkg.name, e
-                );
-            }
+        if wt_path.exists()
+            && let Err(e) = git.worktree_remove(&repo_path, &wt_path, force)
+        {
+            eprintln!(
+                "Warning: Failed to remove worktree for '{}': {}",
+                pkg.name, e
+            );
         }
     }
 
@@ -246,10 +245,10 @@ pub fn remove_worktree(
 
     // Kill tmux window LAST — after all worktrees are removed and state is saved.
     // This way even if killing the window terminates this process, cleanup is complete.
-    if let Some(ref window_id) = tmux_window_id {
-        if let Err(e) = tmux.kill_window(window_id) {
-            eprintln!("Warning: Could not kill tmux window '{}': {}", window_id, e);
-        }
+    if let Some(ref window_id) = tmux_window_id
+        && let Err(e) = tmux.kill_window(window_id)
+    {
+        eprintln!("Warning: Could not kill tmux window '{window_id}': {e}");
     }
 
     Ok(())
@@ -323,10 +322,10 @@ mod tests {
     /// Tracks all tmux calls for assertions
     #[derive(Debug, Default)]
     struct TmuxCall {
-        create_dev_window: Vec<(String, String)>,       // (name, cwd)
-        create_window: Vec<String>,                      // name
-        split_window: Vec<String>,                       // window
-        send_keys: Vec<(String, String)>,                // (target, keys)
+        create_dev_window: Vec<(String, String)>, // (name, cwd)
+        create_window: Vec<String>,               // name
+        split_window: Vec<String>,                // window
+        send_keys: Vec<(String, String)>,         // (target, keys)
     }
 
     struct MockTmux {
@@ -347,58 +346,129 @@ mod tests {
     }
 
     impl TmuxOps for MockTmux {
-        fn is_inside_tmux(&self) -> bool { true }
+        fn is_inside_tmux(&self) -> bool {
+            true
+        }
 
         fn create_window(&self, name: &str) -> Result<String> {
-            self.calls.lock().unwrap().create_window.push(name.to_string());
+            self.calls
+                .lock()
+                .unwrap()
+                .create_window
+                .push(name.to_string());
             Ok("@99".to_string())
         }
 
         fn split_window(&self, window: &str) -> Result<()> {
-            self.calls.lock().unwrap().split_window.push(window.to_string());
+            self.calls
+                .lock()
+                .unwrap()
+                .split_window
+                .push(window.to_string());
             Ok(())
         }
 
-        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> { Ok(()) }
+        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> {
+            Ok(())
+        }
 
         fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
-            self.calls.lock().unwrap().send_keys.push((target.to_string(), keys.to_string()));
+            self.calls
+                .lock()
+                .unwrap()
+                .send_keys
+                .push((target.to_string(), keys.to_string()));
             Ok(())
         }
 
-        fn kill_window(&self, _window: &str) -> Result<()> { Ok(()) }
+        fn kill_window(&self, _window: &str) -> Result<()> {
+            Ok(())
+        }
 
-        fn create_dev_window(&self, name: &str, cwd: &str, _config: &EffectiveConfig, _custom_layout: Option<&crate::core::config::LayoutDef>) -> Result<DevWindowPanes> {
-            self.calls.lock().unwrap().create_dev_window.push((name.to_string(), cwd.to_string()));
+        fn create_dev_window(
+            &self,
+            name: &str,
+            cwd: &str,
+            _config: &EffectiveConfig,
+            _custom_layout: Option<&crate::core::config::LayoutDef>,
+        ) -> Result<DevWindowPanes> {
+            self.calls
+                .lock()
+                .unwrap()
+                .create_dev_window
+                .push((name.to_string(), cwd.to_string()));
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
                 editor: Some("@100.0".to_string()),
                 agent: Some("%1".to_string()),
-                terms: vec!["%2".to_string(), "%3".to_string(), "%4".to_string(), "%5".to_string()],
+                terms: vec![
+                    "%2".to_string(),
+                    "%3".to_string(),
+                    "%4".to_string(),
+                    "%5".to_string(),
+                ],
             })
         }
 
-        fn has_window(&self, _window: &str) -> bool { false }
-        fn select_window(&self, _window: &str) -> Result<()> { Ok(()) }
+        fn has_window(&self, _window: &str) -> bool {
+            false
+        }
+        fn select_window(&self, _window: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct MockGit;
 
     impl GitOps for MockGit {
-        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> { Ok(()) }
-        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> { Ok(()) }
-        fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> { Ok(()) }
-        fn is_dirty(&self, _path: &Path) -> Result<bool> { Ok(false) }
-        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
-        fn rebase(&self, _path: &Path, _onto: &str, _strategy: &str, _autostash: bool) -> Result<()> { Ok(()) }
-        fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
-        fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
-        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
-        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
-        fn divergence(&self, _path: &Path, _upstream: &str) -> Result<(u32, u32)> { Ok((0, 0)) }
-        fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> { Ok(vec![]) }
-        fn current_head(&self, _path: &Path) -> Result<String> { Ok("mock_sha".to_string()) }
-        fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> { Ok(()) }
+        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> {
+            Ok(())
+        }
+        fn is_dirty(&self, _path: &Path) -> Result<bool> {
+            Ok(false)
+        }
+        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn rebase(
+            &self,
+            _path: &Path,
+            _onto: &str,
+            _strategy: &str,
+            _autostash: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> {
+            Ok(())
+        }
+        fn status_porcelain(&self, _path: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> {
+            None
+        }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn divergence(&self, _path: &Path, _upstream: &str) -> Result<(u32, u32)> {
+            Ok((0, 0))
+        }
+        fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn current_head(&self, _path: &Path) -> Result<String> {
+            Ok("mock_sha".to_string())
+        }
+        fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -412,7 +482,7 @@ mod tests {
                 .iter()
                 .map(|name| PackageEntry {
                     name: name.to_string(),
-                    url: format!("https://example.com/{}.git", name),
+                    url: format!("https://example.com/{name}.git"),
                     branch: None,
                     remote: None,
                     sync_strategy: None,
@@ -465,24 +535,59 @@ mod tests {
     }
 
     impl GitOps for OrderTrackingGit {
-        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> { Ok(()) }
-        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> { Ok(()) }
-        fn worktree_remove(&self, _repo: &Path, path: &Path, _force: bool) -> Result<()> {
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            self.removed_packages.lock().unwrap().push((name, next_order()));
+        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> {
             Ok(())
         }
-        fn is_dirty(&self, _path: &Path) -> Result<bool> { Ok(false) }
-        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
-        fn rebase(&self, _path: &Path, _onto: &str, _strategy: &str, _autostash: bool) -> Result<()> { Ok(()) }
-        fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> { Ok(()) }
-        fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
-        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
-        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
-        fn divergence(&self, _path: &Path, _upstream: &str) -> Result<(u32, u32)> { Ok((0, 0)) }
-        fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> { Ok(vec![]) }
-        fn current_head(&self, _path: &Path) -> Result<String> { Ok("mock_sha".to_string()) }
-        fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> { Ok(()) }
+        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _repo: &Path, path: &Path, _force: bool) -> Result<()> {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            self.removed_packages
+                .lock()
+                .unwrap()
+                .push((name, next_order()));
+            Ok(())
+        }
+        fn is_dirty(&self, _path: &Path) -> Result<bool> {
+            Ok(false)
+        }
+        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn rebase(
+            &self,
+            _path: &Path,
+            _onto: &str,
+            _strategy: &str,
+            _autostash: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> {
+            Ok(())
+        }
+        fn status_porcelain(&self, _path: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> {
+            None
+        }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn divergence(&self, _path: &Path, _upstream: &str) -> Result<(u32, u32)> {
+            Ok((0, 0))
+        }
+        fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn current_head(&self, _path: &Path) -> Result<String> {
+            Ok("mock_sha".to_string())
+        }
+        fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct OrderTrackingTmux {
@@ -502,25 +607,50 @@ mod tests {
     }
 
     impl TmuxOps for OrderTrackingTmux {
-        fn is_inside_tmux(&self) -> bool { true }
-        fn create_window(&self, _name: &str) -> Result<String> { Ok("@99".to_string()) }
-        fn split_window(&self, _window: &str) -> Result<()> { Ok(()) }
-        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> { Ok(()) }
-        fn send_keys(&self, _target: &str, _keys: &str) -> Result<()> { Ok(()) }
+        fn is_inside_tmux(&self) -> bool {
+            true
+        }
+        fn create_window(&self, _name: &str) -> Result<String> {
+            Ok("@99".to_string())
+        }
+        fn split_window(&self, _window: &str) -> Result<()> {
+            Ok(())
+        }
+        fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> {
+            Ok(())
+        }
+        fn send_keys(&self, _target: &str, _keys: &str) -> Result<()> {
+            Ok(())
+        }
         fn kill_window(&self, _window: &str) -> Result<()> {
             *self.kill_order.lock().unwrap() = Some(next_order());
             Ok(())
         }
-        fn create_dev_window(&self, _name: &str, _cwd: &str, _config: &EffectiveConfig, _custom_layout: Option<&crate::core::config::LayoutDef>) -> Result<DevWindowPanes> {
+        fn create_dev_window(
+            &self,
+            _name: &str,
+            _cwd: &str,
+            _config: &EffectiveConfig,
+            _custom_layout: Option<&crate::core::config::LayoutDef>,
+        ) -> Result<DevWindowPanes> {
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
                 editor: Some("@100.0".to_string()),
                 agent: Some("%1".to_string()),
-                terms: vec!["%2".to_string(), "%3".to_string(), "%4".to_string(), "%5".to_string()],
+                terms: vec![
+                    "%2".to_string(),
+                    "%3".to_string(),
+                    "%4".to_string(),
+                    "%5".to_string(),
+                ],
             })
         }
-        fn has_window(&self, _window: &str) -> bool { false }
-        fn select_window(&self, _window: &str) -> Result<()> { Ok(()) }
+        fn has_window(&self, _window: &str) -> bool {
+            false
+        }
+        fn select_window(&self, _window: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn worktree_state_with_window(branch: &str, window: &str) -> WorktreeState {
@@ -550,23 +680,43 @@ mod tests {
         state.add_worktree("feat-rm", worktree_state_with_window("feat-rm", "@50"));
 
         for pkg in packages {
-            std::fs::create_dir_all(
-                tmp.path().join("worktrees").join("feat-rm").join(pkg),
-            )
-            .unwrap();
+            std::fs::create_dir_all(tmp.path().join("worktrees").join("feat-rm").join(pkg))
+                .unwrap();
         }
 
-        remove_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-rm", false).unwrap();
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-rm",
+            false,
+        )
+        .unwrap();
 
         let removed = git.removed();
-        assert_eq!(removed.len(), 3, "should remove worktrees for ALL 3 packages, got: {:?}", removed);
+        assert_eq!(
+            removed.len(),
+            3,
+            "should remove worktrees for ALL 3 packages, got: {removed:?}"
+        );
         let removed_names: Vec<&str> = removed.iter().map(|(n, _)| n.as_str()).collect();
         for pkg in packages {
-            assert!(removed_names.contains(pkg), "package '{}' should have been removed, got: {:?}", pkg, removed_names);
+            assert!(
+                removed_names.contains(pkg),
+                "package '{pkg}' should have been removed, got: {removed_names:?}"
+            );
         }
 
-        assert!(state.get_worktree("feat-rm").is_none(), "worktree should be removed from state");
-        assert!(!tmp.path().join("worktrees").join("feat-rm").exists(), "branch directory should be cleaned up");
+        assert!(
+            state.get_worktree("feat-rm").is_none(),
+            "worktree should be removed from state"
+        );
+        assert!(
+            !tmp.path().join("worktrees").join("feat-rm").exists(),
+            "branch directory should be cleaned up"
+        );
     }
 
     #[test]
@@ -579,27 +729,38 @@ mod tests {
         let tmux = OrderTrackingTmux::new();
         let mut state = WorkspaceState::default();
 
-        state.add_worktree("feat-order", worktree_state_with_window("feat-order", "@60"));
+        state.add_worktree(
+            "feat-order",
+            worktree_state_with_window("feat-order", "@60"),
+        );
 
         for pkg in packages {
-            std::fs::create_dir_all(
-                tmp.path().join("worktrees").join("feat-order").join(pkg),
-            )
-            .unwrap();
+            std::fs::create_dir_all(tmp.path().join("worktrees").join("feat-order").join(pkg))
+                .unwrap();
         }
 
-        remove_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-order", false).unwrap();
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-order",
+            false,
+        )
+        .unwrap();
 
         let removed = git.removed();
         assert_eq!(removed.len(), 2, "both packages should be removed");
 
         let max_git_order = removed.iter().map(|(_, ord)| *ord).max().unwrap();
-        let kill_order = tmux.kill_order().expect("tmux kill_window should have been called");
+        let kill_order = tmux
+            .kill_order()
+            .expect("tmux kill_window should have been called");
 
         assert!(
             kill_order > max_git_order,
-            "tmux kill_window (order={}) must happen AFTER all git worktree removals (last git order={})",
-            kill_order, max_git_order,
+            "tmux kill_window (order={kill_order}) must happen AFTER all git worktree removals (last git order={max_git_order})",
         );
     }
 
@@ -610,7 +771,15 @@ mod tests {
         let tmux = MockTmux::new();
         let mut state = WorkspaceState::default();
 
-        let result = remove_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "no-such", false);
+        let result = remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "no-such",
+            false,
+        );
         assert!(result.is_err(), "removing nonexistent worktree should fail");
     }
 
@@ -625,15 +794,30 @@ mod tests {
         state.add_worktree("feat-notab", worktree_state_no_window("feat-notab"));
 
         std::fs::create_dir_all(
-            tmp.path().join("worktrees").join("feat-notab").join("frontend"),
+            tmp.path()
+                .join("worktrees")
+                .join("feat-notab")
+                .join("frontend"),
         )
         .unwrap();
 
-        remove_worktree(&git, &tmux, &manifest, &mut state, tmp.path(), "feat-notab", false).unwrap();
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-notab",
+            false,
+        )
+        .unwrap();
 
         let removed = git.removed();
         assert_eq!(removed.len(), 1, "should still remove git worktree");
-        assert!(tmux.kill_order().is_none(), "should not call kill_window when no tmux window");
+        assert!(
+            tmux.kill_order().is_none(),
+            "should not call kill_window when no tmux window"
+        );
         assert!(state.get_worktree("feat-notab").is_none());
     }
 
@@ -689,72 +873,96 @@ mod tests {
         }
 
         fn set_divergence(&self, path: &Path, ahead: u32, behind: u32) {
-            self.divergences.lock().unwrap().insert(
-                path.to_string_lossy().to_string(),
-                (ahead, behind),
-            );
+            self.divergences
+                .lock()
+                .unwrap()
+                .insert(path.to_string_lossy().to_string(), (ahead, behind));
         }
 
         fn set_conflicts(&self, path: &Path, files: Vec<String>) {
-            self.conflicts.lock().unwrap().insert(
-                path.to_string_lossy().to_string(),
-                files,
-            );
+            self.conflicts
+                .lock()
+                .unwrap()
+                .insert(path.to_string_lossy().to_string(), files);
         }
 
+        #[allow(dead_code)] // Available for future test scenarios
         fn set_head(&self, path: &Path, sha: &str) {
-            self.heads.lock().unwrap().insert(
-                path.to_string_lossy().to_string(),
-                sha.to_string(),
-            );
+            self.heads
+                .lock()
+                .unwrap()
+                .insert(path.to_string_lossy().to_string(), sha.to_string());
         }
 
         fn add_fetch_failure(&self, path: &Path) {
-            self.fetch_should_fail.lock().unwrap().push(
-                path.to_string_lossy().to_string(),
-            );
+            self.fetch_should_fail
+                .lock()
+                .unwrap()
+                .push(path.to_string_lossy().to_string());
         }
 
         fn add_rebase_failure(&self, path: &Path) {
-            self.rebase_should_fail.lock().unwrap().push(
-                path.to_string_lossy().to_string(),
-            );
+            self.rebase_should_fail
+                .lock()
+                .unwrap()
+                .push(path.to_string_lossy().to_string());
         }
     }
 
     impl GitOps for ConfigurableMockGit {
-        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> { Ok(()) }
-        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> { Ok(()) }
-        fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> { Ok(()) }
-        fn is_dirty(&self, _path: &Path) -> Result<bool> { Ok(false) }
-        fn status_porcelain(&self, _path: &Path) -> Result<String> { Ok(String::new()) }
-        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> { Ok(()) }
+        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> {
+            Ok(())
+        }
+        fn is_dirty(&self, _path: &Path) -> Result<bool> {
+            Ok(false)
+        }
+        fn status_porcelain(&self, _path: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
 
         fn fetch(&self, path: &Path, _remote: &str) -> Result<()> {
             let key = path.to_string_lossy().to_string();
             self.fetch_calls.lock().unwrap().push(key.clone());
             if self.fetch_should_fail.lock().unwrap().contains(&key) {
-                return Err(MeldrError::Git(format!("fetch failed for {}", key)));
+                return Err(MeldrError::Git(format!("fetch failed for {key}")));
             }
             Ok(())
         }
 
         fn rebase(&self, path: &Path, onto: &str, strategy: &str, _autostash: bool) -> Result<()> {
             let key = path.to_string_lossy().to_string();
-            self.rebase_calls.lock().unwrap().push((key.clone(), onto.to_string(), strategy.to_string()));
+            self.rebase_calls.lock().unwrap().push((
+                key.clone(),
+                onto.to_string(),
+                strategy.to_string(),
+            ));
             if self.rebase_should_fail.lock().unwrap().contains(&key) {
-                return Err(MeldrError::Git(format!("rebase failed for {}", key)));
+                return Err(MeldrError::Git(format!("rebase failed for {key}")));
             }
             Ok(())
         }
 
         fn merge(&self, path: &Path, branch: &str, strategy: &str) -> Result<()> {
             let key = path.to_string_lossy().to_string();
-            self.merge_calls.lock().unwrap().push((key, branch.to_string(), strategy.to_string()));
+            self.merge_calls
+                .lock()
+                .unwrap()
+                .push((key, branch.to_string(), strategy.to_string()));
             Ok(())
         }
 
-        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> { None }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> {
+            None
+        }
 
         fn divergence(&self, path: &Path, _upstream: &str) -> Result<(u32, u32)> {
             let key = path.to_string_lossy().to_string();
@@ -772,12 +980,18 @@ mod tests {
         fn current_head(&self, path: &Path) -> Result<String> {
             let key = path.to_string_lossy().to_string();
             let heads = self.heads.lock().unwrap();
-            Ok(heads.get(&key).cloned().unwrap_or_else(|| "default_sha".to_string()))
+            Ok(heads
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| "default_sha".to_string()))
         }
 
         fn reset_hard(&self, path: &Path, commit: &str) -> Result<()> {
             let key = path.to_string_lossy().to_string();
-            self.reset_calls.lock().unwrap().push((key, commit.to_string()));
+            self.reset_calls
+                .lock()
+                .unwrap()
+                .push((key, commit.to_string()));
             Ok(())
         }
     }
@@ -805,10 +1019,16 @@ mod tests {
         let config = EffectiveConfig::default();
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 2);
         for o in &outcomes {
-            assert_eq!(o.status, SyncStatus::Synced, "package {} should be Synced", o.package);
+            assert_eq!(
+                o.status,
+                SyncStatus::Synced,
+                "package {} should be Synced",
+                o.package
+            );
         }
         // Verify rebase was called for both
         let rebase_calls = git.rebase_calls.lock().unwrap();
@@ -827,10 +1047,16 @@ mod tests {
         let config = EffectiveConfig::default();
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 2);
         for o in &outcomes {
-            assert_eq!(o.status, SyncStatus::UpToDate, "package {} should be UpToDate", o.package);
+            assert_eq!(
+                o.status,
+                SyncStatus::UpToDate,
+                "package {} should be UpToDate",
+                o.package
+            );
         }
         // No rebase calls
         assert!(git.rebase_calls.lock().unwrap().is_empty());
@@ -846,12 +1072,16 @@ mod tests {
         let config = EffectiveConfig::default();
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 2);
         for o in &outcomes {
             match &o.status {
                 SyncStatus::Skipped(reason) => {
-                    assert!(reason.contains("worktree does not exist"), "unexpected skip reason: {}", reason);
+                    assert!(
+                        reason.contains("worktree does not exist"),
+                        "unexpected skip reason: {reason}"
+                    );
                 }
                 other => panic!("expected Skipped, got {:?} for {}", other, o.package),
             }
@@ -874,7 +1104,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status, SyncStatus::Synced); // would sync
         // Fetch should have happened
@@ -900,7 +1131,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].package, "frontend");
     }
@@ -921,7 +1153,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].package, "frontend");
     }
@@ -935,12 +1168,16 @@ mod tests {
         let git = ConfigurableMockGit::new();
         let fe_wt = crate::core::workspace::worktree_path(root, "feature-x", "frontend");
         git.set_divergence(&fe_wt, 2, 3); // ahead > 0
-        git.set_conflicts(&fe_wt, vec!["src/main.rs".to_string(), "Cargo.toml".to_string()]);
+        git.set_conflicts(
+            &fe_wt,
+            vec!["src/main.rs".to_string(), "Cargo.toml".to_string()],
+        );
 
         let config = EffectiveConfig::default(); // sync_strategy = "safe"
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         match &outcomes[0].status {
             SyncStatus::Conflict(files) => {
@@ -948,7 +1185,7 @@ mod tests {
                 assert!(files.contains(&"src/main.rs".to_string()));
                 assert!(files.contains(&"Cargo.toml".to_string()));
             }
-            other => panic!("expected Conflict, got {:?}", other),
+            other => panic!("expected Conflict, got {other:?}"),
         }
         // Should not have called rebase
         assert!(git.rebase_calls.lock().unwrap().is_empty());
@@ -968,7 +1205,8 @@ mod tests {
         let config = EffectiveConfig::default(); // sync_strategy = "safe"
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status, SyncStatus::Synced);
         // Conflict check should have been called
@@ -990,7 +1228,8 @@ mod tests {
         let config = EffectiveConfig::default(); // sync_strategy = "safe"
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status, SyncStatus::Synced);
         // Conflict check should NOT have been called (ahead == 0)
@@ -1015,7 +1254,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status, SyncStatus::Synced);
         // No conflict check should have been made
@@ -1042,7 +1282,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status, SyncStatus::Synced);
         assert_eq!(outcomes[0].method, "merge");
@@ -1067,13 +1308,17 @@ mod tests {
         let config = EffectiveConfig::default();
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 2);
 
         let fe_outcome = outcomes.iter().find(|o| o.package == "frontend").unwrap();
         match &fe_outcome.status {
-            SyncStatus::Failed(msg) => assert!(msg.contains("fetch failed"), "expected fetch failure message, got: {}", msg),
-            other => panic!("expected Failed for frontend, got {:?}", other),
+            SyncStatus::Failed(msg) => assert!(
+                msg.contains("fetch failed"),
+                "expected fetch failure message, got: {msg}"
+            ),
+            other => panic!("expected Failed for frontend, got {other:?}"),
         }
 
         let be_outcome = outcomes.iter().find(|o| o.package == "backend").unwrap();
@@ -1094,11 +1339,15 @@ mod tests {
         let config = EffectiveConfig::default();
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 1);
         match &outcomes[0].status {
-            SyncStatus::Failed(msg) => assert!(msg.contains("rebase failed"), "expected rebase failure, got: {}", msg),
-            other => panic!("expected Failed, got {:?}", other),
+            SyncStatus::Failed(msg) => assert!(
+                msg.contains("rebase failed"),
+                "expected rebase failure, got: {msg}"
+            ),
+            other => panic!("expected Failed, got {other:?}"),
         }
     }
 
@@ -1142,7 +1391,8 @@ mod tests {
         let config = EffectiveConfig::default(); // global strategy = "safe"
         let options = SyncOptions::default();
 
-        let outcomes = sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+        let outcomes =
+            sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
         assert_eq!(outcomes.len(), 2);
 
         // Frontend uses "theirs" strategy - no conflict check
@@ -1150,16 +1400,28 @@ mod tests {
         let conflict_checks = git.conflict_check_calls.lock().unwrap();
         let be_wt_str = be_wt.to_string_lossy().to_string();
         let fe_wt_str = fe_wt.to_string_lossy().to_string();
-        assert!(conflict_checks.contains(&be_wt_str), "backend should have conflict check (safe strategy)");
-        assert!(!conflict_checks.contains(&fe_wt_str), "frontend should NOT have conflict check (theirs strategy)");
+        assert!(
+            conflict_checks.contains(&be_wt_str),
+            "backend should have conflict check (safe strategy)"
+        );
+        assert!(
+            !conflict_checks.contains(&fe_wt_str),
+            "frontend should NOT have conflict check (theirs strategy)"
+        );
 
         // Frontend rebase should use "theirs" strategy
         let rebase_calls = git.rebase_calls.lock().unwrap();
-        let fe_rebase = rebase_calls.iter().find(|(p, _, _)| p == &fe_wt_str).unwrap();
+        let fe_rebase = rebase_calls
+            .iter()
+            .find(|(p, _, _)| p == &fe_wt_str)
+            .unwrap();
         assert_eq!(fe_rebase.2, "theirs");
 
         // Backend rebase should use "manual" strategy (safe -> manual mapping)
-        let be_rebase = rebase_calls.iter().find(|(p, _, _)| p == &be_wt_str).unwrap();
+        let be_rebase = rebase_calls
+            .iter()
+            .find(|(p, _, _)| p == &be_wt_str)
+            .unwrap();
         assert_eq!(be_rebase.2, "manual");
     }
 
@@ -1226,9 +1488,9 @@ impl std::fmt::Display for SyncStatus {
         match self {
             SyncStatus::Synced => write!(f, "synced"),
             SyncStatus::UpToDate => write!(f, "up-to-date"),
-            SyncStatus::Skipped(reason) => write!(f, "skipped: {}", reason),
+            SyncStatus::Skipped(reason) => write!(f, "skipped: {reason}"),
             SyncStatus::Conflict(files) => write!(f, "conflict: {}", files.join(", ")),
-            SyncStatus::Failed(msg) => write!(f, "failed: {}", msg),
+            SyncStatus::Failed(msg) => write!(f, "failed: {msg}"),
         }
     }
 }
@@ -1241,6 +1503,7 @@ pub struct PackageSyncOutcome {
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
     pub method: String,
+    #[allow(dead_code)] // Retained for future sync history tracking
     pub previous_head: Option<String>,
 }
 
@@ -1255,6 +1518,7 @@ pub struct SyncOptions {
 }
 
 /// Fetch all packages from their remotes without rebasing/merging any worktree.
+#[allow(dead_code)] // Planned for use in future fetch subcommand
 pub fn fetch_packages(
     git: &dyn GitOps,
     manifest: &Manifest,
@@ -1295,11 +1559,11 @@ pub fn check_worktree_staleness(
                 .as_deref()
                 .or(detected.as_deref())
                 .unwrap_or(&config.default_branch);
-            let upstream = format!("{}/{}", remote, default_branch);
-            if let Ok((_ahead, behind)) = git.divergence(&wt_path, &upstream) {
-                if behind > 0 {
-                    stale.push((branch.clone(), pkg.name.clone(), behind));
-                }
+            let upstream = format!("{remote}/{default_branch}");
+            if let Ok((_ahead, behind)) = git.divergence(&wt_path, &upstream)
+                && behind > 0
+            {
+                stale.push((branch.clone(), pkg.name.clone(), behind));
             }
         }
     }
@@ -1339,22 +1603,24 @@ pub fn sync_worktree(
         .collect();
 
     // Phase 1: Parallel fetch
-    let fetch_results: Vec<(&crate::core::workspace::PackageEntry, std::result::Result<(), String>)> =
-        packages
-            .par_iter()
-            .map(|pkg| {
-                let repo_path = workspace::package_path(workspace_root, &pkg.name);
-                let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-                if !wt_path.exists() {
-                    return (*pkg, Err("worktree does not exist".to_string()));
-                }
-                let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-                match git.fetch(&repo_path, remote) {
-                    Ok(()) => (*pkg, Ok(())),
-                    Err(e) => (*pkg, Err(e.to_string())),
-                }
-            })
-            .collect();
+    let fetch_results: Vec<(
+        &crate::core::workspace::PackageEntry,
+        std::result::Result<(), String>,
+    )> = packages
+        .par_iter()
+        .map(|pkg| {
+            let repo_path = workspace::package_path(workspace_root, &pkg.name);
+            let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
+            if !wt_path.exists() {
+                return (*pkg, Err("worktree does not exist".to_string()));
+            }
+            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+            match git.fetch(&repo_path, remote) {
+                Ok(()) => (*pkg, Ok(())),
+                Err(e) => (*pkg, Err(e.to_string())),
+            }
+        })
+        .collect();
 
     // Phase 2: Sequential analysis + sync per package
     let mut outcomes = Vec::new();
@@ -1380,7 +1646,7 @@ pub fn sync_worktree(
         if let Err(e) = fetch_result {
             outcomes.push(PackageSyncOutcome {
                 package: pkg.name.clone(),
-                status: SyncStatus::Failed(format!("fetch failed: {}", e)),
+                status: SyncStatus::Failed(format!("fetch failed: {e}")),
                 ahead: None,
                 behind: None,
                 method: method.to_string(),
@@ -1400,7 +1666,7 @@ pub fn sync_worktree(
             detected.as_deref().unwrap_or(&config.default_branch)
         };
 
-        let upstream = format!("{}/{}", remote, default_branch);
+        let upstream = format!("{remote}/{default_branch}");
 
         // Get divergence info
         let (ahead, behind) = git.divergence(&wt_path, &upstream).unwrap_or((0, 0));
@@ -1422,14 +1688,13 @@ pub fn sync_worktree(
         }
 
         // Resolve per-package strategy (package override > global)
-        let strategy = pkg
-            .sync_strategy
-            .as_deref()
-            .unwrap_or(global_strategy);
+        let strategy = pkg.sync_strategy.as_deref().unwrap_or(global_strategy);
 
         // "safe" strategy: check for conflicts before proceeding
         if strategy == "safe" && ahead > 0 {
-            let conflicts = git.check_merge_conflicts(&wt_path, &upstream).unwrap_or_default();
+            let conflicts = git
+                .check_merge_conflicts(&wt_path, &upstream)
+                .unwrap_or_default();
             if !conflicts.is_empty() {
                 outcomes.push(PackageSyncOutcome {
                     package: pkg.name.clone(),
@@ -1458,7 +1723,11 @@ pub fn sync_worktree(
 
         // Determine the git strategy flag to pass
         // "safe" = no -X flag (git stops naturally on conflict)
-        let git_strategy = if strategy == "safe" { "manual" } else { strategy };
+        let git_strategy = if strategy == "safe" {
+            "manual"
+        } else {
+            strategy
+        };
 
         // Perform the sync
         let result = if method == "merge" {

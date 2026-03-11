@@ -256,7 +256,10 @@ pub fn detect_current_worktree_dir(workspace_root: &Path, cwd: &Path) -> Option<
 
 /// Given a sanitized directory name (from `detect_current_worktree_dir`), find the
 /// actual branch name by comparing against known branches.
-pub fn resolve_branch_from_dir<'a>(dir_name: &str, mut branches: impl Iterator<Item = &'a str>) -> Option<String> {
+pub fn resolve_branch_from_dir<'a>(
+    dir_name: &str,
+    mut branches: impl Iterator<Item = &'a str>,
+) -> Option<String> {
     branches
         .find(|b| sanitize_branch_for_dir(b) == dir_name)
         .map(|b| b.to_string())
@@ -446,12 +449,15 @@ url = "https://github.com/org/backend.git"
         let root = Path::new("/workspace");
         // After sanitization, fm/whatever becomes fm-whatever on disk
         let cwd = Path::new("/workspace/worktrees/fm-whatever/frontend");
-        assert_eq!(detect_current_worktree_dir(root, cwd), Some("fm-whatever".to_string()));
+        assert_eq!(
+            detect_current_worktree_dir(root, cwd),
+            Some("fm-whatever".to_string())
+        );
     }
 
     #[test]
     fn test_resolve_branch_from_dir() {
-        let branches = vec!["fm/whatever", "feature-x", "main"];
+        let branches = ["fm/whatever", "feature-x", "main"];
         assert_eq!(
             resolve_branch_from_dir("fm-whatever", branches.iter().copied()),
             Some("fm/whatever".to_string())
@@ -477,7 +483,28 @@ definition = "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}"
 panes = ["frontend", "backend"]
 "#;
         let manifest: Manifest = toml::from_str(input).unwrap();
+
+        // Verify the layout section was parsed
+        assert!(manifest.layout.is_some());
         let layout = manifest.layout.unwrap();
+
+        // Verify pane count and names
         assert_eq!(layout.panes.len(), 2);
+        assert_eq!(layout.panes[0], "frontend");
+        assert_eq!(layout.panes[1], "backend");
+
+        // Verify the layout definition string is preserved exactly
+        assert_eq!(layout.definition, "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}");
+
+        // Verify workspace name is still parsed correctly alongside layout
+        assert_eq!(manifest.workspace.name, "test");
+
+        // Verify a manifest without a layout section parses with None
+        let no_layout_input = r#"
+[workspace]
+name = "no-layout"
+"#;
+        let no_layout: Manifest = toml::from_str(no_layout_input).unwrap();
+        assert!(no_layout.layout.is_none());
     }
 }

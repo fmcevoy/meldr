@@ -29,6 +29,6 @@ pub fn run(workspace_root: &Path, name: Option<&str>) -> Result<()> {
     // Ensure global config directory exists
     config::ensure_global_config()?;
 
-    println!("Initialized meldr workspace '{}'", workspace_name);
+    println!("Initialized meldr workspace '{workspace_name}'");
     Ok(())
 }

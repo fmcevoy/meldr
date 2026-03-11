@@ -7,11 +7,11 @@ use crate::error::Result;
 pub fn set(workspace_root: Option<&Path>, key: &str, value: &str, global: bool) -> Result<()> {
     if global {
         config::global_config_set(key, value)?;
-        println!("Set {} = {} (global)", key, value);
+        println!("Set {key} = {value} (global)");
     } else {
         let root = require_workspace(workspace_root)?;
         config::config_set(root, key, value)?;
-        println!("Set {} = {} (workspace)", key, value);
+        println!("Set {key} = {value} (workspace)");
     }
     Ok(())
 }
@@ -19,14 +19,14 @@ pub fn set(workspace_root: Option<&Path>, key: &str, value: &str, global: bool) 
 pub fn get(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()> {
     if global {
         match config::global_config_get(key)? {
-            Some(value) => println!("{}", value),
-            None => println!("{} is not set (global)", key),
+            Some(value) => println!("{value}"),
+            None => println!("{key} is not set (global)"),
         }
     } else {
         let root = require_workspace(workspace_root)?;
         match config::config_get(root, key)? {
-            Some(value) => println!("{}", value),
-            None => println!("{} is not set (workspace)", key),
+            Some(value) => println!("{value}"),
+            None => println!("{key} is not set (workspace)"),
         }
     }
     Ok(())
@@ -35,11 +35,11 @@ pub fn get(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()>
 pub fn unset(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()> {
     if global {
         config::global_config_unset(key)?;
-        println!("Unset {} (global)", key);
+        println!("Unset {key} (global)");
     } else {
         let root = require_workspace(workspace_root)?;
         config::config_unset(root, key)?;
-        println!("Unset {} (workspace)", key);
+        println!("Unset {key} (workspace)");
     }
     Ok(())
 }
@@ -86,8 +86,16 @@ pub fn show(workspace_root: Option<&Path>) -> Result<()> {
     let manifest = Manifest::load(root)?;
 
     let keys = [
-        "agent", "mode", "sync_method", "sync_strategy",
-        "editor", "default_branch", "remote", "shell", "layout", "window_name",
+        "agent",
+        "mode",
+        "sync_method",
+        "sync_strategy",
+        "editor",
+        "default_branch",
+        "remote",
+        "shell",
+        "layout",
+        "window_name",
     ];
 
     println!("Configuration sources (workspace > global > default):\n");
@@ -105,12 +113,12 @@ pub fn show(workspace_root: Option<&Path>) -> Result<()> {
             (default_val, "default")
         };
 
-        println!("  {} = {} ({})", key, effective, source);
+        println!("  {key} = {effective} ({source})");
     }
     Ok(())
 }
 
-fn require_workspace<'a>(root: Option<&'a Path>) -> Result<&'a Path> {
+fn require_workspace(root: Option<&Path>) -> Result<&Path> {
     root.ok_or_else(|| {
         crate::error::MeldrError::Config(
             "Not in a meldr workspace. Use --global for global config.".to_string(),
@@ -120,8 +128,8 @@ fn require_workspace<'a>(root: Option<&'a Path>) -> Result<&'a Path> {
 
 fn print_opt(label: &str, val: &Option<String>) {
     match val {
-        Some(v) => println!("{} = {}", label, v),
-        None => println!("{} = (not set)", label),
+        Some(v) => println!("{label} = {v}"),
+        None => println!("{label} = (not set)"),
     }
 }
 

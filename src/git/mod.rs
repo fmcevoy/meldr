@@ -42,7 +42,7 @@ impl RealGit {
             .args(args)
             .current_dir(cwd)
             .output()
-            .map_err(|e| MeldrError::Git(format!("Failed to run git: {}", e)))?;
+            .map_err(|e| MeldrError::Git(format!("Failed to run git: {e}")))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -91,8 +91,7 @@ impl GitOps for RealGit {
                 Self::run(&["worktree", "add", &dest_str, "-b", branch], repo).map_err(
                     |second_err| {
                         MeldrError::Git(format!(
-                            "Could not attach to existing branch ({}) or create new branch ({})",
-                            first_err, second_err
+                            "Could not attach to existing branch ({first_err}) or create new branch ({second_err})"
                         ))
                     },
                 )?;
@@ -151,50 +150,40 @@ impl GitOps for RealGit {
     }
 
     fn detect_default_branch(&self, path: &Path, remote: &str) -> Option<String> {
-        let ref_path = format!("refs/remotes/{}/HEAD", remote);
+        let ref_path = format!("refs/remotes/{remote}/HEAD");
         let output = Self::run(&["symbolic-ref", &ref_path], path).ok()?;
         // Output is like "refs/remotes/origin/main" — extract the branch name
-        let prefix = format!("refs/remotes/{}/", remote);
+        let prefix = format!("refs/remotes/{remote}/");
         output.strip_prefix(&prefix).map(|s| s.to_string())
     }
 
     fn ensure_remote_tracking(&self, path: &Path, remote: &str) -> Result<()> {
-        let refspec_key = format!("remote.{}.fetch", remote);
-        let expected_refspec = format!(
-            "+refs/heads/*:refs/remotes/{}/*",
-            remote
-        );
+        let refspec_key = format!("remote.{remote}.fetch");
+        let expected_refspec = format!("+refs/heads/*:refs/remotes/{remote}/*");
 
         // Check if the fetch refspec is already configured
-        let current = Self::run(&["config", "--get-all", &refspec_key], path)
-            .unwrap_or_default();
+        let current = Self::run(&["config", "--get-all", &refspec_key], path).unwrap_or_default();
 
         if !current.lines().any(|line| line.trim() == expected_refspec) {
             // Set the fetch refspec so `git fetch` populates refs/remotes/<remote>/*
-            Self::run(
-                &["config", &refspec_key, &expected_refspec],
-                path,
-            )?;
+            Self::run(&["config", &refspec_key, &expected_refspec], path)?;
 
             // Fetch to populate the remote tracking refs now
             Self::run(&["fetch", remote], path)?;
         }
 
         // Ensure refs/remotes/<remote>/HEAD is set
-        let head_ref = format!("refs/remotes/{}/HEAD", remote);
+        let head_ref = format!("refs/remotes/{remote}/HEAD");
         if Self::run(&["symbolic-ref", &head_ref], path).is_err() {
             // Detect the default branch from the remote and set HEAD
-            let _ = Self::run(
-                &["remote", "set-head", remote, "--auto"],
-                path,
-            );
+            let _ = Self::run(&["remote", "set-head", remote, "--auto"], path);
         }
 
         Ok(())
     }
 
     fn divergence(&self, path: &Path, upstream: &str) -> Result<(u32, u32)> {
-        let range = format!("HEAD...{}", upstream);
+        let range = format!("HEAD...{upstream}");
         let output = Self::run(&["rev-list", "--left-right", "--count", &range], path)?;
         let parts: Vec<&str> = output.split_whitespace().collect();
         if parts.len() != 2 {
@@ -216,7 +205,7 @@ impl GitOps for RealGit {
             .args(["merge-tree", "--write-tree", "HEAD", upstream])
             .current_dir(path)
             .output()
-            .map_err(|e| MeldrError::Git(format!("Failed to run git merge-tree: {}", e)))?;
+            .map_err(|e| MeldrError::Git(format!("Failed to run git merge-tree: {e}")))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
