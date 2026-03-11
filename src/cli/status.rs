@@ -38,7 +38,7 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
             let tmux_info = wt
                 .tmux_window
                 .as_deref()
-                .map(|w| format!(" [tmux: {}]", w))
+                .map(|w| format!(" [tmux: {w}]"))
                 .unwrap_or_default();
 
             let mut dirty_pkgs = Vec::new();
@@ -60,7 +60,7 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
                 )
             };
 
-            println!("  {}{}{}", branch, tmux_info, dirty_info);
+            println!("  {branch}{tmux_info}{dirty_info}");
         }
     }
 

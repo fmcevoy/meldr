@@ -6,9 +6,9 @@ use console::style;
 pub fn trace_cmd(program: &str, args: &[&str], cwd: Option<&str>) {
     let cmd = format!("{} {}", program, shell_join(args));
     let line = if let Some(dir) = cwd {
-        format!("  $ {} (in {})", cmd, dir)
+        format!("  $ {cmd} (in {dir})")
     } else {
-        format!("  $ {}", cmd)
+        format!("  $ {cmd}")
     };
     eprintln!("{}", style(line).dim());
 }
@@ -17,7 +17,7 @@ fn shell_join(args: &[&str]) -> String {
     args.iter()
         .map(|a| {
             if a.contains(' ') || a.contains('$') || a.contains('{') || a.contains('#') {
-                format!("'{}'", a)
+                format!("'{a}'")
             } else {
                 a.to_string()
             }

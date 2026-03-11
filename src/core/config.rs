@@ -268,9 +268,9 @@ pub fn resolve_config(
     if let Some(v) = env_overrides.get("MELDR_EDITOR") {
         config.editor = v.clone();
     } else if let Some(v) = env_overrides.get("VISUAL") {
-        config.editor = format!("{} .", v);
+        config.editor = format!("{v} .");
     } else if let Some(v) = env_overrides.get("EDITOR") {
-        config.editor = format!("{} .", v);
+        config.editor = format!("{v} .");
     }
     if let Some(v) = env_overrides.get("MELDR_DEFAULT_BRANCH") {
         config.default_branch = v.clone();
@@ -736,8 +736,7 @@ mod tests {
         for key in VALID_GLOBAL_KEYS {
             assert!(
                 VALID_SETTINGS_KEYS.contains(key),
-                "Global key '{}' should also be a valid settings key",
-                key
+                "Global key '{key}' should also be a valid settings key"
             );
         }
         assert!(!VALID_GLOBAL_KEYS.contains(&"sync_method"));

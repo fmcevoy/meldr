@@ -36,12 +36,12 @@ pub fn run(
     std::fs::create_dir_all(workspace_root.join("worktrees"))?;
     std::fs::create_dir_all(workspace_root.join(".meldr"))?;
 
-    println!("Created workspace '{}'", name);
+    println!("Created workspace '{name}'");
 
     if !repos.is_empty() {
         let added = crate::core::package::add_packages(git, &mut manifest, &workspace_root, repos)?;
         for pkg_name in &added {
-            println!("Added package '{}'", pkg_name);
+            println!("Added package '{pkg_name}'");
         }
     }
 
@@ -60,7 +60,7 @@ pub fn run(
                 config,
                 global_config,
             )?;
-            println!("Created worktree '{}'", branch_name);
+            println!("Created worktree '{branch_name}'");
         }
     }
 

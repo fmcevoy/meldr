@@ -28,7 +28,7 @@ fn create_bare_repo(dir: &std::path::Path, name: &str) -> String {
         .unwrap();
 
     // Create a temporary clone to add an initial commit
-    let tmp_clone = dir.join(format!("{}-tmp", name));
+    let tmp_clone = dir.join(format!("{name}-tmp"));
     process::Command::new("git")
         .args([
             "clone",
@@ -579,8 +579,7 @@ fn test_config_set_and_get() {
     let toml_content = fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
     assert!(
         toml_content.contains("cursor"),
-        "meldr.toml should contain 'cursor' after config set, got: {}",
-        toml_content
+        "meldr.toml should contain 'cursor' after config set, got: {toml_content}"
     );
 }
 
@@ -1044,7 +1043,7 @@ fn test_config_set_new_keys() {
             .current_dir(tmp.path())
             .assert()
             .success()
-            .stdout(predicate::str::contains(format!("Set {} = {}", key, value)));
+            .stdout(predicate::str::contains(format!("Set {key} = {value}")));
 
         meldr()
             .args(["config", "get", key])
@@ -1149,8 +1148,7 @@ fn test_bare_clone_has_remote_tracking_refs() {
     let refspec_str = String::from_utf8_lossy(&refspec.stdout);
     assert!(
         refspec_str.contains("+refs/heads/*:refs/remotes/origin/*"),
-        "Bare clone should have fetch refspec for remote tracking, got: {}",
-        refspec_str
+        "Bare clone should have fetch refspec for remote tracking, got: {refspec_str}"
     );
 
     // Verify refs/remotes/origin/HEAD is set
@@ -1166,8 +1164,7 @@ fn test_bare_clone_has_remote_tracking_refs() {
     let head_str = String::from_utf8_lossy(&head_ref.stdout);
     assert!(
         head_str.contains("refs/remotes/origin/"),
-        "HEAD should point to a remote tracking ref, got: {}",
-        head_str
+        "HEAD should point to a remote tracking ref, got: {head_str}"
     );
 
     // Verify refs/remotes/origin/main exists
@@ -1371,14 +1368,12 @@ fn test_out_of_sync_warning_on_status() {
     let stderr = String::from_utf8_lossy(&output.get_output().stderr);
     assert!(
         stderr.contains("behind"),
-        "Status should warn about being behind, got stderr: {}",
-        stderr
+        "Status should warn about being behind, got stderr: {stderr}"
     );
     // Staleness warning should mention the package name
     assert!(
         stderr.contains("frontend"),
-        "Staleness warning should mention the package name 'frontend', got stderr: {}",
-        stderr
+        "Staleness warning should mention the package name 'frontend', got stderr: {stderr}"
     );
 }
 
@@ -1783,7 +1778,7 @@ fn push_upstream_commit(bare_repo_path: &std::path::Path, filename: &str, conten
         .output()
         .unwrap();
     process::Command::new("git")
-        .args(["commit", "-m", &format!("add {}", filename)])
+        .args(["commit", "-m", &format!("add {filename}")])
         .current_dir(&tmp_clone_dir)
         .output()
         .unwrap();

@@ -19,7 +19,7 @@ use tmux::RealTmux;
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -174,7 +174,7 @@ fn run(cli: Cli) -> error::Result<()> {
                             pkg,
                             &snapshot.packages[pkg][..8.min(snapshot.packages[pkg].len())]
                         ),
-                        Err(e) => eprintln!("  {} failed: {}", pkg, e),
+                        Err(e) => eprintln!("  {pkg} failed: {e}"),
                     }
                 }
                 return Ok(());
@@ -213,7 +213,7 @@ fn run(cli: Cli) -> error::Result<()> {
                     eprint!("  Fetching {} ... ", pkg.name);
                     match git.fetch(&repo_path, remote) {
                         Ok(()) => eprintln!("done"),
-                        Err(e) => eprintln!("failed: {}", e),
+                        Err(e) => eprintln!("failed: {e}"),
                     }
                 }
                 return Ok(());
@@ -221,7 +221,7 @@ fn run(cli: Cli) -> error::Result<()> {
 
             for branch_name in &branches_to_sync {
                 if branches_to_sync.len() > 1 {
-                    println!("--- Worktree '{}' ---", branch_name);
+                    println!("--- Worktree '{branch_name}' ---");
                 }
 
                 // Save pre-sync snapshot (unless dry run)

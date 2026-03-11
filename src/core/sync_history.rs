@@ -114,7 +114,7 @@ pub fn append_log(workspace_root: &Path, entry: &SyncLogEntry) -> Result<()> {
         .append(true)
         .open(&path)
         .map_err(MeldrError::Io)?;
-    writeln!(file, "{}", line)?;
+    writeln!(file, "{line}")?;
     Ok(())
 }
 

@@ -32,10 +32,10 @@ fn test_repos_dir() -> PathBuf {
 /// Copy a pre-cloned bare repo to a temp dir, returning the path to the copy.
 /// This gives each test an isolated "upstream" it can push to.
 fn copy_repo(target_dir: &Path, repo_name: &str) -> String {
-    let src = test_repos_dir().join(format!("{}.git", repo_name));
-    assert!(src.exists(), "Pre-cloned repo not found: {:?}", src);
+    let src = test_repos_dir().join(format!("{repo_name}.git"));
+    assert!(src.exists(), "Pre-cloned repo not found: {src:?}");
 
-    let dest = target_dir.join(format!("{}.git", repo_name));
+    let dest = target_dir.join(format!("{repo_name}.git"));
     copy_dir_recursive(&src, &dest);
 
     dest.to_str().unwrap().to_string()
@@ -110,7 +110,7 @@ fn push_commit_to_bare(bare_repo: &str, filename: &str, content: &str) {
         .output()
         .unwrap();
     process::Command::new("git")
-        .args(["commit", "-m", &format!("add {}", filename)])
+        .args(["commit", "-m", &format!("add {filename}")])
         .current_dir(&tmp_clone)
         .output()
         .unwrap();
@@ -184,11 +184,10 @@ fn test_add_multiple_real_repos() {
 
     // Verify each package dir exists on disk
     for pkg in &["spoon-knife", "git-consortium", "boysenberry-repo-1"] {
-        let pkg_path = tmp.path().join(format!("packages/{}", pkg));
+        let pkg_path = tmp.path().join(format!("packages/{pkg}"));
         assert!(
             pkg_path.exists(),
-            "Package directory should exist on disk: {:?}",
-            pkg_path
+            "Package directory should exist on disk: {pkg_path:?}"
         );
     }
 
@@ -1175,11 +1174,7 @@ fn test_sync_multiple_commits_upstream() {
 
     // Push multiple commits
     for i in 1..=5 {
-        push_commit_to_bare(
-            &repo,
-            &format!("multi-{}.txt", i),
-            &format!("content {}", i),
-        );
+        push_commit_to_bare(&repo, &format!("multi-{i}.txt"), &format!("content {i}"));
     }
 
     meldr()
@@ -1193,9 +1188,8 @@ fn test_sync_multiple_commits_upstream() {
     let wt = tmp.path().join("worktrees/multi-commit/spoon-knife");
     for i in 1..=5 {
         assert!(
-            wt.join(format!("multi-{}.txt", i)).exists(),
-            "File multi-{}.txt should exist after sync",
-            i
+            wt.join(format!("multi-{i}.txt")).exists(),
+            "File multi-{i}.txt should exist after sync"
         );
     }
 }
@@ -1245,13 +1239,11 @@ fn test_exec_across_real_repos() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(
         stdout.contains("worktrees/exec-test/spoon-knife"),
-        "pwd output should contain the worktree path for spoon-knife, got: {}",
-        stdout
+        "pwd output should contain the worktree path for spoon-knife, got: {stdout}"
     );
     assert!(
         stdout.contains("worktrees/exec-test/git-consortium"),
-        "pwd output should contain the worktree path for git-consortium, got: {}",
-        stdout
+        "pwd output should contain the worktree path for git-consortium, got: {stdout}"
     );
 }
 
@@ -1288,8 +1280,7 @@ fn test_exec_ls_shows_real_repo_files() {
     // spoon-knife is an npm package, should have package.json
     assert!(
         stdout.contains("package.json") || stdout.contains("index.js") || stdout.contains("README"),
-        "Should list real repo files, got: {}",
-        stdout
+        "Should list real repo files, got: {stdout}"
     );
 }
 
@@ -1357,8 +1348,7 @@ fn test_exec_git_log_shows_real_history() {
     // Should have at least one commit hash
     assert!(
         stdout.len() > 10,
-        "Should have real commit history, got: {}",
-        stdout
+        "Should have real commit history, got: {stdout}"
     );
 }
 
@@ -1448,8 +1438,7 @@ fn test_status_shows_real_packages() {
     // Verify worktree/branch info is shown
     assert!(
         stdout.contains("status-branch") || stdout.contains("Worktree"),
-        "Status should show worktree or branch info, got: {}",
-        stdout
+        "Status should show worktree or branch info, got: {stdout}"
     );
 }
 
@@ -1562,18 +1551,15 @@ fn test_config_in_workspace_with_real_repos() {
     let toml_content = fs::read_to_string(ws.join("meldr.toml")).unwrap();
     assert!(
         toml_content.contains("cursor"),
-        "meldr.toml should contain 'cursor' after config set, got: {}",
-        toml_content
+        "meldr.toml should contain 'cursor' after config set, got: {toml_content}"
     );
     assert!(
         toml_content.contains("bash"),
-        "meldr.toml should contain 'bash' after config set, got: {}",
-        toml_content
+        "meldr.toml should contain 'bash' after config set, got: {toml_content}"
     );
     assert!(
         toml_content.contains("develop"),
-        "meldr.toml should contain 'develop' after config set, got: {}",
-        toml_content
+        "meldr.toml should contain 'develop' after config set, got: {toml_content}"
     );
 }
 
@@ -1648,7 +1634,7 @@ fn test_many_worktrees_on_real_repos() {
     // Create 10 worktrees
     for i in 0..10 {
         meldr()
-            .args(["--no-tabs", "worktree", "add", &format!("stress-{}", i)])
+            .args(["--no-tabs", "worktree", "add", &format!("stress-{i}")])
             .current_dir(tmp.path())
             .assert()
             .success();
@@ -1664,16 +1650,15 @@ fn test_many_worktrees_on_real_repos() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     for i in 0..10 {
         assert!(
-            stdout.contains(&format!("stress-{}", i)),
-            "Should list stress-{}",
-            i
+            stdout.contains(&format!("stress-{i}")),
+            "Should list stress-{i}"
         );
     }
 
     // Remove them all
     for i in 0..10 {
         meldr()
-            .args(["--no-tabs", "worktree", "remove", &format!("stress-{}", i)])
+            .args(["--no-tabs", "worktree", "remove", &format!("stress-{i}")])
             .current_dir(tmp.path())
             .assert()
             .success();
@@ -1720,10 +1705,9 @@ fn test_all_four_repos_workspace() {
     ] {
         assert!(
             tmp.path()
-                .join(format!("worktrees/four-repos/{}", name))
+                .join(format!("worktrees/four-repos/{name}"))
                 .exists(),
-            "Worktree for {} should exist",
-            name
+            "Worktree for {name} should exist"
         );
     }
 
@@ -1755,9 +1739,8 @@ fn test_all_four_repos_workspace() {
         "boysenberry-repo-1",
     ] {
         assert!(
-            stdout.contains(&format!("[{}] all-four", name)),
-            "Exec output should contain [{}] all-four",
-            name
+            stdout.contains(&format!("[{name}] all-four")),
+            "Exec output should contain [{name}] all-four"
         );
     }
 }
@@ -2039,8 +2022,7 @@ fn test_bare_clone_has_remote_tracking_refs_real_repo() {
     let refspec_str = String::from_utf8_lossy(&refspec.stdout);
     assert!(
         refspec_str.contains("+refs/heads/*:refs/remotes/origin/*"),
-        "Should have fetch refspec, got: {}",
-        refspec_str
+        "Should have fetch refspec, got: {refspec_str}"
     );
 
     // Verify remote HEAD is set
@@ -2545,8 +2527,8 @@ fn test_sync_multiple_sequential_accumulates_snapshots() {
     for i in 1..=3 {
         push_commit_to_bare(
             &repo,
-            &format!("seq-{}.txt", i),
-            &format!("sequential sync {}", i),
+            &format!("seq-{i}.txt"),
+            &format!("sequential sync {i}"),
         );
 
         meldr()
@@ -2575,7 +2557,7 @@ fn test_sync_multiple_sequential_accumulates_snapshots() {
     // All 3 files should exist
     let wt = tmp.path().join("worktrees/multi-sync/spoon-knife");
     for i in 1..=3 {
-        assert!(wt.join(format!("seq-{}.txt", i)).exists());
+        assert!(wt.join(format!("seq-{i}.txt")).exists());
     }
 }
 
@@ -2686,7 +2668,7 @@ fn test_sync_conflict_detection_safe_strategy() {
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     let stderr = String::from_utf8_lossy(&output.get_output().stderr);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
 
     // Safe strategy with diverged branches should detect conflict and skip sync.
     // Verify HEAD has NOT been force-reset (local commit is preserved).
@@ -2709,9 +2691,7 @@ fn test_sync_conflict_detection_safe_strategy() {
             || combined.contains("skip")
             || combined.contains("diverged")
             || combined.contains("spoon-knife"),
-        "Should mention conflict/skip/diverged or the package in output, got stdout={}, stderr={}",
-        stdout,
-        stderr
+        "Should mention conflict/skip/diverged or the package in output, got stdout={stdout}, stderr={stderr}"
     );
 }
 
@@ -2986,8 +2966,7 @@ fn test_no_tabs_worktree_has_no_tmux_state() {
     assert!(
         state_content.contains("\"tmux_window\":null")
             || state_content.contains("\"tmux_window\": null"),
-        "tmux_window should be null for --no-tabs worktree, got: {}",
-        state_content
+        "tmux_window should be null for --no-tabs worktree, got: {state_content}"
     );
 }
 
@@ -3112,8 +3091,7 @@ fn test_worktree_add_inside_tmux_creates_windows() {
     assert!(
         !state_content.contains("\"tmux_window\":null")
             && !state_content.contains("\"tmux_window\": null"),
-        "tmux_window should be set when created inside tmux, got: {}",
-        state_content
+        "tmux_window should be set when created inside tmux, got: {state_content}"
     );
 
     // Verify worktree dir was created

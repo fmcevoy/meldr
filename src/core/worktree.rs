@@ -62,7 +62,7 @@ fn setup_tmux_windows(
                 continue;
             }
             let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-            let target = format!("{}.{}", window_id, i);
+            let target = format!("{window_id}.{i}");
             tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
             if config.should_launch_agent() {
                 tmux.send_keys(&target, &config.agent_command)?;
@@ -151,7 +151,7 @@ pub fn add_worktree(
     for result in results {
         match result {
             Ok(name) => created.push(name),
-            Err((name, e)) => errors.push(format!("{}: {}", name, e)),
+            Err((name, e)) => errors.push(format!("{name}: {e}")),
         }
     }
 
@@ -163,7 +163,7 @@ pub fn add_worktree(
     }
 
     for error in &errors {
-        eprintln!("Warning: {}", error);
+        eprintln!("Warning: {error}");
     }
 
     let setup = if needs_tmux {
@@ -257,7 +257,7 @@ pub fn remove_worktree(
     if let Some(ref window_id) = tmux_window_id
         && let Err(e) = tmux.kill_window(window_id)
     {
-        eprintln!("Warning: Could not kill tmux window '{}': {}", window_id, e);
+        eprintln!("Warning: Could not kill tmux window '{window_id}': {e}");
     }
 
     Ok(())
@@ -498,7 +498,7 @@ mod tests {
                 .iter()
                 .map(|name| PackageEntry {
                     name: name.to_string(),
-                    url: format!("https://example.com/{}.git", name),
+                    url: format!("https://example.com/{name}.git"),
                     branch: None,
                     remote: None,
                     sync_strategy: None,
@@ -715,16 +715,13 @@ mod tests {
         assert_eq!(
             removed.len(),
             3,
-            "should remove worktrees for ALL 3 packages, got: {:?}",
-            removed
+            "should remove worktrees for ALL 3 packages, got: {removed:?}"
         );
         let removed_names: Vec<&str> = removed.iter().map(|(n, _)| n.as_str()).collect();
         for pkg in packages {
             assert!(
                 removed_names.contains(pkg),
-                "package '{}' should have been removed, got: {:?}",
-                pkg,
-                removed_names
+                "package '{pkg}' should have been removed, got: {removed_names:?}"
             );
         }
 
@@ -779,9 +776,7 @@ mod tests {
 
         assert!(
             kill_order > max_git_order,
-            "tmux kill_window (order={}) must happen AFTER all git worktree removals (last git order={})",
-            kill_order,
-            max_git_order,
+            "tmux kill_window (order={kill_order}) must happen AFTER all git worktree removals (last git order={max_git_order})",
         );
     }
 
@@ -954,7 +949,7 @@ mod tests {
             let key = path.to_string_lossy().to_string();
             self.fetch_calls.lock().unwrap().push(key.clone());
             if self.fetch_should_fail.lock().unwrap().contains(&key) {
-                return Err(MeldrError::Git(format!("fetch failed for {}", key)));
+                return Err(MeldrError::Git(format!("fetch failed for {key}")));
             }
             Ok(())
         }
@@ -967,7 +962,7 @@ mod tests {
                 strategy.to_string(),
             ));
             if self.rebase_should_fail.lock().unwrap().contains(&key) {
-                return Err(MeldrError::Git(format!("rebase failed for {}", key)));
+                return Err(MeldrError::Git(format!("rebase failed for {key}")));
             }
             Ok(())
         }
@@ -1101,8 +1096,7 @@ mod tests {
                 SyncStatus::Skipped(reason) => {
                     assert!(
                         reason.contains("worktree does not exist"),
-                        "unexpected skip reason: {}",
-                        reason
+                        "unexpected skip reason: {reason}"
                     );
                 }
                 other => panic!("expected Skipped, got {:?} for {}", other, o.package),
@@ -1207,7 +1201,7 @@ mod tests {
                 assert!(files.contains(&"src/main.rs".to_string()));
                 assert!(files.contains(&"Cargo.toml".to_string()));
             }
-            other => panic!("expected Conflict, got {:?}", other),
+            other => panic!("expected Conflict, got {other:?}"),
         }
         // Should not have called rebase
         assert!(git.rebase_calls.lock().unwrap().is_empty());
@@ -1338,10 +1332,9 @@ mod tests {
         match &fe_outcome.status {
             SyncStatus::Failed(msg) => assert!(
                 msg.contains("fetch failed"),
-                "expected fetch failure message, got: {}",
-                msg
+                "expected fetch failure message, got: {msg}"
             ),
-            other => panic!("expected Failed for frontend, got {:?}", other),
+            other => panic!("expected Failed for frontend, got {other:?}"),
         }
 
         let be_outcome = outcomes.iter().find(|o| o.package == "backend").unwrap();
@@ -1368,10 +1361,9 @@ mod tests {
         match &outcomes[0].status {
             SyncStatus::Failed(msg) => assert!(
                 msg.contains("rebase failed"),
-                "expected rebase failure, got: {}",
-                msg
+                "expected rebase failure, got: {msg}"
             ),
-            other => panic!("expected Failed, got {:?}", other),
+            other => panic!("expected Failed, got {other:?}"),
         }
     }
 
@@ -1512,9 +1504,9 @@ impl std::fmt::Display for SyncStatus {
         match self {
             SyncStatus::Synced => write!(f, "synced"),
             SyncStatus::UpToDate => write!(f, "up-to-date"),
-            SyncStatus::Skipped(reason) => write!(f, "skipped: {}", reason),
+            SyncStatus::Skipped(reason) => write!(f, "skipped: {reason}"),
             SyncStatus::Conflict(files) => write!(f, "conflict: {}", files.join(", ")),
-            SyncStatus::Failed(msg) => write!(f, "failed: {}", msg),
+            SyncStatus::Failed(msg) => write!(f, "failed: {msg}"),
         }
     }
 }
@@ -1583,7 +1575,7 @@ pub fn check_worktree_staleness(
                 .as_deref()
                 .or(detected.as_deref())
                 .unwrap_or(&config.default_branch);
-            let upstream = format!("{}/{}", remote, default_branch);
+            let upstream = format!("{remote}/{default_branch}");
             if let Ok((_ahead, behind)) = git.divergence(&wt_path, &upstream)
                 && behind > 0
             {
@@ -1670,7 +1662,7 @@ pub fn sync_worktree(
         if let Err(e) = fetch_result {
             outcomes.push(PackageSyncOutcome {
                 package: pkg.name.clone(),
-                status: SyncStatus::Failed(format!("fetch failed: {}", e)),
+                status: SyncStatus::Failed(format!("fetch failed: {e}")),
                 ahead: None,
                 behind: None,
                 method: method.to_string(),
@@ -1690,7 +1682,7 @@ pub fn sync_worktree(
             detected.as_deref().unwrap_or(&config.default_branch)
         };
 
-        let upstream = format!("{}/{}", remote, default_branch);
+        let upstream = format!("{remote}/{default_branch}");
 
         // Get divergence info
         let (ahead, behind) = git.divergence(&wt_path, &upstream).unwrap_or((0, 0));

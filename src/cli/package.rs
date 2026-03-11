@@ -12,7 +12,7 @@ pub fn add(git: &dyn GitOps, workspace_root: &Path, urls: &[String]) -> Result<(
         println!("No packages were added.");
     } else {
         for name in &added {
-            println!("Added package '{}'", name);
+            println!("Added package '{name}'");
         }
 
         // Create worktrees for newly added packages in all existing worktree branches
@@ -26,15 +26,11 @@ pub fn add(git: &dyn GitOps, workspace_root: &Path, urls: &[String]) -> Result<(
                 let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
                 match git.worktree_add(&repo_path, &wt_path, branch) {
                     Ok(()) => {
-                        println!(
-                            "  Created worktree for '{}' on branch '{}'",
-                            pkg_name, branch
-                        );
+                        println!("  Created worktree for '{pkg_name}' on branch '{branch}'");
                     }
                     Err(e) => {
                         eprintln!(
-                            "Warning: Failed to create worktree for '{}' on branch '{}': {}",
-                            pkg_name, branch, e
+                            "Warning: Failed to create worktree for '{pkg_name}' on branch '{branch}': {e}"
                         );
                     }
                 }
@@ -51,7 +47,7 @@ pub fn remove(workspace_root: &Path, names: &[String]) -> Result<()> {
         println!("No packages were removed.");
     } else {
         for name in &removed {
-            println!("Removed package '{}'", name);
+            println!("Removed package '{name}'");
         }
     }
     Ok(())

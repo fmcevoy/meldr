@@ -53,7 +53,7 @@ impl RealTmux {
         let output = Command::new("tmux")
             .args(args)
             .output()
-            .map_err(|e| MeldrError::Tmux(format!("Failed to run tmux: {}", e)))?;
+            .map_err(|e| MeldrError::Tmux(format!("Failed to run tmux: {e}")))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -87,7 +87,7 @@ impl RealTmux {
             "-F",
             "#{window_id}",
         ])?;
-        let pane0 = format!("{}.0", window_id);
+        let pane0 = format!("{window_id}.0");
 
         // Split right for agent — full-height right column, 35% width
         let agent_pane = Self::run(&[
@@ -194,7 +194,7 @@ impl RealTmux {
             "-F",
             "#{window_id}",
         ])?;
-        let pane0 = format!("{}.0", window_id);
+        let pane0 = format!("{window_id}.0");
 
         let agent_pane = Self::run(&[
             "split-window",
@@ -233,7 +233,7 @@ impl RealTmux {
             "-F",
             "#{window_id}",
         ])?;
-        let pane0 = format!("{}.0", window_id);
+        let pane0 = format!("{window_id}.0");
 
         Ok(DevWindowPanes {
             window_id,
@@ -351,7 +351,7 @@ impl TmuxOps for RealTmux {
             "-F",
             "#{window_id}",
         ])?;
-        let pane0 = format!("{}.0", window_id);
+        let pane0 = format!("{window_id}.0");
 
         // Split right for agent — full-height right column, 35% width
         let agent_pane = Self::run(&[
