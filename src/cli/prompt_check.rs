@@ -80,7 +80,11 @@ mod tests {
     #[test]
     fn test_read_current_branch_from_regular_git_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_dir = tmp.path().join("worktrees").join("feature-auth").join("pkg");
+        let pkg_dir = tmp
+            .path()
+            .join("worktrees")
+            .join("feature-auth")
+            .join("pkg");
         std::fs::create_dir_all(&pkg_dir).unwrap();
 
         // Create a .git directory with HEAD
@@ -167,11 +171,7 @@ mod tests {
     fn test_branch_with_slashes() {
         // Branch fm/whatever -> dir fm-whatever
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_dir = tmp
-            .path()
-            .join("worktrees")
-            .join("fm-whatever")
-            .join("pkg");
+        let pkg_dir = tmp.path().join("worktrees").join("fm-whatever").join("pkg");
         std::fs::create_dir_all(&pkg_dir).unwrap();
 
         let git_dir = pkg_dir.join(".git");
