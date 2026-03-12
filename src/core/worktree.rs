@@ -1513,17 +1513,33 @@ mod tests {
 
         // Verify fast_forward_branch was called for each package's bare repo
         let ff_calls = git.fast_forward_calls.lock().unwrap();
-        assert_eq!(ff_calls.len(), 2, "fast_forward_branch should be called for each package");
+        assert_eq!(
+            ff_calls.len(),
+            2,
+            "fast_forward_branch should be called for each package"
+        );
 
         let fe_repo = crate::core::workspace::package_path(root, "frontend");
         let be_repo = crate::core::workspace::package_path(root, "backend");
 
-        let fe_ff = ff_calls.iter().find(|(r, _, _)| r == &fe_repo.to_string_lossy().to_string());
+        let fe_ff = ff_calls
+            .iter()
+            .find(|(r, _, _)| r == &fe_repo.to_string_lossy().to_string());
         assert!(fe_ff.is_some(), "should fast-forward frontend bare repo");
-        assert_eq!(fe_ff.unwrap().1, "main", "should fast-forward the default branch");
-        assert_eq!(fe_ff.unwrap().2, "origin", "should use the configured remote");
+        assert_eq!(
+            fe_ff.unwrap().1,
+            "main",
+            "should fast-forward the default branch"
+        );
+        assert_eq!(
+            fe_ff.unwrap().2,
+            "origin",
+            "should use the configured remote"
+        );
 
-        let be_ff = ff_calls.iter().find(|(r, _, _)| r == &be_repo.to_string_lossy().to_string());
+        let be_ff = ff_calls
+            .iter()
+            .find(|(r, _, _)| r == &be_repo.to_string_lossy().to_string());
         assert!(be_ff.is_some(), "should fast-forward backend bare repo");
     }
 
@@ -1544,7 +1560,11 @@ mod tests {
 
         // fast_forward should only be called for backend (frontend fetch failed)
         let ff_calls = git.fast_forward_calls.lock().unwrap();
-        assert_eq!(ff_calls.len(), 1, "should skip fast-forward for failed fetch");
+        assert_eq!(
+            ff_calls.len(),
+            1,
+            "should skip fast-forward for failed fetch"
+        );
         let be_repo = crate::core::workspace::package_path(root, "backend");
         assert_eq!(ff_calls[0].0, be_repo.to_string_lossy().to_string());
     }

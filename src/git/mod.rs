@@ -244,9 +244,9 @@ impl GitOps for RealGit {
     }
 
     fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()> {
-        let src = format!("refs/remotes/{}/{}", remote, branch);
-        let dst = format!("refs/heads/{}", branch);
-        let refspec = format!("{}:{}", src, dst);
+        let src = format!("refs/remotes/{remote}/{branch}");
+        let dst = format!("refs/heads/{branch}");
+        let refspec = format!("{src}:{dst}");
         Self::run(&["fetch", ".", &refspec], repo)?;
         Ok(())
     }
