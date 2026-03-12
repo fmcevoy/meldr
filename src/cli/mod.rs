@@ -3,6 +3,7 @@ pub mod create;
 pub mod exec;
 pub mod init;
 pub mod package;
+pub mod prompt_check;
 pub mod status;
 pub mod sync;
 pub mod worktree;
@@ -107,6 +108,9 @@ pub enum Commands {
         #[arg(long)]
         undo: bool,
     },
+
+    /// Check if current worktree branch matches expected branch (for shell prompts)
+    PromptCheck,
 
     /// View or modify workspace configuration
     Config {
