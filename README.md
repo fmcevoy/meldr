@@ -2,19 +2,6 @@
 
 Workspace management tool for multi-repo projects with git worktrees and tmux integration.
 
-## Prerequisites
-
-- **Rust** (1.85+ for edition 2024)
-- **Git** (2.20+ (2.38+ recommended for conflict detection))
-- **tmux** (optional, for tab/pane management)
-
-## Build & Test
-
-```bash
-cargo build
-cargo test
-```
-
 ## Install
 
 ```bash
@@ -86,56 +73,55 @@ my-project/
       backend/
 ```
 
-## Manifest Format (meldr.toml)
+## Sync
 
-```toml
-[workspace]
-name = "my-project"
-
-[settings]
-# agent = "claude"          # "claude" | "cursor" | "none"
-# mode = "full"             # "full" | "no-agent" | "no-tabs"
-# sync_method = "rebase"    # "rebase" | "merge"
-# sync_strategy = "safe"    # "safe" | "theirs" | "ours" | "manual"
-# editor = "nvim ."         # editor command (or uses $EDITOR/$VISUAL)
-# default_branch = "main"   # fallback branch for sync
-# remote = "origin"         # default git remote
-# shell = "sh"              # shell for exec (or uses $SHELL)
-# layout = "default"        # "default" | "minimal" | "editor-only"
-# window_name = "{ws}/{branch}:{pkg}"  # tmux window name template
-
-[[package]]
-name = "frontend"
-url = "https://github.com/org/frontend.git"
-branch = "main"
-# remote = "origin"         # per-package remote override
-
-[[package]]
-name = "backend"
-url = "https://github.com/org/backend.git"
-# sync_strategy = "theirs"  # per-package strategy override
+```bash
+meldr sync                        # Sync current worktree (auto-detected from cwd)
+meldr sync feature-auth           # Sync specific branch
+meldr sync --all                  # Sync all worktrees
+meldr sync --dry-run              # Preview what would happen
+meldr sync --only frontend,auth   # Only sync specific packages
+meldr sync --exclude legacy-api   # Exclude packages
+meldr sync --merge                # Use merge instead of rebase
+meldr sync --strategy theirs      # Override strategy
+meldr sync --undo                 # Undo the last sync
 ```
+
+### Sync strategies
+
+| Strategy | Default | Behavior |
+|----------|---------|----------|
+| `safe` | Yes | Checks for conflicts before syncing. Refuses if conflicts detected. |
+| `theirs` | | Auto-resolves conflicts in favor of upstream (`-Xtheirs`). |
+| `ours` | | Auto-resolves conflicts in favor of local changes (`-Xours`). |
+| `manual` | | Git stops on conflicts for manual resolution. |
+
+### Safety features
+
+- **Pre-sync snapshots** — HEAD SHAs saved to `.meldr/sync-snapshots/`; roll back with `meldr sync --undo`
+- **Conflict detection** — `safe` strategy checks for conflicts before attempting sync (Git 2.38+)
+- **Parallel fetch** — all package fetches run concurrently
+- **Summary table** — color-coded post-sync status with ahead/behind counts
+- **Sync log** — operations logged to `.meldr/sync-log.jsonl`
+
+Auto-detects default branch from remote, falling back to configured `default_branch`. Per-package `branch`, `remote`, and `sync_strategy` overrides are respected.
 
 ## Configuration
 
-### Settings
-
-| Key | Default | Env vars | Description |
-|-----|---------|----------|-------------|
+| Key | Default | Env var | Description |
+|-----|---------|---------|-------------|
 | `agent` | `claude` | `MELDR_AGENT` | AI agent to launch |
 | `mode` | `full` | `MELDR_MODE` | `full`, `no-agent`, or `no-tabs` |
 | `sync_method` | `rebase` | | `rebase` or `merge` |
-| `sync_strategy` | `safe` | | `"safe"`, `"theirs"`, `"ours"`, or `"manual"` |
-| `editor` | `nvim .` | `MELDR_EDITOR`, `$VISUAL`, `$EDITOR` | Editor command for tmux panes |
-| `default_branch` | `main` | `MELDR_DEFAULT_BRANCH` | Fallback branch for sync (auto-detected when possible) |
-| `remote` | `origin` | `MELDR_REMOTE` | Default git remote name |
-| `shell` | `sh` | `MELDR_SHELL`, `$SHELL` | Shell used by `meldr exec` |
+| `sync_strategy` | `safe` | | `safe`, `theirs`, `ours`, or `manual` |
+| `editor` | `nvim .` | `MELDR_EDITOR`, `$VISUAL`, `$EDITOR` | Editor command |
+| `default_branch` | `main` | `MELDR_DEFAULT_BRANCH` | Fallback branch for sync |
+| `remote` | `origin` | `MELDR_REMOTE` | Default git remote |
+| `shell` | `sh` | `MELDR_SHELL`, `$SHELL` | Shell for `meldr exec` |
 | `layout` | `default` | `MELDR_LAYOUT` | Tmux layout preset |
 | `window_name` | `{ws}/{branch}:{pkg}` | | Tmux window name template |
 
-### Configuration Layering
-
-Configuration is resolved in order (highest priority first):
+### Configuration layering (highest priority first)
 
 1. **CLI flags** (`--no-agent`, `--no-tabs`)
 2. **Environment variables** (`MELDR_*`, `$EDITOR`, `$VISUAL`, `$SHELL`)
@@ -143,36 +129,11 @@ Configuration is resolved in order (highest priority first):
 4. **Global config** (`~/.config/meldr/config.toml`)
 5. **Built-in defaults**
 
-### Global Config (~/.config/meldr/config.toml)
-
-```toml
-[defaults]
-agent = "claude"
-editor = "code ."
-layout = "minimal"
-shell = "/bin/zsh"
-
-[agents.claude]
-command = "claude"
-
-[agents.cursor]
-command = "cursor ."
-
-# Custom tmux layout presets
-[layouts.wide]
-setup = [
-  "split-window -t {{window}}.0 -h -p 30 -c {{cwd}} -P -F '#{pane_id}'",
-  "select-pane -t {{window}}.0",
-]
-editor_pane = 0
-agent_pane = 1
-```
-
 ## Tmux Integration
 
-When running inside tmux (default mode), `meldr worktree add` creates a development environment for each package with editor, agent, and terminal panes.
+When running inside tmux, `meldr worktree add` creates a development environment for each package.
 
-### Built-in Layout Presets
+### Layout presets
 
 **`default`** — 6 panes: editor + agent + 4 terminals
 ```
@@ -205,9 +166,9 @@ When running inside tmux (default mode), `meldr worktree add` creates a developm
 +-------------------------------+
 ```
 
-### Custom Layouts
+### Custom layouts
 
-Define custom layouts in `~/.config/meldr/config.toml` using raw tmux commands:
+Define in `~/.config/meldr/config.toml`:
 
 ```toml
 [layouts.my-layout]
@@ -222,75 +183,67 @@ agent_pane = 1
 
 Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`.
 
-Then select it: `meldr config set layout my-layout`
+Select with: `meldr config set layout my-layout`
 
-### Layout Override (per-workspace)
+---
 
-For fully custom tmux layouts using layout definitions:
+## Development
 
-```toml
-[layout]
-definition = "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}"
-panes = ["frontend", "backend"]
-```
+### Prerequisites
 
-## Sync
+- **Rust** 1.88+ (edition 2024)
+- **Git** 2.20+ (2.38+ recommended for conflict detection)
+- **tmux** (optional, for integration tests and tab/pane management)
+- **Docker** (for integration tests)
+
+### Build & Test
 
 ```bash
-# Sync current worktree (auto-detected from cwd)
-meldr sync
-
-# Sync specific branch
-meldr sync feature-auth
-
-# Sync all worktrees
-meldr sync --all
-
-# Preview what would happen (no changes)
-meldr sync --dry-run
-
-# Only sync specific packages
-meldr sync --only frontend,auth
-
-# Exclude packages from sync
-meldr sync --exclude legacy-api
-
-# Use merge instead of rebase
-meldr sync --merge
-
-# Override strategy
-meldr sync --strategy theirs
-
-# Undo the last sync
-meldr sync --undo
+cargo build                    # Compile
+cargo clippy --all-targets -- -D warnings  # Lint
+cargo fmt --check              # Format check
+cargo test --bin meldr          # Unit tests
+./run-docker-tests.sh          # Integration tests (Docker)
 ```
 
-### Sync strategies
+### CI Pipeline
 
-| Strategy | Default | Behavior |
-|----------|---------|----------|
-| `safe` | Yes | Checks for conflicts before syncing. Refuses if local commits conflict with upstream. No `-X` flag passed to git. |
-| `theirs` | | Auto-resolves conflicts in favor of upstream (`-Xtheirs`). |
-| `ours` | | Auto-resolves conflicts in favor of local changes (`-Xours`). |
-| `manual` | | No `-X` flag. Git stops on conflicts for manual resolution. |
+CI runs on every push to `main` and every pull request:
 
-### Per-package strategy
+| Stage | Jobs | Gate |
+|-------|------|------|
+| 1 | `build`, `lint`, `format` (parallel) | — |
+| 2 | `unit-tests` | Stage 1 passes |
+| 3 | `integration-tests` (Docker) | Stage 2 passes |
 
-Override the sync strategy for individual packages in `meldr.toml`:
+All integration tests run inside Docker for consistent, isolated environments.
+
+### Manifest format (meldr.toml)
 
 ```toml
+[workspace]
+name = "my-project"
+
+[settings]
+# agent = "claude"          # "claude" | "cursor" | "none"
+# mode = "full"             # "full" | "no-agent" | "no-tabs"
+# sync_method = "rebase"    # "rebase" | "merge"
+# sync_strategy = "safe"    # "safe" | "theirs" | "ours" | "manual"
+# editor = "nvim ."         # editor command (or uses $EDITOR/$VISUAL)
+# default_branch = "main"   # fallback branch for sync
+# remote = "origin"         # default git remote
+# shell = "sh"              # shell for exec (or uses $SHELL)
+# layout = "default"        # "default" | "minimal" | "editor-only"
+# window_name = "{ws}/{branch}:{pkg}"  # tmux window name template
+
 [[package]]
-name = "vendor-lib"
-url = "https://github.com/org/vendor-lib.git"
-sync_strategy = "theirs"  # always take upstream for this package
+name = "frontend"
+url = "https://github.com/org/frontend.git"
+branch = "main"
+# remote = "origin"         # per-package remote override
+
+[[package]]
+name = "backend"
+url = "https://github.com/org/backend.git"
+# sync_strategy = "theirs"  # per-package strategy override
 ```
-
-### Sync safety features
-
-- **Pre-sync snapshots**: Before every sync, package HEAD SHAs are saved to `.meldr/sync-snapshots/`. Use `meldr sync --undo` to roll back.
-- **Conflict detection**: With the `safe` strategy (default), meldr checks for merge conflicts before attempting a sync using `git merge-tree --write-tree` (Git 2.38+).
-- **Parallel fetch**: All package fetches run in parallel for faster syncs.
-- **Summary table**: After sync, a color-coded table shows status, ahead/behind counts, and method for each package.
-- **Sync log**: Operations are logged to `.meldr/sync-log.jsonl` for debugging.
-
-The sync command auto-detects the default branch from the remote when possible, falling back to the configured `default_branch` (default: `main`). Per-package `branch`, `remote`, and `sync_strategy` overrides in `meldr.toml` are respected.

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::core::config::{self, CliOverrides};
@@ -8,11 +7,11 @@ use crate::error::Result;
 pub fn set(workspace_root: Option<&Path>, key: &str, value: &str, global: bool) -> Result<()> {
     if global {
         config::global_config_set(key, value)?;
-        println!("Set {} = {} (global)", key, value);
+        println!("Set {key} = {value} (global)");
     } else {
         let root = require_workspace(workspace_root)?;
         config::config_set(root, key, value)?;
-        println!("Set {} = {} (workspace)", key, value);
+        println!("Set {key} = {value} (workspace)");
     }
     Ok(())
 }
@@ -20,14 +19,14 @@ pub fn set(workspace_root: Option<&Path>, key: &str, value: &str, global: bool) 
 pub fn get(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()> {
     if global {
         match config::global_config_get(key)? {
-            Some(value) => println!("{}", value),
-            None => println!("{} is not set (global)", key),
+            Some(value) => println!("{value}"),
+            None => println!("{key} is not set (global)"),
         }
     } else {
         let root = require_workspace(workspace_root)?;
         match config::config_get(root, key)? {
-            Some(value) => println!("{}", value),
-            None => println!("{} is not set (workspace)", key),
+            Some(value) => println!("{value}"),
+            None => println!("{key} is not set (workspace)"),
         }
     }
     Ok(())
@@ -36,11 +35,11 @@ pub fn get(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()>
 pub fn unset(workspace_root: Option<&Path>, key: &str, global: bool) -> Result<()> {
     if global {
         config::global_config_unset(key)?;
-        println!("Unset {} (global)", key);
+        println!("Unset {key} (global)");
     } else {
         let root = require_workspace(workspace_root)?;
         config::config_unset(root, key)?;
-        println!("Unset {} (workspace)", key);
+        println!("Unset {key} (workspace)");
     }
     Ok(())
 }
@@ -62,7 +61,7 @@ pub fn list(workspace_root: Option<&Path>, global: bool) -> Result<()> {
         let global_cfg = config::load_global_config()?;
         let manifest = Manifest::load(root)?;
         let cli = CliOverrides::default();
-        let env = HashMap::new();
+        let env = config::collect_env_overrides();
         let effective = config::resolve_config(&global_cfg, &manifest.settings, &cli, &env);
 
         println!("Effective configuration:");
@@ -87,8 +86,16 @@ pub fn show(workspace_root: Option<&Path>) -> Result<()> {
     let manifest = Manifest::load(root)?;
 
     let keys = [
-        "agent", "mode", "sync_method", "sync_strategy",
-        "editor", "default_branch", "remote", "shell", "layout", "window_name",
+        "agent",
+        "mode",
+        "sync_method",
+        "sync_strategy",
+        "editor",
+        "default_branch",
+        "remote",
+        "shell",
+        "layout",
+        "window_name",
     ];
 
     println!("Configuration sources (workspace > global > default):\n");
@@ -106,12 +113,12 @@ pub fn show(workspace_root: Option<&Path>) -> Result<()> {
             (default_val, "default")
         };
 
-        println!("  {} = {} ({})", key, effective, source);
+        println!("  {key} = {effective} ({source})");
     }
     Ok(())
 }
 
-fn require_workspace<'a>(root: Option<&'a Path>) -> Result<&'a Path> {
+fn require_workspace(root: Option<&Path>) -> Result<&Path> {
     root.ok_or_else(|| {
         crate::error::MeldrError::Config(
             "Not in a meldr workspace. Use --global for global config.".to_string(),
@@ -121,17 +128,17 @@ fn require_workspace<'a>(root: Option<&'a Path>) -> Result<&'a Path> {
 
 fn print_opt(label: &str, val: &Option<String>) {
     match val {
-        Some(v) => println!("{} = {}", label, v),
-        None => println!("{} = (not set)", label),
+        Some(v) => println!("{label} = {v}"),
+        None => println!("{label} = (not set)"),
     }
 }
 
 fn ws_setting(settings: &crate::core::workspace::Settings, key: &str) -> Option<String> {
     match key {
-        "agent" if !settings.agent.is_empty() => Some(settings.agent.clone()),
-        "mode" if !settings.mode.is_empty() => Some(settings.mode.clone()),
-        "sync_method" if !settings.sync_method.is_empty() => Some(settings.sync_method.clone()),
-        "sync_strategy" if !settings.sync_strategy.is_empty() => Some(settings.sync_strategy.clone()),
+        "agent" => settings.agent.clone(),
+        "mode" => settings.mode.clone(),
+        "sync_method" => settings.sync_method.clone(),
+        "sync_strategy" => settings.sync_strategy.clone(),
         "editor" => settings.editor.clone(),
         "default_branch" => settings.default_branch.clone(),
         "remote" => settings.remote.clone(),

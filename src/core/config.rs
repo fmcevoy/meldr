@@ -202,11 +202,11 @@ pub fn resolve_config(
     cli: &CliOverrides,
     env_overrides: &HashMap<String, String>,
 ) -> EffectiveConfig {
-    let mut config = EffectiveConfig::default();
-
-    // Layer 4: Global config
-    config.agent = global.defaults.agent.clone();
-    config.mode = global.defaults.mode.clone();
+    let mut config = EffectiveConfig {
+        agent: global.defaults.agent.clone(),
+        mode: global.defaults.mode.clone(),
+        ..Default::default()
+    };
     if let Some(ref v) = global.defaults.editor {
         config.editor = v.clone();
     }
@@ -227,17 +227,17 @@ pub fn resolve_config(
     }
 
     // Layer 3: Workspace settings
-    if !workspace_settings.agent.is_empty() {
-        config.agent = workspace_settings.agent.clone();
+    if let Some(ref v) = workspace_settings.agent {
+        config.agent = v.clone();
     }
-    if !workspace_settings.mode.is_empty() {
-        config.mode = workspace_settings.mode.clone();
+    if let Some(ref v) = workspace_settings.mode {
+        config.mode = v.clone();
     }
-    if !workspace_settings.sync_method.is_empty() {
-        config.sync_method = workspace_settings.sync_method.clone();
+    if let Some(ref v) = workspace_settings.sync_method {
+        config.sync_method = v.clone();
     }
-    if !workspace_settings.sync_strategy.is_empty() {
-        config.sync_strategy = workspace_settings.sync_strategy.clone();
+    if let Some(ref v) = workspace_settings.sync_strategy {
+        config.sync_strategy = v.clone();
     }
     if let Some(ref v) = workspace_settings.editor {
         config.editor = v.clone();
@@ -268,9 +268,9 @@ pub fn resolve_config(
     if let Some(v) = env_overrides.get("MELDR_EDITOR") {
         config.editor = v.clone();
     } else if let Some(v) = env_overrides.get("VISUAL") {
-        config.editor = format!("{} .", v);
+        config.editor = format!("{v} .");
     } else if let Some(v) = env_overrides.get("EDITOR") {
-        config.editor = format!("{} .", v);
+        config.editor = format!("{v} .");
     }
     if let Some(v) = env_overrides.get("MELDR_DEFAULT_BRANCH") {
         config.default_branch = v.clone();
@@ -312,8 +312,16 @@ pub fn default_agent_command(agent: &str) -> String {
 }
 
 const VALID_SETTINGS_KEYS: &[&str] = &[
-    "agent", "mode", "sync_method", "sync_strategy",
-    "editor", "default_branch", "remote", "shell", "layout", "window_name",
+    "agent",
+    "mode",
+    "sync_method",
+    "sync_strategy",
+    "editor",
+    "default_branch",
+    "remote",
+    "shell",
+    "layout",
+    "window_name",
 ];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
@@ -347,10 +355,10 @@ pub fn config_get(workspace_root: &Path, key: &str) -> Result<Option<String>> {
     let content = std::fs::read_to_string(&manifest_path)?;
     let doc: toml::Table = toml::from_str(&content)?;
 
-    if let Some(toml::Value::Table(settings)) = doc.get("settings") {
-        if let Some(toml::Value::String(val)) = settings.get(key) {
-            return Ok(Some(val.clone()));
-        }
+    if let Some(toml::Value::Table(settings)) = doc.get("settings")
+        && let Some(toml::Value::String(val)) = settings.get(key)
+    {
+        return Ok(Some(val.clone()));
     }
     Ok(None)
 }
@@ -379,7 +387,14 @@ pub fn config_unset(workspace_root: &Path, key: &str) -> Result<()> {
 
 /// Valid keys for the `[defaults]` section in global config.
 const VALID_GLOBAL_KEYS: &[&str] = &[
-    "agent", "mode", "editor", "default_branch", "remote", "shell", "layout", "window_name",
+    "agent",
+    "mode",
+    "editor",
+    "default_branch",
+    "remote",
+    "shell",
+    "layout",
+    "window_name",
 ];
 
 pub fn global_config_set(key: &str, value: &str) -> Result<()> {
@@ -417,10 +432,10 @@ pub fn global_config_get(key: &str) -> Result<Option<String>> {
     let content = std::fs::read_to_string(&path)?;
     let doc: toml::Table = toml::from_str(&content)?;
 
-    if let Some(toml::Value::Table(defaults)) = doc.get("defaults") {
-        if let Some(toml::Value::String(val)) = defaults.get(key) {
-            return Ok(Some(val.clone()));
-        }
+    if let Some(toml::Value::Table(defaults)) = doc.get("defaults")
+        && let Some(toml::Value::String(val)) = defaults.get(key)
+    {
+        return Ok(Some(val.clone()));
     }
     Ok(None)
 }
@@ -446,6 +461,28 @@ pub fn global_config_unset(key: &str) -> Result<()> {
         toml::to_string_pretty(&doc).map_err(|e| MeldrError::Config(e.to_string()))?;
     std::fs::write(&path, new_content)?;
     Ok(())
+}
+
+/// Collect environment variable overrides relevant to meldr configuration.
+pub fn collect_env_overrides() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    for key in &[
+        "MELDR_AGENT",
+        "MELDR_MODE",
+        "MELDR_EDITOR",
+        "MELDR_DEFAULT_BRANCH",
+        "MELDR_REMOTE",
+        "MELDR_SHELL",
+        "MELDR_LAYOUT",
+        "VISUAL",
+        "EDITOR",
+        "SHELL",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            env.insert(key.to_string(), val);
+        }
+    }
+    env
 }
 
 pub fn global_config_list() -> Result<GlobalConfig> {
@@ -492,8 +529,8 @@ mod tests {
         };
 
         let workspace = Settings {
-            agent: "claude".to_string(),
-            mode: "no-tabs".to_string(),
+            agent: Some("claude".into()),
+            mode: Some("no-tabs".into()),
             ..Default::default()
         };
 
@@ -543,7 +580,7 @@ mod tests {
     fn test_env_overrides_workspace() {
         let global = GlobalConfig::default();
         let workspace = Settings {
-            agent: "cursor".to_string(),
+            agent: Some("cursor".into()),
             ..Default::default()
         };
 
@@ -574,7 +611,7 @@ mod tests {
     fn test_default_cursor_command_resolved() {
         let global = GlobalConfig::default();
         let workspace = Settings {
-            agent: "cursor".to_string(),
+            agent: Some("cursor".into()),
             ..Default::default()
         };
         let cli = CliOverrides::default();
@@ -686,12 +723,33 @@ mod tests {
 
     #[test]
     fn test_valid_settings_keys_expanded() {
+        // Verify all expected keys are present
         assert!(VALID_SETTINGS_KEYS.contains(&"editor"));
         assert!(VALID_SETTINGS_KEYS.contains(&"default_branch"));
         assert!(VALID_SETTINGS_KEYS.contains(&"remote"));
         assert!(VALID_SETTINGS_KEYS.contains(&"shell"));
         assert!(VALID_SETTINGS_KEYS.contains(&"layout"));
         assert!(VALID_SETTINGS_KEYS.contains(&"window_name"));
+
+        // Also verify the core keys are present
+        assert!(VALID_SETTINGS_KEYS.contains(&"agent"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"mode"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"sync_method"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"sync_strategy"));
+
+        // Verify the total count matches expectations (no accidental duplicates or missing keys)
+        assert_eq!(
+            VALID_SETTINGS_KEYS.len(),
+            10,
+            "Expected exactly 10 valid settings keys"
+        );
+
+        // Verify that invalid keys are not accepted by config_set
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = "[workspace]\nname = \"test\"\n";
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+        let result = config_set(tmp.path(), "nonexistent_key", "value");
+        assert!(result.is_err(), "config_set should reject unknown keys");
     }
 
     #[test]
@@ -700,8 +758,7 @@ mod tests {
         for key in VALID_GLOBAL_KEYS {
             assert!(
                 VALID_SETTINGS_KEYS.contains(key),
-                "Global key '{}' should also be a valid settings key",
-                key
+                "Global key '{key}' should also be a valid settings key"
             );
         }
         assert!(!VALID_GLOBAL_KEYS.contains(&"sync_method"));
@@ -720,15 +777,42 @@ agent = "cursor"
 "#;
         std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
 
-        // Verify set
+        // Verify initial value via API
         assert_eq!(
             config_get(tmp.path(), "agent").unwrap(),
             Some("cursor".to_string())
         );
 
-        // Unset
+        // Set a new value
+        config_set(tmp.path(), "editor", "code .").unwrap();
+        assert_eq!(
+            config_get(tmp.path(), "editor").unwrap(),
+            Some("code .".to_string())
+        );
+
+        // Verify the TOML file on disk contains the set values
+        let on_disk = std::fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+        let doc: toml::Table = toml::from_str(&on_disk).unwrap();
+        let settings = doc["settings"].as_table().unwrap();
+        assert_eq!(settings["agent"].as_str().unwrap(), "cursor");
+        assert_eq!(settings["editor"].as_str().unwrap(), "code .");
+
+        // Unset agent
         config_unset(tmp.path(), "agent").unwrap();
         assert_eq!(config_get(tmp.path(), "agent").unwrap(), None);
+
+        // Verify disk contents after unset — agent key should be gone
+        let on_disk_after = std::fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+        let doc_after: toml::Table = toml::from_str(&on_disk_after).unwrap();
+        let settings_after = doc_after["settings"].as_table().unwrap();
+        assert!(
+            !settings_after.contains_key("agent"),
+            "agent key should be removed from disk"
+        );
+        // editor should still be present
+        assert_eq!(settings_after["editor"].as_str().unwrap(), "code .");
+        // workspace name should be preserved
+        assert_eq!(doc_after["workspace"]["name"].as_str().unwrap(), "test");
     }
 
     #[test]

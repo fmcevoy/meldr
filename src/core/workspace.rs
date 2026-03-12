@@ -21,14 +21,14 @@ pub struct WorkspaceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub agent: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub mode: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_method: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_strategy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,10 +45,10 @@ pub struct Settings {
 
 impl Settings {
     pub fn is_empty(&self) -> bool {
-        self.agent.is_empty()
-            && self.mode.is_empty()
-            && self.sync_method.is_empty()
-            && self.sync_strategy.is_empty()
+        self.agent.is_none()
+            && self.mode.is_none()
+            && self.sync_method.is_none()
+            && self.sync_strategy.is_none()
             && self.editor.is_none()
             && self.default_branch.is_none()
             && self.remote.is_none()
@@ -256,9 +256,11 @@ pub fn detect_current_worktree_dir(workspace_root: &Path, cwd: &Path) -> Option<
 
 /// Given a sanitized directory name (from `detect_current_worktree_dir`), find the
 /// actual branch name by comparing against known branches.
-pub fn resolve_branch_from_dir<'a>(dir_name: &str, branches: impl Iterator<Item = &'a str>) -> Option<String> {
+pub fn resolve_branch_from_dir<'a>(
+    dir_name: &str,
+    mut branches: impl Iterator<Item = &'a str>,
+) -> Option<String> {
     branches
-        .into_iter()
         .find(|b| sanitize_branch_for_dir(b) == dir_name)
         .map(|b| b.to_string())
 }
@@ -447,12 +449,15 @@ url = "https://github.com/org/backend.git"
         let root = Path::new("/workspace");
         // After sanitization, fm/whatever becomes fm-whatever on disk
         let cwd = Path::new("/workspace/worktrees/fm-whatever/frontend");
-        assert_eq!(detect_current_worktree_dir(root, cwd), Some("fm-whatever".to_string()));
+        assert_eq!(
+            detect_current_worktree_dir(root, cwd),
+            Some("fm-whatever".to_string())
+        );
     }
 
     #[test]
     fn test_resolve_branch_from_dir() {
-        let branches = vec!["fm/whatever", "feature-x", "main"];
+        let branches = ["fm/whatever", "feature-x", "main"];
         assert_eq!(
             resolve_branch_from_dir("fm-whatever", branches.iter().copied()),
             Some("fm/whatever".to_string())
@@ -478,7 +483,28 @@ definition = "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}"
 panes = ["frontend", "backend"]
 "#;
         let manifest: Manifest = toml::from_str(input).unwrap();
+
+        // Verify the layout section was parsed
+        assert!(manifest.layout.is_some());
         let layout = manifest.layout.unwrap();
+
+        // Verify pane count and names
         assert_eq!(layout.panes.len(), 2);
+        assert_eq!(layout.panes[0], "frontend");
+        assert_eq!(layout.panes[1], "backend");
+
+        // Verify the layout definition string is preserved exactly
+        assert_eq!(layout.definition, "1bc3,168x45,0,0{112x45,0,0,55x45,113,0}");
+
+        // Verify workspace name is still parsed correctly alongside layout
+        assert_eq!(manifest.workspace.name, "test");
+
+        // Verify a manifest without a layout section parses with None
+        let no_layout_input = r#"
+[workspace]
+name = "no-layout"
+"#;
+        let no_layout: Manifest = toml::from_str(no_layout_input).unwrap();
+        assert!(no_layout.layout.is_none());
     }
 }
