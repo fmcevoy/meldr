@@ -481,6 +481,9 @@ mod tests {
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
             Ok(())
         }
+        fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -598,6 +601,9 @@ mod tests {
             Ok("mock_sha".to_string())
         }
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
+        fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
             Ok(())
         }
     }
@@ -866,6 +872,7 @@ mod tests {
         fetch_calls: Mutex<Vec<String>>,
         reset_calls: Mutex<Vec<(String, String)>>,
         conflict_check_calls: Mutex<Vec<String>>,
+        fast_forward_calls: Mutex<Vec<(String, String, String)>>,
     }
 
     impl ConfigurableMockGit {
@@ -881,6 +888,7 @@ mod tests {
                 fetch_calls: Mutex::new(Vec::new()),
                 reset_calls: Mutex::new(Vec::new()),
                 conflict_check_calls: Mutex::new(Vec::new()),
+                fast_forward_calls: Mutex::new(Vec::new()),
             }
         }
 
@@ -1004,6 +1012,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((key, commit.to_string()));
+            Ok(())
+        }
+
+        fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()> {
+            self.fast_forward_calls.lock().unwrap().push((
+                repo.to_string_lossy().to_string(),
+                branch.to_string(),
+                remote.to_string(),
+            ));
             Ok(())
         }
     }
@@ -1476,6 +1493,81 @@ mod tests {
         let be_reset = reset_calls.iter().find(|(p, _)| p == &be_wt_str).unwrap();
         assert_eq!(be_reset.1, "def456");
     }
+
+    #[test]
+    fn test_sync_fast_forwards_bare_repo_main() {
+        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
+        let root = tmp.path();
+        create_worktree_dirs(root, "feature-x", &["frontend", "backend"]);
+
+        let git = ConfigurableMockGit::new();
+        let fe_wt = crate::core::workspace::worktree_path(root, "feature-x", "frontend");
+        let be_wt = crate::core::workspace::worktree_path(root, "feature-x", "backend");
+        git.set_divergence(&fe_wt, 0, 3);
+        git.set_divergence(&be_wt, 0, 5);
+
+        let config = EffectiveConfig::default();
+        let options = SyncOptions::default();
+
+        sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+
+        // Verify fast_forward_branch was called for each package's bare repo
+        let ff_calls = git.fast_forward_calls.lock().unwrap();
+        assert_eq!(
+            ff_calls.len(),
+            2,
+            "fast_forward_branch should be called for each package"
+        );
+
+        let fe_repo = crate::core::workspace::package_path(root, "frontend");
+        let be_repo = crate::core::workspace::package_path(root, "backend");
+
+        let fe_ff = ff_calls
+            .iter()
+            .find(|(r, _, _)| r == &fe_repo.to_string_lossy().to_string());
+        assert!(fe_ff.is_some(), "should fast-forward frontend bare repo");
+        assert_eq!(
+            fe_ff.unwrap().1,
+            "main",
+            "should fast-forward the default branch"
+        );
+        assert_eq!(
+            fe_ff.unwrap().2,
+            "origin",
+            "should use the configured remote"
+        );
+
+        let be_ff = ff_calls
+            .iter()
+            .find(|(r, _, _)| r == &be_repo.to_string_lossy().to_string());
+        assert!(be_ff.is_some(), "should fast-forward backend bare repo");
+    }
+
+    #[test]
+    fn test_sync_skips_fast_forward_on_fetch_failure() {
+        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
+        let root = tmp.path();
+        create_worktree_dirs(root, "feature-x", &["frontend", "backend"]);
+
+        let git = ConfigurableMockGit::new();
+        let fe_repo = crate::core::workspace::package_path(root, "frontend");
+        git.add_fetch_failure(&fe_repo);
+
+        let config = EffectiveConfig::default();
+        let options = SyncOptions::default();
+
+        sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+
+        // fast_forward should only be called for backend (frontend fetch failed)
+        let ff_calls = git.fast_forward_calls.lock().unwrap();
+        assert_eq!(
+            ff_calls.len(),
+            1,
+            "should skip fast-forward for failed fetch"
+        );
+        let be_repo = crate::core::workspace::package_path(root, "backend");
+        assert_eq!(ff_calls[0].0, be_repo.to_string_lossy().to_string());
+    }
 }
 
 // --- Sync types ---
@@ -1542,6 +1634,14 @@ pub fn fetch_packages(
         let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
         eprintln!("Fetching {}...", pkg.name);
         git.fetch(&repo_path, remote)?;
+        // Fast-forward the bare repo's default branch to match remote
+        let detected = git.detect_default_branch(&repo_path, remote);
+        let default_branch = pkg
+            .branch
+            .as_deref()
+            .or(detected.as_deref())
+            .unwrap_or(&config.default_branch);
+        let _ = git.fast_forward_branch(&repo_path, default_branch, remote);
     }
     Ok(())
 }
@@ -1633,6 +1733,25 @@ pub fn sync_worktree(
             }
         })
         .collect();
+
+    // Phase 1.5: Fast-forward each bare repo's default branch to match remote.
+    // Without this, the bare repo's main drifts behind origin/main, causing
+    // stale worktree bases and detached HEAD warnings.
+    for (pkg, fetch_result) in &fetch_results {
+        if fetch_result.is_err() {
+            continue;
+        }
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        let detected = git.detect_default_branch(&repo_path, remote);
+        let default_branch = pkg
+            .branch
+            .as_deref()
+            .or(detected.as_deref())
+            .unwrap_or(&config.default_branch);
+        // Best-effort: fails gracefully if not a fast-forward or branch is checked out by a worktree
+        let _ = git.fast_forward_branch(&repo_path, default_branch, remote);
+    }
 
     // Phase 2: Sequential analysis + sync per package
     let mut outcomes = Vec::new();

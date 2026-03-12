@@ -3132,3 +3132,111 @@ fn test_prompt_check_mismatched_branch() {
         .success()
         .stderr(predicate::str::contains("expected:feat-mismatch"));
 }
+
+/// Helper: get a specific ref's SHA from a repo.
+fn git_rev_parse(path: &std::path::Path, rev: &str) -> String {
+    let out = process::Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn test_sync_fast_forwards_bare_repo_main() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let bare_repo = tmp.path().join("packages/frontend");
+
+    // Record bare repo's main before upstream changes
+    let main_before = git_rev_parse(&bare_repo, "refs/heads/main");
+
+    // Push an upstream commit
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "new-file.txt",
+        "upstream change",
+    );
+
+    // Sync
+    meldr()
+        .args(["--no-tabs", "sync", "feature-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // After sync, bare repo's main should be fast-forwarded to match origin/main
+    let main_after = git_rev_parse(&bare_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&bare_repo, "refs/remotes/origin/main");
+
+    assert_ne!(
+        main_before, main_after,
+        "Bare repo main should be updated after sync"
+    );
+    assert_eq!(
+        main_after, origin_main,
+        "Bare repo main should match origin/main after sync"
+    );
+}
+
+#[test]
+fn test_sync_all_fast_forwards_bare_repo_main() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "branch-a"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let bare_repo = tmp.path().join("packages/frontend");
+
+    // Push upstream commit
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "upstream.txt",
+        "new content",
+    );
+
+    // Sync --all
+    meldr()
+        .args(["--no-tabs", "sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Bare repo's main should now match origin/main
+    let main_ref = git_rev_parse(&bare_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&bare_repo, "refs/remotes/origin/main");
+    assert_eq!(
+        main_ref, origin_main,
+        "Bare repo main should match origin/main after sync --all"
+    );
+}
