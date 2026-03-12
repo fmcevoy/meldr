@@ -3123,7 +3123,7 @@ fn test_prompt_check_mismatched_branch() {
         .current_dir(&wt_pkg)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git checkout failed: {:?}", out);
+    assert!(out.status.success(), "git checkout failed: {out:?}");
 
     meldr()
         .args(["prompt-check"])
