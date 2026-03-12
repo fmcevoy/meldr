@@ -3032,3 +3032,103 @@ fn test_sync_snapshot_contains_correct_data() {
     );
     assert!(content.contains("feat-snap"));
 }
+
+// ── prompt-check ──────────────────────────────────────────────────────
+
+#[test]
+fn test_prompt_check_not_in_workspace() {
+    let tmp = TempDir::new().unwrap();
+    // No meldr.toml — should exit 0 silently
+    meldr()
+        .args(["prompt-check"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_prompt_check_in_workspace_root() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+    // In workspace root (not in a worktree) — silent exit
+    meldr()
+        .args(["prompt-check"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_prompt_check_matching_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos = tmp.path().join("repos");
+    fs::create_dir_all(&repos).unwrap();
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+
+    init_workspace(&ws);
+    let repo_url = create_bare_repo(&repos, "pkg");
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(&ws)
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-check"])
+        .current_dir(&ws)
+        .assert()
+        .success();
+
+    let wt_pkg = ws.join("worktrees").join("feat-check").join("pkg");
+    // Branch should be feat-check, dir is feat-check — match, no output
+    meldr()
+        .args(["prompt-check"])
+        .current_dir(&wt_pkg)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_prompt_check_mismatched_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repos = tmp.path().join("repos");
+    fs::create_dir_all(&repos).unwrap();
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+
+    init_workspace(&ws);
+    let repo_url = create_bare_repo(&repos, "pkg");
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(&ws)
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-mismatch"])
+        .current_dir(&ws)
+        .assert()
+        .success();
+
+    let wt_pkg = ws.join("worktrees").join("feat-mismatch").join("pkg");
+
+    // Switch to a different branch inside the worktree to create a mismatch
+    let out = process::Command::new("git")
+        .args(["checkout", "-b", "wrong-branch"])
+        .current_dir(&wt_pkg)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git checkout failed: {out:?}");
+
+    meldr()
+        .args(["prompt-check"])
+        .current_dir(&wt_pkg)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("expected:feat-mismatch"));
+}
