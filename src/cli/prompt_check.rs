@@ -6,24 +6,57 @@ use crate::core::workspace;
 ///
 /// Prints a warning when cwd is in a meldr worktree whose git branch
 /// doesn't match the expected branch from the directory structure.
+///
+/// When cwd is inside a package, checks that single package's branch.
+/// When cwd is the worktree root, scans all package subdirectories.
 /// Always exits 0 — this is meant to be called from shell prompts.
 pub fn run(workspace_root: &Path, cwd: &Path) {
     let Some(dir_name) = workspace::detect_current_worktree_dir(workspace_root, cwd) else {
         return;
     };
 
-    let actual_branch = match read_current_branch(workspace_root, cwd) {
-        Some(b) => b,
-        None => {
-            // Detached HEAD or unreadable — warn with "detached"
-            eprintln!("\u{26a0} detached HEAD in worktree:{dir_name}");
-            return;
+    // If we can read a branch from cwd (we're inside a package), check it directly.
+    if let Some(branch) = read_current_branch(workspace_root, cwd) {
+        let expected = workspace::sanitize_branch_for_dir(&branch);
+        if expected != dir_name {
+            eprintln!("\u{26a0} expected:{dir_name}");
         }
+        return;
+    }
+
+    // No .git found — we're likely at the worktree root. Scan package subdirectories.
+    let worktree_dir = workspace::worktrees_dir(workspace_root).join(&dir_name);
+    let entries = match std::fs::read_dir(&worktree_dir) {
+        Ok(e) => e,
+        Err(_) => return,
     };
 
-    let expected_branch = workspace::sanitize_branch_for_dir(&actual_branch);
-    if expected_branch != dir_name {
-        eprintln!("\u{26a0} expected:{dir_name}");
+    let mut warnings = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let pkg_path = entry.path();
+        if !pkg_path.is_dir() {
+            continue;
+        }
+        // Only check directories that contain a .git entry (actual packages).
+        if !pkg_path.join(".git").exists() {
+            continue;
+        }
+        let pkg_name = entry.file_name().to_string_lossy().to_string();
+        match read_current_branch(workspace_root, &pkg_path) {
+            Some(branch) => {
+                let expected = workspace::sanitize_branch_for_dir(&branch);
+                if expected != dir_name {
+                    warnings.push(format!("{pkg_name}:{branch}"));
+                }
+            }
+            None => {
+                warnings.push(format!("{pkg_name}:detached"));
+            }
+        }
+    }
+
+    if !warnings.is_empty() {
+        eprintln!("\u{26a0} {}", warnings.join(" "));
     }
 }
 
@@ -180,5 +213,33 @@ mod tests {
 
         // fm/whatever sanitizes to fm-whatever, which matches the dir — no warning
         run(tmp.path(), &pkg_dir);
+    }
+
+    #[test]
+    fn test_worktree_root_scans_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt_dir = tmp.path().join("worktrees").join("feature-auth");
+
+        // Create two packages with correct branches
+        for pkg in &["frontend", "backend"] {
+            let pkg_dir = wt_dir.join(pkg);
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            let git_dir = pkg_dir.join(".git");
+            std::fs::create_dir_all(&git_dir).unwrap();
+            std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature-auth\n").unwrap();
+        }
+
+        // Run from worktree root — should produce no warnings
+        run(tmp.path(), &wt_dir);
+    }
+
+    #[test]
+    fn test_worktree_root_no_packages_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt_dir = tmp.path().join("worktrees").join("feature-x");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        // Empty worktree dir — should produce no output
+        run(tmp.path(), &wt_dir);
     }
 }

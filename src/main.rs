@@ -167,6 +167,14 @@ fn run(cli: Cli) -> error::Result<()> {
             Ok(())
         }
 
+        Commands::PromptCheck => {
+            let cwd = std::env::current_dir()?;
+            if let Ok(root) = workspace::find_workspace_root(&cwd) {
+                cli::prompt_check::run(&root, &cwd);
+            }
+            Ok(())
+        }
+
         Commands::Config { action } => {
             let cwd = std::env::current_dir()?;
             let workspace_root = workspace::find_workspace_root(&cwd).ok();
