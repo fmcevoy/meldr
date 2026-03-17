@@ -14,7 +14,8 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "meldr",
     version,
-    about = "Workspace management for multi-repo projects with git worktrees and tmux"
+    about = "Workspace management for multi-repo projects with git worktrees and tmux",
+    infer_subcommands = true
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -30,6 +31,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+#[command(infer_subcommands = true)]
 pub enum Commands {
     /// Initialize a new meldr workspace in the current directory
     Init {
@@ -120,6 +122,7 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
+#[command(infer_subcommands = true)]
 pub enum PackageAction {
     /// Clone and register new packages from git URLs
     Add {
@@ -138,6 +141,7 @@ pub enum PackageAction {
 }
 
 #[derive(Subcommand)]
+#[command(infer_subcommands = true)]
 pub enum WorktreeAction {
     /// Create worktrees for a feature branch across all packages
     Add {
@@ -162,6 +166,7 @@ pub enum WorktreeAction {
 }
 
 #[derive(Subcommand)]
+#[command(infer_subcommands = true)]
 pub enum ConfigAction {
     /// Set a configuration value
     Set {
