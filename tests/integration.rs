@@ -3387,7 +3387,9 @@ fn test_sync_updates_main_even_with_skip_fetch_false() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Fetching packages and updating main branches"));
+        .stderr(predicate::str::contains(
+            "Fetching packages and updating main branches",
+        ));
 
     // Main should be updated
     let main_ref = git_rev_parse(&bare_repo, "refs/heads/main");
