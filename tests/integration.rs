@@ -3402,3 +3402,127 @@ fn test_sync_updates_main_even_with_skip_fetch_false() {
     assert!(wt_a.join("shared-update.txt").exists());
     assert!(wt_b.join("shared-update.txt").exists());
 }
+
+/// Helper: replace the bare-cloned package repo with a regular (non-bare) clone
+/// that has `main` checked out, simulating workspaces set up before bare cloning.
+fn convert_package_to_non_bare(workspace: &std::path::Path, pkg_name: &str, upstream_url: &str) {
+    let pkg_path = workspace.join("packages").join(pkg_name);
+    fs::remove_dir_all(&pkg_path).unwrap();
+    process::Command::new("git")
+        .args(["clone", upstream_url, pkg_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Ensure remote tracking refs are populated
+    process::Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(&pkg_path)
+        .output()
+        .unwrap();
+}
+
+#[test]
+fn test_sync_fast_forwards_non_bare_checked_out_main() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Replace bare clone with a regular clone (main checked out)
+    convert_package_to_non_bare(tmp.path(), "frontend", &repo_url);
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feature-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let pkg_repo = tmp.path().join("packages/frontend");
+    let main_before = git_rev_parse(&pkg_repo, "refs/heads/main");
+
+    // Push an upstream commit
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "new-file.txt",
+        "upstream change",
+    );
+
+    // Sync should fast-forward main even though it's checked out
+    meldr()
+        .args(["--no-tabs", "sync", "feature-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let main_after = git_rev_parse(&pkg_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&pkg_repo, "refs/remotes/origin/main");
+
+    assert_ne!(
+        main_before, main_after,
+        "Non-bare repo main should be updated after sync"
+    );
+    assert_eq!(
+        main_after, origin_main,
+        "Non-bare repo main should match origin/main after sync"
+    );
+}
+
+#[test]
+fn test_worktree_add_works_with_non_bare_checked_out_main() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Replace bare clone with a regular clone (main checked out)
+    convert_package_to_non_bare(tmp.path(), "frontend", &repo_url);
+
+    let pkg_repo = tmp.path().join("packages/frontend");
+    let main_before = git_rev_parse(&pkg_repo, "refs/heads/main");
+
+    // Push upstream commit
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "new-feature.txt",
+        "new feature content",
+    );
+
+    // Worktree add should fetch + fast-forward main, then create the worktree
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fresh-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let main_after = git_rev_parse(&pkg_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&pkg_repo, "refs/remotes/origin/main");
+
+    assert_ne!(
+        main_before, main_after,
+        "Non-bare repo main should be updated before worktree creation"
+    );
+    assert_eq!(
+        main_after, origin_main,
+        "Non-bare repo main should match origin/main after worktree add"
+    );
+
+    // The worktree should contain the new file
+    let wt_path = tmp.path().join("worktrees/fresh-branch/frontend");
+    assert!(
+        wt_path.join("new-feature.txt").exists(),
+        "Worktree should be based on latest main and contain the new file"
+    );
+}
