@@ -247,3 +247,4 @@ name = "backend"
 url = "https://github.com/org/backend.git"
 # sync_strategy = "theirs"  # per-package strategy override
 ```
+
