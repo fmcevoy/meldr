@@ -178,8 +178,28 @@ pub fn ensure_global_config() -> Result<()> {
             "# layout = \"default\"\n",
             "# window_name = \"{ws}/{branch}:{pkg}\"\n",
             "#\n",
+            "# Built-in agents and their default commands (override to customise):\n",
+            "#\n",
             "# [agents.claude]\n",
             "# command = \"claude --dangerously-skip-permissions\"\n",
+            "#\n",
+            "# [agents.cursor]\n",
+            "# command = \"cursor agent --yolo\"\n",
+            "#\n",
+            "# [agents.gemini]\n",
+            "# command = \"gemini --yolo\"\n",
+            "#\n",
+            "# [agents.codex]\n",
+            "# command = \"codex --approval-mode full-auto\"\n",
+            "#\n",
+            "# [agents.opencode]\n",
+            "# command = \"opencode\"\n",
+            "#\n",
+            "# [agents.pi]\n",
+            "# command = \"pi\"\n",
+            "#\n",
+            "# [agents.kiro]\n",
+            "# command = \"kiro-cli chat --trust-all-tools\"\n",
         );
         std::fs::write(&path, default_content)?;
     }
@@ -301,14 +321,64 @@ pub fn resolve_config(
     config
 }
 
-/// Returns the default command for known agents, with recommended flags.
-/// These can be overridden via `[agents.<name>]` in `~/.config/meldr/config.toml`.
+#[allow(dead_code)]
+pub struct AgentDef {
+    pub name: &'static str,
+    pub command: &'static str,
+    pub description: &'static str,
+}
+
+pub const BUILTIN_AGENTS: &[AgentDef] = &[
+    AgentDef {
+        name: "claude",
+        command: "claude --dangerously-skip-permissions",
+        description: "Anthropic Claude Code",
+    },
+    AgentDef {
+        name: "cursor",
+        command: "cursor agent --yolo",
+        description: "Cursor AI agent",
+    },
+    AgentDef {
+        name: "gemini",
+        command: "gemini --yolo",
+        description: "Google Gemini CLI",
+    },
+    AgentDef {
+        name: "codex",
+        command: "codex --approval-mode full-auto",
+        description: "OpenAI Codex CLI",
+    },
+    AgentDef {
+        name: "opencode",
+        command: "opencode",
+        description: "OpenCode CLI",
+    },
+    AgentDef {
+        name: "pi",
+        command: "pi",
+        description: "Pi coding agent",
+    },
+    AgentDef {
+        name: "kiro",
+        command: "kiro-cli chat --trust-all-tools",
+        description: "AWS Kiro CLI",
+    },
+];
+
+pub fn builtin_agent(name: &str) -> Option<&'static AgentDef> {
+    BUILTIN_AGENTS.iter().find(|a| a.name == name)
+}
+
+#[allow(dead_code)]
+pub fn builtin_agent_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_AGENTS.iter().map(|a| a.name)
+}
+
 pub fn default_agent_command(agent: &str) -> String {
-    match agent {
-        "claude" => "claude --dangerously-skip-permissions".to_string(),
-        "cursor" => "cursor . --yolo".to_string(),
-        _ => agent.to_string(),
-    }
+    builtin_agent(agent)
+        .map(|a| a.command.to_string())
+        .unwrap_or_else(|| agent.to_string())
 }
 
 const VALID_SETTINGS_KEYS: &[&str] = &[
@@ -513,8 +583,45 @@ mod tests {
             default_agent_command("claude"),
             "claude --dangerously-skip-permissions"
         );
-        assert_eq!(default_agent_command("cursor"), "cursor . --yolo");
+        assert_eq!(default_agent_command("cursor"), "cursor agent --yolo");
+        assert_eq!(default_agent_command("gemini"), "gemini --yolo");
+        assert_eq!(
+            default_agent_command("codex"),
+            "codex --approval-mode full-auto"
+        );
+        assert_eq!(default_agent_command("opencode"), "opencode");
+        assert_eq!(default_agent_command("pi"), "pi");
+        assert_eq!(
+            default_agent_command("kiro"),
+            "kiro-cli chat --trust-all-tools"
+        );
         assert_eq!(default_agent_command("custom-agent"), "custom-agent");
+    }
+
+    #[test]
+    fn test_builtin_agent_names() {
+        let names: Vec<&str> = builtin_agent_names().collect();
+        assert_eq!(names.len(), 7);
+        assert!(names.contains(&"claude"));
+        assert!(names.contains(&"cursor"));
+        assert!(names.contains(&"gemini"));
+        assert!(names.contains(&"codex"));
+        assert!(names.contains(&"opencode"));
+        assert!(names.contains(&"pi"));
+        assert!(names.contains(&"kiro"));
+    }
+
+    #[test]
+    fn test_builtin_agent_lookup() {
+        let claude = builtin_agent("claude").unwrap();
+        assert_eq!(claude.command, "claude --dangerously-skip-permissions");
+        assert_eq!(claude.description, "Anthropic Claude Code");
+        assert!(builtin_agent("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_unknown_agent_falls_back_to_name() {
+        assert_eq!(default_agent_command("my-custom"), "my-custom");
     }
 
     #[test]
@@ -619,7 +726,7 @@ mod tests {
 
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "cursor");
-        assert_eq!(config.agent_command, "cursor . --yolo");
+        assert_eq!(config.agent_command, "cursor agent --yolo");
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub enum Commands {
         /// Create a worktree on this branch after adding packages
         #[arg(short, long)]
         branch: Option<String>,
-        /// Override the default AI agent
+        /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro)
         #[arg(short, long)]
         agent: Option<String>,
     },

@@ -73,7 +73,11 @@ fn run(cli: Cli) -> error::Result<()> {
             };
             if let Some(ref a) = agent {
                 config.agent = a.clone();
-                config.agent_command = a.clone();
+                config.agent_command = global
+                    .agents
+                    .get(a)
+                    .map(|ac| ac.command.clone())
+                    .unwrap_or_else(|| config::default_agent_command(a));
             }
             cli::create::run(
                 &git,
