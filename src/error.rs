@@ -41,6 +41,9 @@ pub enum MeldrError {
     #[error("No sync snapshot found for branch '{0}'")]
     NoSyncSnapshot(String),
 
+    #[error("Main branch is behind remote for: {0}. Run 'meldr sync' first.")]
+    MainBehindRemote(String),
+
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
 

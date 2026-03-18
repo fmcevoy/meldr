@@ -129,6 +129,11 @@ pub fn add_worktree(
         return Err(MeldrError::NotInTmux);
     }
 
+    // Fetch all packages and fast-forward main before creating worktree
+    fetch_and_update_main(git, manifest, workspace_root, config);
+    // Block if any package's main is still behind remote
+    ensure_main_up_to_date(git, manifest, workspace_root, config)?;
+
     let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     std::fs::create_dir_all(&branch_dir)?;
 
@@ -867,6 +872,7 @@ mod tests {
         heads: Mutex<HashMap<String, String>>,
         fetch_should_fail: Mutex<Vec<String>>,
         rebase_should_fail: Mutex<Vec<String>>,
+        fast_forward_should_fail: Mutex<Vec<String>>,
         rebase_calls: Mutex<Vec<(String, String, String)>>,
         merge_calls: Mutex<Vec<(String, String, String)>>,
         fetch_calls: Mutex<Vec<String>>,
@@ -883,6 +889,7 @@ mod tests {
                 heads: Mutex::new(HashMap::new()),
                 fetch_should_fail: Mutex::new(Vec::new()),
                 rebase_should_fail: Mutex::new(Vec::new()),
+                fast_forward_should_fail: Mutex::new(Vec::new()),
                 rebase_calls: Mutex::new(Vec::new()),
                 merge_calls: Mutex::new(Vec::new()),
                 fetch_calls: Mutex::new(Vec::new()),
@@ -923,6 +930,13 @@ mod tests {
 
         fn add_rebase_failure(&self, path: &Path) {
             self.rebase_should_fail
+                .lock()
+                .unwrap()
+                .push(path.to_string_lossy().to_string());
+        }
+
+        fn add_fast_forward_failure(&self, path: &Path) {
+            self.fast_forward_should_fail
                 .lock()
                 .unwrap()
                 .push(path.to_string_lossy().to_string());
@@ -1016,11 +1030,15 @@ mod tests {
         }
 
         fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()> {
+            let key = repo.to_string_lossy().to_string();
             self.fast_forward_calls.lock().unwrap().push((
-                repo.to_string_lossy().to_string(),
+                key.clone(),
                 branch.to_string(),
                 remote.to_string(),
             ));
+            if self.fast_forward_should_fail.lock().unwrap().contains(&key) {
+                return Err(MeldrError::Git(format!("fast-forward failed for {key}")));
+            }
             Ok(())
         }
     }
@@ -1568,6 +1586,127 @@ mod tests {
         let be_repo = crate::core::workspace::package_path(root, "backend");
         assert_eq!(ff_calls[0].0, be_repo.to_string_lossy().to_string());
     }
+
+    #[test]
+    fn test_add_worktree_fetches_and_updates_main() {
+        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
+        let root = tmp.path();
+        let git = ConfigurableMockGit::new();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            no_tabs: true,
+            ..Default::default()
+        };
+        let mut state = WorkspaceState::default();
+
+        add_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            root,
+            "feature-new",
+            &config,
+            None,
+        )
+        .unwrap();
+
+        // Verify fetch was called for both packages
+        let fetch_calls = git.fetch_calls.lock().unwrap();
+        assert_eq!(fetch_calls.len(), 2, "should fetch both packages");
+
+        // Verify fast-forward was called for both packages
+        let ff_calls = git.fast_forward_calls.lock().unwrap();
+        assert_eq!(ff_calls.len(), 2, "should fast-forward both packages");
+    }
+
+    #[test]
+    fn test_add_worktree_blocks_when_main_behind() {
+        let (tmp, manifest) = setup_workspace(&["frontend", "backend"]);
+        let root = tmp.path();
+        let git = ConfigurableMockGit::new();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            no_tabs: true,
+            ..Default::default()
+        };
+        let mut state = WorkspaceState::default();
+
+        // Make fast-forward fail for frontend and set divergence showing it's behind
+        let fe_repo = crate::core::workspace::package_path(root, "frontend");
+        git.add_fast_forward_failure(&fe_repo);
+        git.set_divergence(&fe_repo, 0, 5);
+
+        let result = add_worktree(
+            &git, &tmux, &manifest, &mut state, root, "blocked", &config, None,
+        );
+        assert!(
+            result.is_err(),
+            "should block worktree creation when main is behind"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Main branch is behind remote"),
+            "error should mention main behind remote, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_add_worktree_succeeds_when_main_up_to_date() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let root = tmp.path();
+        let git = ConfigurableMockGit::new();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            no_tabs: true,
+            ..Default::default()
+        };
+        let mut state = WorkspaceState::default();
+
+        // divergence defaults to (0, 0) — up to date
+        let result = add_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            root,
+            "ok-branch",
+            &config,
+            None,
+        );
+        assert!(result.is_ok(), "should succeed when main is up-to-date");
+        assert!(state.get_worktree("ok-branch").is_some());
+    }
+
+    #[test]
+    fn test_sync_skips_fetch_when_told() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let root = tmp.path();
+        create_worktree_dirs(root, "feature-x", &["frontend"]);
+
+        let git = ConfigurableMockGit::new();
+        let config = EffectiveConfig::default();
+        let options = SyncOptions {
+            skip_fetch: true,
+            ..Default::default()
+        };
+
+        sync_worktree(&git, &manifest, root, "feature-x", &config, &options).unwrap();
+
+        // Fetch should NOT have been called
+        let fetch_calls = git.fetch_calls.lock().unwrap();
+        assert!(
+            fetch_calls.is_empty(),
+            "should not fetch when skip_fetch is true"
+        );
+
+        // Fast-forward should NOT have been called
+        let ff_calls = git.fast_forward_calls.lock().unwrap();
+        assert!(
+            ff_calls.is_empty(),
+            "should not fast-forward when skip_fetch is true"
+        );
+    }
 }
 
 // --- Sync types ---
@@ -1619,6 +1758,95 @@ pub struct SyncOptions {
     pub dry_run: bool,
     pub only: Vec<String>,
     pub exclude: Vec<String>,
+    /// When true, skip Phase 1 (fetch) and Phase 1.5 (fast-forward main).
+    /// Used when the caller has already called `fetch_and_update_main()`.
+    pub skip_fetch: bool,
+}
+
+/// Fetch all packages and fast-forward their default branches to match remote.
+///
+/// This is the canonical "update main" operation. It:
+/// 1. Parallel-fetches all packages from their remotes
+/// 2. Fast-forwards each bare repo's default branch (e.g. main) to match remote
+///
+/// Returns a list of (package_name, fetch_result) for downstream use.
+/// Fast-forward failures are logged to stderr but do not cause an error return.
+pub fn fetch_and_update_main(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    config: &EffectiveConfig,
+) -> Vec<(String, std::result::Result<(), String>)> {
+    // Phase 1: Parallel fetch
+    let fetch_results: Vec<_> = manifest
+        .packages
+        .par_iter()
+        .map(|pkg| {
+            let repo_path = workspace::package_path(workspace_root, &pkg.name);
+            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+            match git.fetch(&repo_path, remote) {
+                Ok(()) => (pkg.name.clone(), Ok(())),
+                Err(e) => (pkg.name.clone(), Err(e.to_string())),
+            }
+        })
+        .collect();
+
+    // Phase 1.5: Fast-forward each bare repo's default branch to match remote
+    for (pkg_name, fetch_result) in &fetch_results {
+        if fetch_result.is_err() {
+            continue;
+        }
+        let pkg = manifest
+            .packages
+            .iter()
+            .find(|p| &p.name == pkg_name)
+            .unwrap();
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        let detected = git.detect_default_branch(&repo_path, remote);
+        let default_branch = pkg
+            .branch
+            .as_deref()
+            .or(detected.as_deref())
+            .unwrap_or(&config.default_branch);
+        if let Err(e) = git.fast_forward_branch(&repo_path, default_branch, remote) {
+            eprintln!("Warning: could not fast-forward {pkg_name}/{default_branch}: {e}");
+        }
+    }
+
+    fetch_results
+}
+
+/// Check that all packages' main branches are up-to-date with their remotes.
+/// Returns an error listing packages that are still behind after a fast-forward attempt.
+pub fn ensure_main_up_to_date(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    workspace_root: &Path,
+    config: &EffectiveConfig,
+) -> Result<()> {
+    let mut behind_packages = Vec::new();
+    for pkg in &manifest.packages {
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        let detected = git.detect_default_branch(&repo_path, remote);
+        let default_branch = pkg
+            .branch
+            .as_deref()
+            .or(detected.as_deref())
+            .unwrap_or(&config.default_branch);
+        let upstream = format!("{remote}/{default_branch}");
+        // Check divergence of the bare repo's main vs remote main
+        if let Ok((_, behind)) = git.divergence(&repo_path, &upstream)
+            && behind > 0
+        {
+            behind_packages.push(format!("{} ({behind} behind)", pkg.name));
+        }
+    }
+    if !behind_packages.is_empty() {
+        return Err(MeldrError::MainBehindRemote(behind_packages.join(", ")));
+    }
+    Ok(())
 }
 
 /// Fetch all packages from their remotes without rebasing/merging any worktree.
@@ -1714,49 +1942,45 @@ pub fn sync_worktree(
         })
         .collect();
 
-    // Phase 1: Parallel fetch
-    let fetch_results: Vec<(
-        &crate::core::workspace::PackageEntry,
-        std::result::Result<(), String>,
-    )> = packages
-        .par_iter()
-        .map(|pkg| {
-            let repo_path = workspace::package_path(workspace_root, &pkg.name);
-            let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-            if !wt_path.exists() {
-                return (*pkg, Err("worktree does not exist".to_string()));
-            }
-            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-            match git.fetch(&repo_path, remote) {
-                Ok(()) => (*pkg, Ok(())),
-                Err(e) => (*pkg, Err(e.to_string())),
-            }
-        })
-        .collect();
-
-    // Phase 1.5: Fast-forward each bare repo's default branch to match remote.
-    // Without this, the bare repo's main drifts behind origin/main, causing
-    // stale worktree bases and detached HEAD warnings.
-    for (pkg, fetch_result) in &fetch_results {
-        if fetch_result.is_err() {
-            continue;
-        }
-        let repo_path = workspace::package_path(workspace_root, &pkg.name);
-        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-        let detected = git.detect_default_branch(&repo_path, remote);
-        let default_branch = pkg
-            .branch
-            .as_deref()
-            .or(detected.as_deref())
-            .unwrap_or(&config.default_branch);
-        // Best-effort: fails gracefully if not a fast-forward or branch is checked out by a worktree
-        let _ = git.fast_forward_branch(&repo_path, default_branch, remote);
-    }
+    // Phase 1 + 1.5: Fetch and fast-forward main (unless caller already did it)
+    let fetch_results_owned: Vec<(String, std::result::Result<(), String>)> = if options.skip_fetch
+    {
+        // Caller already fetched — mark all existing worktrees as OK
+        packages
+            .iter()
+            .map(|pkg| {
+                let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
+                if !wt_path.exists() {
+                    (pkg.name.clone(), Err("worktree does not exist".to_string()))
+                } else {
+                    (pkg.name.clone(), Ok(()))
+                }
+            })
+            .collect()
+    } else {
+        // Do fetch + fast-forward for all packages in manifest (not just filtered)
+        let all_results = fetch_and_update_main(git, manifest, workspace_root, config);
+        // Map back to filtered packages
+        packages
+            .iter()
+            .map(|pkg| {
+                let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
+                if !wt_path.exists() {
+                    return (pkg.name.clone(), Err("worktree does not exist".to_string()));
+                }
+                match all_results.iter().find(|(name, _)| name == &pkg.name) {
+                    Some((_, result)) => (pkg.name.clone(), result.clone()),
+                    None => (pkg.name.clone(), Ok(())),
+                }
+            })
+            .collect()
+    };
 
     // Phase 2: Sequential analysis + sync per package
     let mut outcomes = Vec::new();
 
-    for (pkg, fetch_result) in &fetch_results {
+    for (pkg_name, fetch_result) in &fetch_results_owned {
+        let pkg = packages.iter().find(|p| &p.name == pkg_name).unwrap();
         let repo_path = workspace::package_path(workspace_root, &pkg.name);
         let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
 
