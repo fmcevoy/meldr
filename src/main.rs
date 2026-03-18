@@ -28,14 +28,16 @@ fn main() {
 /// For example, `meldr add package foo` becomes `meldr package add foo`.
 fn rewrite_args(mut args: Vec<String>) -> Vec<String> {
     const RESOURCES: &[&str] = &["package", "pkg", "worktree", "wt", "config"];
-    const ACTIONS: &[&str] = &["add", "remove", "list", "set", "get", "unset", "show", "open"];
+    const ACTIONS: &[&str] = &[
+        "add", "remove", "list", "set", "get", "unset", "show", "open",
+    ];
 
     if args.len() >= 3 {
         let first = args[1].as_str();
         let second = args[2].as_str();
 
         if ACTIONS.contains(&first) && RESOURCES.contains(&second) {
-            eprintln!("meldr: assuming 'meldr {} {} ...'", second, first);
+            eprintln!("meldr: assuming 'meldr {second} {first} ...'");
             args.swap(1, 2);
         }
     }
@@ -73,7 +75,11 @@ fn run(cli: Cli) -> error::Result<()> {
             };
             if let Some(ref a) = agent {
                 config.agent = a.clone();
-                config.agent_command = a.clone();
+                config.agent_command = global
+                    .agents
+                    .get(a)
+                    .map(|ac| ac.command.clone())
+                    .unwrap_or_else(|| config::default_agent_command(a));
             }
             cli::create::run(
                 &git,
