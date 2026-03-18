@@ -51,18 +51,6 @@ pub fn run(
         return Ok(());
     }
 
-    let sync_options = worktree::SyncOptions {
-        method_override: if merge {
-            Some("merge".to_string())
-        } else {
-            None
-        },
-        strategy_override: strategy,
-        dry_run,
-        only,
-        exclude,
-    };
-
     if dry_run {
         println!("Dry run — no changes will be made.\n");
     }
@@ -75,20 +63,35 @@ pub fn run(
         vec![target]
     };
 
-    // When no worktrees exist, still fetch all packages
-    if branches_to_sync.is_empty() {
-        eprintln!("No active worktrees. Fetching all packages...\n");
-        for pkg in &manifest.packages {
-            let repo_path = workspace::package_path(root, &pkg.name);
-            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
-            eprint!("  Fetching {} ... ", pkg.name);
-            match git.fetch(&repo_path, remote) {
-                Ok(()) => eprintln!("done"),
-                Err(e) => eprintln!("failed: {e}"),
-            }
+    // Always fetch and update main first — this is the core invariant
+    eprintln!("Fetching packages and updating main branches...");
+    let fetch_results = worktree::fetch_and_update_main(git, &manifest, root, config);
+    for (pkg_name, result) in &fetch_results {
+        match result {
+            Ok(()) => eprintln!("  {} fetched", pkg_name),
+            Err(e) => eprintln!("  {} fetch failed: {e}", pkg_name),
         }
+    }
+    eprintln!();
+
+    // When no worktrees exist, we've already fetched — just report and exit
+    if branches_to_sync.is_empty() {
+        eprintln!("No active worktrees. All packages fetched and main updated.");
         return Ok(());
     }
+
+    let sync_options = worktree::SyncOptions {
+        method_override: if merge {
+            Some("merge".to_string())
+        } else {
+            None
+        },
+        strategy_override: strategy,
+        dry_run,
+        only,
+        exclude,
+        skip_fetch: true, // We already fetched above
+    };
 
     for branch_name in &branches_to_sync {
         if branches_to_sync.len() > 1 {

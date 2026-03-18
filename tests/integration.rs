@@ -1244,7 +1244,7 @@ fn test_sync_all_no_worktrees_succeeds() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "No active worktrees. Fetching all packages",
+            "No active worktrees. All packages fetched and main updated.",
         ));
 }
 
@@ -3239,4 +3239,164 @@ fn test_sync_all_fast_forwards_bare_repo_main() {
         main_ref, origin_main,
         "Bare repo main should match origin/main after sync --all"
     );
+}
+
+#[test]
+fn test_worktree_add_updates_main_first() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let bare_repo = tmp.path().join("packages/frontend");
+    let main_before = git_rev_parse(&bare_repo, "refs/heads/main");
+
+    // Push a new commit to the upstream bare repo
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "new-feature.txt",
+        "new feature content",
+    );
+
+    // Create a worktree — this should fetch + fast-forward main first
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "fresh-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Bare repo's main should now be at the latest commit
+    let main_after = git_rev_parse(&bare_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&bare_repo, "refs/remotes/origin/main");
+
+    assert_ne!(
+        main_before, main_after,
+        "Bare repo main should be updated before worktree creation"
+    );
+    assert_eq!(
+        main_after, origin_main,
+        "Bare repo main should match origin/main after worktree add"
+    );
+
+    // The worktree should contain the new file (branched from latest main)
+    let wt_path = tmp.path().join("worktrees/fresh-branch/frontend");
+    assert!(
+        wt_path.join("new-feature.txt").exists(),
+        "Worktree should be based on latest main and contain the new file"
+    );
+}
+
+#[test]
+fn test_sync_updates_main_before_rebase() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "my-feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let bare_repo = tmp.path().join("packages/frontend");
+
+    // Push upstream change
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "upstream-change.txt",
+        "upstream",
+    );
+
+    // Sync — should update main first, then rebase
+    meldr()
+        .args(["--no-tabs", "sync", "my-feature"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Bare repo main should match origin/main
+    let main_ref = git_rev_parse(&bare_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&bare_repo, "refs/remotes/origin/main");
+    assert_eq!(
+        main_ref, origin_main,
+        "Bare repo main should be updated by sync"
+    );
+
+    // Worktree should have the upstream file after rebase
+    let wt_path = tmp.path().join("worktrees/my-feature/frontend");
+    assert!(
+        wt_path.join("upstream-change.txt").exists(),
+        "Worktree should contain upstream changes after sync"
+    );
+}
+
+#[test]
+fn test_sync_updates_main_even_with_skip_fetch_false() {
+    // Verifies that sync --all fetches once at the top, not per-worktree
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create two worktrees
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "branch-a"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "branch-b"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let bare_repo = tmp.path().join("packages/frontend");
+
+    // Push upstream commit
+    push_upstream_commit(
+        std::path::Path::new(&repo_url),
+        "shared-update.txt",
+        "shared",
+    );
+
+    // Sync --all
+    meldr()
+        .args(["--no-tabs", "sync", "--all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Fetching packages and updating main branches"));
+
+    // Main should be updated
+    let main_ref = git_rev_parse(&bare_repo, "refs/heads/main");
+    let origin_main = git_rev_parse(&bare_repo, "refs/remotes/origin/main");
+    assert_eq!(main_ref, origin_main);
+
+    // Both worktrees should have the update
+    let wt_a = tmp.path().join("worktrees/branch-a/frontend");
+    let wt_b = tmp.path().join("worktrees/branch-b/frontend");
+    assert!(wt_a.join("shared-update.txt").exists());
+    assert!(wt_b.join("shared-update.txt").exists());
 }
