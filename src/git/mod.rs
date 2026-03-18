@@ -244,10 +244,27 @@ impl GitOps for RealGit {
     }
 
     fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()> {
-        let src = format!("refs/remotes/{remote}/{branch}");
-        let dst = format!("refs/heads/{branch}");
-        let refspec = format!("{src}:{dst}");
-        Self::run(&["fetch", ".", &refspec], repo)?;
+        // `git fetch . <src>:<dst>` fails when the target branch is checked
+        // out in a non-bare repo.  Detect that case and use `git merge
+        // --ff-only` instead.
+        let is_bare = Self::run(&["rev-parse", "--is-bare-repository"], repo)
+            .map(|s| s == "true")
+            .unwrap_or(false);
+
+        let checked_out = !is_bare
+            && Self::run(&["symbolic-ref", "--quiet", "HEAD"], repo)
+                .map(|head| head == format!("refs/heads/{branch}"))
+                .unwrap_or(false);
+
+        if checked_out {
+            let upstream = format!("{remote}/{branch}");
+            Self::run(&["merge", "--ff-only", &upstream], repo)?;
+        } else {
+            let src = format!("refs/remotes/{remote}/{branch}");
+            let dst = format!("refs/heads/{branch}");
+            let refspec = format!("{src}:{dst}");
+            Self::run(&["fetch", ".", &refspec], repo)?;
+        }
         Ok(())
     }
 }
