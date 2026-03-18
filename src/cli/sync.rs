@@ -68,8 +68,8 @@ pub fn run(
     let fetch_results = worktree::fetch_and_update_main(git, &manifest, root, config);
     for (pkg_name, result) in &fetch_results {
         match result {
-            Ok(()) => eprintln!("  {} fetched", pkg_name),
-            Err(e) => eprintln!("  {} fetch failed: {e}", pkg_name),
+            Ok(()) => eprintln!("  {pkg_name} fetched"),
+            Err(e) => eprintln!("  {pkg_name} fetch failed: {e}"),
         }
     }
     eprintln!();
