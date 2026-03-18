@@ -2146,7 +2146,7 @@ fn test_sync_all_no_worktrees_fetches_real_repos() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "No active worktrees. Fetching all packages",
+            "No active worktrees. All packages fetched and main updated.",
         ));
 }
 
