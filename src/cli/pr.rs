@@ -406,8 +406,10 @@ fn summarize_ci(checks: &[GhCheckRun]) -> &'static str {
         {
             return "fail";
         }
-        if matches!(status.as_str(), "IN_PROGRESS" | "QUEUED" | "WAITING" | "PENDING")
-            || matches!(state.as_str(), "PENDING" | "EXPECTED")
+        if matches!(
+            status.as_str(),
+            "IN_PROGRESS" | "QUEUED" | "WAITING" | "PENDING"
+        ) || matches!(state.as_str(), "PENDING" | "EXPECTED")
         {
             any_pending = true;
         }
@@ -427,7 +429,12 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
     }
 
     // Column widths (minimum widths, will grow to fit content)
-    let pkg_w = filtered.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
+    let pkg_w = filtered
+        .iter()
+        .map(|p| p.name.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
     let title_w = 40usize;
 
     // Print header

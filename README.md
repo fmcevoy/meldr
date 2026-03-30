@@ -46,6 +46,8 @@ meldr worktree add feature-auth
 | `meldr status` | `st` | Show workspace dashboard |
 | `meldr sync [branch]` | | Sync worktree with upstream |
 | `meldr exec <command...>` | | Run command in all packages |
+| `meldr pr create` | | Create linked PRs across packages |
+| `meldr pr status` | | Show PR state across packages |
 | `meldr config set <key> <value>` | | Set workspace config |
 | `meldr config get <key>` | | Get workspace config |
 | `meldr config list` | | Show effective configuration |
@@ -56,6 +58,11 @@ meldr worktree add feature-auth
 |------|-------------|
 | `--no-agent` | Skip agent launch in tmux panes |
 | `--no-tabs` | Skip tmux window/pane creation entirely |
+| `--group <name>` | Filter by package group (repeatable) |
+| `--only <pkgs>` | Only include these packages (comma-separated) |
+| `--exclude <pkgs>` | Exclude these packages (comma-separated) |
+
+The `--group`, `--only`, and `--exclude` flags work on all commands: `sync`, `exec`, `worktree add`, `worktree remove`, `status`.
 
 ## Directory Layout
 
@@ -240,11 +247,29 @@ name = "my-project"
 name = "frontend"
 url = "https://github.com/org/frontend.git"
 branch = "main"
+groups = ["frontend", "node"]
 # remote = "origin"         # per-package remote override
 
 [[package]]
-name = "backend"
-url = "https://github.com/org/backend.git"
+name = "api"
+url = "https://github.com/org/api.git"
+groups = ["backend", "rust"]
 # sync_strategy = "theirs"  # per-package strategy override
+
+[hooks]
+post_sync = ["npm install"]
+post_worktree_create = ["mise install"]
+# pre_remove = []
+# post_pr = []
+```
+
+Per-package hook overrides (replace workspace-level hooks for that event):
+
+```toml
+[[package]]
+name = "api"
+url = "https://github.com/org/api.git"
+[package.hooks]
+post_worktree_create = ["cargo fetch"]
 ```
 
