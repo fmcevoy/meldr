@@ -506,6 +506,7 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: None,
+                    groups: Vec::new(),
                 })
                 .collect(),
         }
@@ -1418,6 +1419,7 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: Some("theirs".to_string()),
+                    groups: Vec::new(),
                 },
                 PackageEntry {
                     name: "backend".to_string(),
@@ -1425,6 +1427,7 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: None,
+                    groups: Vec::new(),
                 },
             ],
         };

@@ -74,6 +74,8 @@ pub struct PackageEntry {
     pub remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 impl Manifest {
@@ -299,6 +301,7 @@ mod tests {
                 branch: Some("main".to_string()),
                 remote: None,
                 sync_strategy: None,
+                groups: Vec::new(),
             })
             .unwrap();
 
@@ -346,6 +349,7 @@ url = "https://github.com/org/backend.git"
                 branch: None,
                 remote: None,
                 sync_strategy: None,
+                groups: Vec::new(),
             })
             .unwrap();
 
@@ -355,6 +359,7 @@ url = "https://github.com/org/backend.git"
             branch: None,
             remote: None,
             sync_strategy: None,
+            groups: Vec::new(),
         });
         assert!(result.is_err());
     }
@@ -369,6 +374,7 @@ url = "https://github.com/org/backend.git"
                 branch: None,
                 remote: None,
                 sync_strategy: None,
+                groups: Vec::new(),
             })
             .unwrap();
 
@@ -470,6 +476,26 @@ url = "https://github.com/org/backend.git"
             resolve_branch_from_dir("nonexistent", branches.iter().copied()),
             None
         );
+    }
+
+    #[test]
+    fn test_package_entry_with_groups() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[package]]
+name = "pkg-a"
+url = "https://example.com/a.git"
+groups = ["backend", "rust"]
+
+[[package]]
+name = "pkg-b"
+url = "https://example.com/b.git"
+"#;
+        let manifest: Manifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.packages[0].groups, vec!["backend", "rust"]);
+        assert_eq!(manifest.packages[1].groups, Vec::<String>::new());
     }
 
     #[test]

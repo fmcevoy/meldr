@@ -33,6 +33,7 @@ pub fn add_packages(
                     branch: None,
                     remote: None,
                     sync_strategy: None,
+                    groups: Vec::new(),
                 };
                 manifest.add_package(entry)?;
                 added.push(name);
