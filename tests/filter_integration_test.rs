@@ -1,6 +1,6 @@
 use assert_cmd::Command;
-use tempfile::TempDir;
 use std::fs;
+use tempfile::TempDir;
 
 fn setup_workspace_with_groups(dir: &std::path::Path) {
     let manifest = r#"

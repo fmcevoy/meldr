@@ -21,6 +21,8 @@ pub trait GitOps: Send + Sync {
     /// Returns a list of conflicting file paths. Empty means clean merge.
     /// Uses `git merge-tree --write-tree` (Git 2.38+). Falls back gracefully on older Git.
     fn check_merge_conflicts(&self, path: &Path, upstream: &str) -> Result<Vec<String>>;
+    /// Returns the last N commits as "short_sha message" lines.
+    fn log_oneline(&self, path: &Path, count: u32) -> Result<Vec<String>>;
     /// Returns the current HEAD commit SHA.
     fn current_head(&self, path: &Path) -> Result<String>;
     /// Hard-reset to a specific commit.
@@ -232,6 +234,11 @@ impl GitOps for RealGit {
             .collect();
 
         Ok(conflicts)
+    }
+
+    fn log_oneline(&self, path: &Path, count: u32) -> Result<Vec<String>> {
+        let output = Self::run(&["log", "--oneline", &format!("-{}", count)], path)?;
+        Ok(output.lines().map(String::from).collect())
     }
 
     fn current_head(&self, path: &Path) -> Result<String> {

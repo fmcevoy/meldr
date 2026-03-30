@@ -125,15 +125,7 @@ fn run(cli: Cli) -> error::Result<()> {
                         exclude,
                         groups: group,
                     };
-                    cli::worktree::add(
-                        &git,
-                        &tmux,
-                        &root,
-                        &branch,
-                        &config,
-                        Some(&global),
-                        &filter,
-                    )
+                    cli::worktree::add(&git, &tmux, &root, &branch, &config, Some(&global), &filter)
                 }
                 WorktreeAction::Remove {
                     branch,

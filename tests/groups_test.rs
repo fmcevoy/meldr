@@ -1,6 +1,6 @@
 use assert_cmd::Command;
-use tempfile::TempDir;
 use std::fs;
+use tempfile::TempDir;
 
 #[allow(deprecated)]
 #[test]

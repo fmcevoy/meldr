@@ -27,7 +27,11 @@ pub fn run(
     filter: &PackageFilter,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
-    let filtered_packages: Vec<_> = filter.apply(&manifest.packages).into_iter().cloned().collect();
+    let filtered_packages: Vec<_> = filter
+        .apply(&manifest.packages)
+        .into_iter()
+        .cloned()
+        .collect();
 
     if filtered_packages.is_empty() {
         println!("No packages in workspace.");

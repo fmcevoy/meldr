@@ -480,6 +480,9 @@ mod tests {
         fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
+        }
         fn current_head(&self, _path: &Path) -> Result<String> {
             Ok("mock_sha".to_string())
         }
@@ -602,6 +605,9 @@ mod tests {
         }
         fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
             Ok(vec![])
+        }
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
         }
         fn current_head(&self, _path: &Path) -> Result<String> {
             Ok("mock_sha".to_string())
@@ -1010,6 +1016,10 @@ mod tests {
             self.conflict_check_calls.lock().unwrap().push(key.clone());
             let conflicts = self.conflicts.lock().unwrap();
             Ok(conflicts.get(&key).cloned().unwrap_or_default())
+        }
+
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
         }
 
         fn current_head(&self, path: &Path) -> Result<String> {

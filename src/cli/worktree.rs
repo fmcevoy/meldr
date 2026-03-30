@@ -22,7 +22,11 @@ pub fn add(
         manifest.clone()
     } else {
         let mut m = manifest.clone();
-        m.packages = filter.apply(&manifest.packages).into_iter().cloned().collect();
+        m.packages = filter
+            .apply(&manifest.packages)
+            .into_iter()
+            .cloned()
+            .collect();
         m
     };
     let mut state = WorkspaceState::load(workspace_root)?;
@@ -53,7 +57,11 @@ pub fn remove(
         manifest.clone()
     } else {
         let mut m = manifest.clone();
-        m.packages = filter.apply(&manifest.packages).into_iter().cloned().collect();
+        m.packages = filter
+            .apply(&manifest.packages)
+            .into_iter()
+            .cloned()
+            .collect();
         m
     };
     let mut state = WorkspaceState::load(workspace_root)?;
