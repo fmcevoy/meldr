@@ -3,6 +3,7 @@ pub mod create;
 pub mod exec;
 pub mod init;
 pub mod package;
+pub mod pr;
 pub mod prompt_check;
 pub mod status;
 pub mod sync;
@@ -142,6 +143,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Create and manage coordinated PRs across packages
+    Pr {
+        #[command(subcommand)]
+        action: PrAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -243,4 +250,41 @@ pub enum ConfigAction {
     },
     /// Show where each setting value comes from
     Show,
+}
+
+#[derive(Subcommand)]
+pub enum PrAction {
+    /// Create linked PRs for all dirty packages in current worktree
+    Create {
+        /// PR title (defaults to branch name)
+        #[arg(long)]
+        title: Option<String>,
+        /// PR body/description
+        #[arg(long)]
+        body: Option<String>,
+        /// Create as draft PR
+        #[arg(long)]
+        draft: bool,
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
+    },
+    /// Show status of PRs in current worktree
+    Status {
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
+    },
 }

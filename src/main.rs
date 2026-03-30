@@ -9,7 +9,7 @@ use std::path::Path;
 
 use clap::Parser;
 
-use cli::{Cli, Commands, ConfigAction, PackageAction, WorktreeAction};
+use cli::{Cli, Commands, ConfigAction, PackageAction, PrAction, WorktreeAction};
 use core::config::{self, CliOverrides, GlobalConfig};
 use core::filter::PackageFilter;
 use core::workspace::{self, Manifest};
@@ -231,6 +231,40 @@ fn run(cli: Cli) -> error::Result<()> {
                 cli::prompt_check::run(&root, &cwd);
             }
             Ok(())
+        }
+
+        Commands::Pr { action } => {
+            let cwd = std::env::current_dir()?;
+            let root = workspace::find_workspace_root(&cwd)?;
+            match action {
+                PrAction::Create {
+                    title,
+                    body,
+                    draft,
+                    only,
+                    exclude,
+                    group,
+                } => {
+                    let filter = PackageFilter {
+                        only,
+                        exclude,
+                        groups: group,
+                    };
+                    cli::pr::create(&git, &root, &cwd, &filter, title, body, draft)
+                }
+                PrAction::Status {
+                    only,
+                    exclude,
+                    group,
+                } => {
+                    let filter = PackageFilter {
+                        only,
+                        exclude,
+                        groups: group,
+                    };
+                    cli::pr::status(&git, &root, &cwd, &filter)
+                }
+            }
         }
 
         Commands::Config { action } => {

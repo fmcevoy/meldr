@@ -528,7 +528,10 @@ post_worktree_create = ["cargo fetch"]
         let manifest: Manifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.hooks.post_sync, vec!["npm install", "cargo fetch"]);
         assert_eq!(manifest.hooks.post_worktree_create, vec!["mise install"]);
-        assert_eq!(manifest.packages[0].hooks.post_worktree_create, vec!["cargo fetch"]);
+        assert_eq!(
+            manifest.packages[0].hooks.post_worktree_create,
+            vec!["cargo fetch"]
+        );
     }
 
     #[test]
