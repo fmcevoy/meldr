@@ -4,6 +4,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::core::config::{EffectiveConfig, GlobalConfig};
+use crate::core::hooks;
 use crate::core::state::{WorkspaceState, WorktreeState};
 use crate::core::workspace::{self, Manifest};
 use crate::error::{MeldrError, Result};
@@ -196,6 +197,12 @@ pub fn add_worktree(
     );
     state.save(workspace_root)?;
 
+    // Run post_worktree_create hooks
+    let all_pkgs: Vec<&_> = manifest.packages.iter().collect();
+    hooks::run_hooks("post_worktree_create", manifest, &all_pkgs, |pkg_name| {
+        workspace::worktree_path(workspace_root, branch, pkg_name)
+    });
+
     Ok(())
 }
 
@@ -225,6 +232,12 @@ pub fn remove_worktree(
             }
         }
     }
+
+    // Run pre_remove hooks before any cleanup
+    let all_pkgs: Vec<&_> = manifest.packages.iter().collect();
+    hooks::run_hooks("pre_remove", manifest, &all_pkgs, |pkg_name| {
+        workspace::worktree_path(workspace_root, branch, pkg_name)
+    });
 
     // Capture tmux window ID before modifying state
     let tmux_window_id = state
@@ -2126,6 +2139,11 @@ pub fn sync_worktree(
             }
         }
     }
+
+    // Run post_sync hooks
+    hooks::run_hooks("post_sync", manifest, &packages, |pkg_name| {
+        workspace::worktree_path(workspace_root, branch, pkg_name)
+    });
 
     Ok(outcomes)
 }

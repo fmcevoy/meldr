@@ -5,7 +5,6 @@ use std::process::Command;
 
 /// Resolve which hooks to run for a given event and package.
 /// Per-package hooks replace (not append to) workspace-level hooks.
-#[allow(dead_code)]
 pub fn resolve_hooks_for_event(
     event: &str,
     ws_hooks: &WorkspaceHooks,
@@ -32,7 +31,6 @@ pub fn resolve_hooks_for_event(
 
 /// Run hooks for the given event across all packages in parallel.
 /// Each package's hooks run sequentially. Hook failures warn but don't block.
-#[allow(dead_code)]
 pub fn run_hooks(
     event: &str,
     manifest: &Manifest,
@@ -49,7 +47,12 @@ pub fn run_hooks(
             return;
         }
         for cmd in &cmds {
-            eprintln!("[hook] {}: running '{}' in {}", pkg.name, cmd, dir.display());
+            eprintln!(
+                "[hook] {}: running '{}' in {}",
+                pkg.name,
+                cmd,
+                dir.display()
+            );
             let result = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
@@ -64,10 +67,7 @@ pub fn run_hooks(
                     );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[hook] WARNING: '{}' in {} failed: {}",
-                        cmd, pkg.name, e
-                    );
+                    eprintln!("[hook] WARNING: '{}' in {} failed: {}", cmd, pkg.name, e);
                 }
             }
         }
