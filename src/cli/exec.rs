@@ -7,6 +7,7 @@ use std::thread;
 use rayon::prelude::*;
 
 use crate::core::config::EffectiveConfig;
+use crate::core::filter::PackageFilter;
 use crate::core::workspace::{self, Manifest};
 use crate::error::{MeldrError, Result};
 
@@ -23,10 +24,12 @@ pub fn run(
     command: &[String],
     config: &EffectiveConfig,
     interactive: bool,
+    filter: &PackageFilter,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
+    let filtered_packages: Vec<_> = filter.apply(&manifest.packages).into_iter().cloned().collect();
 
-    if manifest.packages.is_empty() {
+    if filtered_packages.is_empty() {
         println!("No packages in workspace.");
         return Ok(());
     }
@@ -50,7 +53,8 @@ pub fn run(
 
     let (tx, rx) = mpsc::channel::<OutputLine>();
 
-    let packages: Vec<_> = manifest.packages.clone();
+    let packages: Vec<_> = filtered_packages;
+    let pkg_count = packages.len();
     let shell = config.shell.clone();
 
     thread::spawn(move || {
@@ -113,7 +117,6 @@ pub fn run(
         });
     });
 
-    let pkg_count = manifest.packages.len();
     let mut completed = 0;
 
     for msg in rx {

@@ -23,6 +23,7 @@ pub fn run(
     dry_run: bool,
     only: Vec<String>,
     exclude: Vec<String>,
+    group: Vec<String>,
     undo: bool,
 ) -> error::Result<()> {
     let manifest = Manifest::load(root)?;
@@ -90,6 +91,7 @@ pub fn run(
         dry_run,
         only,
         exclude,
+        groups: group,
         skip_fetch: true, // We already fetched above
     };
 

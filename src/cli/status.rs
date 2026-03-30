@@ -2,20 +2,22 @@ use std::path::Path;
 
 use console::style;
 
+use crate::core::filter::PackageFilter;
 use crate::core::state::WorkspaceState;
 use crate::core::workspace::{self, Manifest};
 use crate::error::Result;
 use crate::git::GitOps;
 
-pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
+pub fn run(git: &dyn GitOps, workspace_root: &Path, filter: &PackageFilter) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
+    let filtered_packages: Vec<_> = filter.apply(&manifest.packages).into_iter().cloned().collect();
     let state = WorkspaceState::load(workspace_root)?;
 
     println!("{} {}", style("Workspace:").bold(), manifest.workspace.name);
     println!();
 
     println!("{}", style("Packages:").bold().underlined());
-    for pkg in &manifest.packages {
+    for pkg in &filtered_packages {
         let pkg_path = workspace::package_path(workspace_root, &pkg.name);
         let status_marker = if pkg_path.exists() {
             style("✓").green().to_string()
@@ -25,7 +27,7 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
         let branch_info = pkg.branch.as_deref().unwrap_or("(default)");
         println!("  {} {} ({})", status_marker, pkg.name, branch_info);
     }
-    if manifest.packages.is_empty() {
+    if filtered_packages.is_empty() {
         println!("  (none)");
     }
 
@@ -42,7 +44,7 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path) -> Result<()> {
                 .unwrap_or_default();
 
             let mut dirty_pkgs = Vec::new();
-            for pkg in &manifest.packages {
+            for pkg in &filtered_packages {
                 let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
                 if wt_path.exists()
                     && let Ok(true) = git.is_dirty(&wt_path)

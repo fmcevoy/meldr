@@ -1761,6 +1761,7 @@ pub struct SyncOptions {
     pub dry_run: bool,
     pub only: Vec<String>,
     pub exclude: Vec<String>,
+    pub groups: Vec<String>,
     /// When true, skip Phase 1 (fetch) and Phase 1.5 (fast-forward main).
     /// Used when the caller has already called `fetch_and_update_main()`.
     pub skip_fetch: bool,
@@ -1930,20 +1931,13 @@ pub fn sync_worktree(
         .as_deref()
         .unwrap_or(&config.sync_strategy);
 
-    // Filter packages based on --only / --exclude
-    let packages: Vec<&crate::core::workspace::PackageEntry> = manifest
-        .packages
-        .iter()
-        .filter(|pkg| {
-            if !options.only.is_empty() {
-                return options.only.iter().any(|o| o == &pkg.name);
-            }
-            if !options.exclude.is_empty() {
-                return !options.exclude.iter().any(|e| e == &pkg.name);
-            }
-            true
-        })
-        .collect();
+    // Filter packages based on --only / --exclude / --group
+    let filter = crate::core::filter::PackageFilter {
+        only: options.only.clone(),
+        exclude: options.exclude.clone(),
+        groups: options.groups.clone(),
+    };
+    let packages = filter.apply(&manifest.packages);
 
     // Phase 1 + 1.5: Fetch and fast-forward main (unless caller already did it)
     let fetch_results_owned: Vec<(String, std::result::Result<(), String>)> = if options.skip_fetch

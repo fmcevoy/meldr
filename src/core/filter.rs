@@ -1,14 +1,12 @@
 use crate::core::workspace::PackageEntry;
 
 #[derive(Debug, Default, Clone)]
-#[allow(dead_code)]
 pub struct PackageFilter {
     pub only: Vec<String>,
     pub exclude: Vec<String>,
     pub groups: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl PackageFilter {
     pub fn is_empty(&self) -> bool {
         self.only.is_empty() && self.exclude.is_empty() && self.groups.is_empty()

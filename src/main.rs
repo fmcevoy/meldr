@@ -11,6 +11,7 @@ use clap::Parser;
 
 use cli::{Cli, Commands, ConfigAction, PackageAction, WorktreeAction};
 use core::config::{self, CliOverrides, GlobalConfig};
+use core::filter::PackageFilter;
 use core::workspace::{self, Manifest};
 use git::{GitOps, RealGit};
 use tmux::RealTmux;
@@ -112,11 +113,35 @@ fn run(cli: Cli) -> error::Result<()> {
             let (wt_config, _) = build_effective_config(&root, &cli_overrides)?;
             warn_if_out_of_sync(&git, &root, &wt_config);
             match action {
-                WorktreeAction::Add { branch } => {
+                WorktreeAction::Add {
+                    branch,
+                    only,
+                    exclude,
+                    group,
+                } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
-                    cli::worktree::add(&git, &tmux, &root, &branch, &config, Some(&global))
+                    let filter = PackageFilter {
+                        only,
+                        exclude,
+                        groups: group,
+                    };
+                    cli::worktree::add(
+                        &git,
+                        &tmux,
+                        &root,
+                        &branch,
+                        &config,
+                        Some(&global),
+                        &filter,
+                    )
                 }
-                WorktreeAction::Remove { branch, force } => {
+                WorktreeAction::Remove {
+                    branch,
+                    force,
+                    only,
+                    exclude,
+                    group,
+                } => {
                     let target = match branch {
                         Some(b) => b,
                         None => {
@@ -137,7 +162,12 @@ fn run(cli: Cli) -> error::Result<()> {
                                 })?
                         }
                     };
-                    cli::worktree::remove(&git, &tmux, &root, &target, force)
+                    let filter = PackageFilter {
+                        only,
+                        exclude,
+                        groups: group,
+                    };
+                    cli::worktree::remove(&git, &tmux, &root, &target, force, &filter)
                 }
                 WorktreeAction::Open { branch } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
@@ -147,23 +177,40 @@ fn run(cli: Cli) -> error::Result<()> {
             }
         }
 
-        Commands::Status => {
+        Commands::Status {
+            only,
+            exclude,
+            group,
+        } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
             warn_if_out_of_sync(&git, &root, &config);
-            cli::status::run(&git, &root)
+            let filter = PackageFilter {
+                only,
+                exclude,
+                groups: group,
+            };
+            cli::status::run(&git, &root, &filter)
         }
 
         Commands::Exec {
             interactive,
+            only,
+            exclude,
+            group,
             command,
         } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
             warn_if_out_of_sync(&git, &root, &config);
-            cli::exec::run(&root, &cwd, &command, &config, interactive)
+            let filter = PackageFilter {
+                only,
+                exclude,
+                groups: group,
+            };
+            cli::exec::run(&root, &cwd, &command, &config, interactive, &filter)
         }
 
         Commands::Sync {
@@ -174,6 +221,7 @@ fn run(cli: Cli) -> error::Result<()> {
             dry_run,
             only,
             exclude,
+            group,
             undo,
         } => {
             let cwd = std::env::current_dir()?;
@@ -181,7 +229,7 @@ fn run(cli: Cli) -> error::Result<()> {
             let (config, _) = build_effective_config(&root, &cli_overrides)?;
             cli::sync::run(
                 &git, &root, &cwd, &config, branch, all, strategy, merge, dry_run, only, exclude,
-                undo,
+                group, undo,
             )
         }
 
