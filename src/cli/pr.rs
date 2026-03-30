@@ -354,9 +354,204 @@ pub fn create(
     Ok(())
 }
 
-/// Show PR status (stub — to be implemented in Task 9).
-pub fn status(_git: &dyn GitOps, _root: &Path, _cwd: &Path, _filter: &PackageFilter) -> Result<()> {
-    println!("PR status not yet implemented.");
+// ── gh pr view JSON structs ──────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct GhPrView {
+    number: u64,
+    title: String,
+    state: String,
+    #[allow(dead_code)]
+    url: String,
+    #[serde(default, rename = "statusCheckRollup")]
+    status_check_rollup: Vec<GhCheckRun>,
+    #[serde(default)]
+    reviews: Vec<GhReview>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhCheckRun {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhReview {
+    state: String,
+}
+
+/// Summarize CI status from a list of check runs.
+///
+/// Returns `"fail"` if any check has a failure/error conclusion,
+/// `"pending"` if any is still in progress (and none failed),
+/// `"pass"` if all are successful, or `"—"` when the list is empty.
+fn summarize_ci(checks: &[GhCheckRun]) -> &'static str {
+    if checks.is_empty() {
+        return "—";
+    }
+    let mut any_pending = false;
+    for check in checks {
+        let conclusion = check.conclusion.as_deref().unwrap_or("").to_uppercase();
+        let status = check.status.as_deref().unwrap_or("").to_uppercase();
+        let state = check.state.as_deref().unwrap_or("").to_uppercase();
+
+        if matches!(
+            conclusion.as_str(),
+            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED"
+        ) || matches!(state.as_str(), "FAILURE" | "ERROR")
+        {
+            return "fail";
+        }
+        if matches!(status.as_str(), "IN_PROGRESS" | "QUEUED" | "WAITING" | "PENDING")
+            || matches!(state.as_str(), "PENDING" | "EXPECTED")
+        {
+            any_pending = true;
+        }
+    }
+    if any_pending { "pending" } else { "pass" }
+}
+
+/// Show PR status across packages in the current worktree.
+pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter) -> Result<()> {
+    let branch = detect_branch(root, cwd)?;
+    let manifest = Manifest::load(root)?;
+    let filtered = filter.apply(&manifest.packages);
+
+    if filtered.is_empty() {
+        println!("{}", style("No packages match the filter.").yellow());
+        return Ok(());
+    }
+
+    // Column widths (minimum widths, will grow to fit content)
+    let pkg_w = filtered.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
+    let title_w = 40usize;
+
+    // Print header
+    println!(
+        "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  {}",
+        style("Package").bold().underlined(),
+        style("PR").bold().underlined(),
+        style("Title").bold().underlined(),
+        style("State").bold().underlined(),
+        style("CI").bold().underlined(),
+        style("Reviews").bold().underlined(),
+    );
+
+    for pkg in &filtered {
+        let wt_path = workspace::worktree_path(root, &branch, &pkg.name);
+        if !wt_path.exists() {
+            println!(
+                "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  —",
+                style(&pkg.name).bold(),
+                "—",
+                style("worktree not found").dim(),
+                "—",
+                "—",
+            );
+            continue;
+        }
+
+        // Run: gh pr view --json number,title,state,url,statusCheckRollup,reviews
+        let gh_output = Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                "--json",
+                "number,title,state,url,statusCheckRollup,reviews",
+            ])
+            .current_dir(&wt_path)
+            .output();
+
+        match gh_output {
+            Err(_) => {
+                // gh not available
+                println!(
+                    "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  —",
+                    style(&pkg.name).bold(),
+                    "—",
+                    style("gh CLI unavailable").dim(),
+                    "—",
+                    "—",
+                );
+            }
+            Ok(output) if !output.status.success() => {
+                // No PR for this branch (gh exits non-zero when no PR exists)
+                println!(
+                    "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  —",
+                    style(&pkg.name).bold(),
+                    "—",
+                    style("No PR").dim(),
+                    "—",
+                    "—",
+                );
+            }
+            Ok(output) => {
+                let json_str = String::from_utf8_lossy(&output.stdout);
+                match serde_json::from_str::<GhPrView>(&json_str) {
+                    Err(_) => {
+                        println!(
+                            "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  ?",
+                            style(&pkg.name).bold(),
+                            "?",
+                            style("parse error").dim(),
+                            "?",
+                            "?",
+                        );
+                    }
+                    Ok(pr) => {
+                        let pr_num = format!("#{}", pr.number);
+                        let title: String = if pr.title.len() > title_w {
+                            format!("{}…", &pr.title[..title_w.saturating_sub(1)])
+                        } else {
+                            pr.title.clone()
+                        };
+
+                        let state_str = pr.state.to_uppercase();
+                        let state_styled = match state_str.as_str() {
+                            "OPEN" => style(state_str.as_str()).green().to_string(),
+                            "MERGED" => style(state_str.as_str()).blue().to_string(),
+                            "CLOSED" => style(state_str.as_str()).red().to_string(),
+                            other => style(other).dim().to_string(),
+                        };
+
+                        let ci_raw = summarize_ci(&pr.status_check_rollup);
+                        let ci_styled = match ci_raw {
+                            "pass" => style(ci_raw).green().to_string(),
+                            "pending" => style(ci_raw).yellow().to_string(),
+                            "fail" => style(ci_raw).red().to_string(),
+                            other => style(other).dim().to_string(),
+                        };
+
+                        let approved = pr
+                            .reviews
+                            .iter()
+                            .filter(|r| r.state.to_uppercase() == "APPROVED")
+                            .count();
+                        let reviews_str = if approved > 0 {
+                            style(format!("{approved} approved")).green().to_string()
+                        } else {
+                            style("0").dim().to_string()
+                        };
+
+                        println!(
+                            "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  {}",
+                            style(&pkg.name).bold(),
+                            pr_num,
+                            title,
+                            state_styled,
+                            ci_styled,
+                            reviews_str,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -427,5 +622,45 @@ mod tests {
             Some(42)
         );
         assert_eq!(parse_pr_number("not-a-url"), None);
+    }
+
+    #[test]
+    fn test_summarize_ci_status() {
+        // All success
+        assert_eq!(
+            summarize_ci(&[GhCheckRun {
+                state: None,
+                status: None,
+                conclusion: Some("SUCCESS".into()),
+            }]),
+            "pass"
+        );
+        // Any failure
+        assert_eq!(
+            summarize_ci(&[
+                GhCheckRun {
+                    state: None,
+                    status: None,
+                    conclusion: Some("SUCCESS".into()),
+                },
+                GhCheckRun {
+                    state: None,
+                    status: None,
+                    conclusion: Some("FAILURE".into()),
+                },
+            ]),
+            "fail"
+        );
+        // Pending
+        assert_eq!(
+            summarize_ci(&[GhCheckRun {
+                state: None,
+                status: Some("IN_PROGRESS".into()),
+                conclusion: None,
+            }]),
+            "pending"
+        );
+        // Empty
+        assert_eq!(summarize_ci(&[]), "—");
     }
 }
