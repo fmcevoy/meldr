@@ -45,6 +45,7 @@ mod tests {
             remote: None,
             sync_strategy: None,
             groups: groups.into_iter().map(String::from).collect(),
+            hooks: crate::core::workspace::WorkspaceHooks::default(),
         }
     }
 

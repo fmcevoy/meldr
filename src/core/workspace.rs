@@ -10,6 +10,8 @@ pub struct Manifest {
     pub settings: Settings,
     #[serde(default)]
     pub layout: Option<LayoutOverride>,
+    #[serde(default, skip_serializing_if = "WorkspaceHooks::is_empty")]
+    pub hooks: WorkspaceHooks,
     #[serde(default, rename = "package", skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<PackageEntry>,
 }
@@ -64,6 +66,27 @@ pub struct LayoutOverride {
     pub panes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceHooks {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_sync: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_worktree_create: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_remove: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_pr: Vec<String>,
+}
+
+impl WorkspaceHooks {
+    pub fn is_empty(&self) -> bool {
+        self.post_sync.is_empty()
+            && self.post_worktree_create.is_empty()
+            && self.pre_remove.is_empty()
+            && self.post_pr.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEntry {
     pub name: String,
@@ -76,6 +99,8 @@ pub struct PackageEntry {
     pub sync_strategy: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "WorkspaceHooks::is_empty")]
+    pub hooks: WorkspaceHooks,
 }
 
 impl Manifest {
@@ -86,6 +111,7 @@ impl Manifest {
             },
             settings: Settings::default(),
             layout: None,
+            hooks: WorkspaceHooks::default(),
             packages: Vec::new(),
         }
     }
@@ -302,6 +328,7 @@ mod tests {
                 remote: None,
                 sync_strategy: None,
                 groups: Vec::new(),
+                hooks: WorkspaceHooks::default(),
             })
             .unwrap();
 
@@ -350,6 +377,7 @@ url = "https://github.com/org/backend.git"
                 remote: None,
                 sync_strategy: None,
                 groups: Vec::new(),
+                hooks: WorkspaceHooks::default(),
             })
             .unwrap();
 
@@ -360,6 +388,7 @@ url = "https://github.com/org/backend.git"
             remote: None,
             sync_strategy: None,
             groups: Vec::new(),
+            hooks: WorkspaceHooks::default(),
         });
         assert!(result.is_err());
     }
@@ -375,6 +404,7 @@ url = "https://github.com/org/backend.git"
                 remote: None,
                 sync_strategy: None,
                 groups: Vec::new(),
+                hooks: WorkspaceHooks::default(),
             })
             .unwrap();
 
@@ -476,6 +506,44 @@ url = "https://github.com/org/backend.git"
             resolve_branch_from_dir("nonexistent", branches.iter().copied()),
             None
         );
+    }
+
+    #[test]
+    fn test_manifest_with_hooks() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[hooks]
+post_sync = ["npm install", "cargo fetch"]
+post_worktree_create = ["mise install"]
+
+[[package]]
+name = "api"
+url = "https://example.com/api.git"
+
+[package.hooks]
+post_worktree_create = ["cargo fetch"]
+"#;
+        let manifest: Manifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.hooks.post_sync, vec!["npm install", "cargo fetch"]);
+        assert_eq!(manifest.hooks.post_worktree_create, vec!["mise install"]);
+        assert_eq!(manifest.packages[0].hooks.post_worktree_create, vec!["cargo fetch"]);
+    }
+
+    #[test]
+    fn test_manifest_without_hooks_backward_compat() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[package]]
+name = "api"
+url = "https://example.com/api.git"
+"#;
+        let manifest: Manifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.hooks.post_sync.is_empty());
+        assert!(manifest.packages[0].hooks.post_worktree_create.is_empty());
     }
 
     #[test]

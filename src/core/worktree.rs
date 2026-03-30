@@ -501,6 +501,7 @@ mod tests {
             },
             settings: Default::default(),
             layout: None,
+            hooks: crate::core::workspace::WorkspaceHooks::default(),
             packages: packages
                 .iter()
                 .map(|name| PackageEntry {
@@ -510,6 +511,7 @@ mod tests {
                     remote: None,
                     sync_strategy: None,
                     groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 })
                 .collect(),
         }
@@ -1422,6 +1424,7 @@ mod tests {
             },
             settings: Default::default(),
             layout: None,
+            hooks: crate::core::workspace::WorkspaceHooks::default(),
             packages: vec![
                 PackageEntry {
                     name: "frontend".to_string(),
@@ -1430,6 +1433,7 @@ mod tests {
                     remote: None,
                     sync_strategy: Some("theirs".to_string()),
                     groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 },
                 PackageEntry {
                     name: "backend".to_string(),
@@ -1438,6 +1442,7 @@ mod tests {
                     remote: None,
                     sync_strategy: None,
                     groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 },
             ],
         };
