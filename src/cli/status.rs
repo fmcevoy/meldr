@@ -146,8 +146,8 @@ pub fn run(
             } else {
                 style(status_padded).green().to_string()
             };
-            let ab_raw = format!("\u{2191}{} \u{2193}{}", ahead, behind);
-            let ab_padded = format!("{:<12}", ab_raw);
+            let ab_raw = format!("\u{2191}{ahead} \u{2193}{behind}");
+            let ab_padded = format!("{ab_raw:<12}");
             let ab_styled = if behind > 0 {
                 style(ab_padded).red().to_string()
             } else if ahead > 0 {

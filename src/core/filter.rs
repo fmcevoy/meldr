@@ -40,7 +40,7 @@ mod tests {
     fn make_pkg(name: &str, groups: Vec<&str>) -> PackageEntry {
         PackageEntry {
             name: name.to_string(),
-            url: format!("https://example.com/{}.git", name),
+            url: format!("https://example.com/{name}.git"),
             branch: None,
             remote: None,
             sync_strategy: None,

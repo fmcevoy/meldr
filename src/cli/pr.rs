@@ -56,10 +56,7 @@ pub fn has_changes(git: &dyn GitOps, path: &Path, branch: &str, remote: &str) ->
 
 /// Build cross-reference text to append to PR bodies.
 pub fn build_cross_reference_body(workspace_name: &str, prs: &[(&str, String)]) -> String {
-    let mut body = format!(
-        "\n---\nPart of coordinated change across `{}`:\n",
-        workspace_name
-    );
+    let mut body = format!("\n---\nPart of coordinated change across `{workspace_name}`:\n");
     for (_pkg, pr_ref) in prs {
         body.push_str(&format!("- {pr_ref}\n"));
     }
@@ -531,7 +528,7 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
                         };
 
                         let state_raw = pr.state.to_uppercase();
-                        let state_padded = format!("{:<8}", state_raw);
+                        let state_padded = format!("{state_raw:<8}");
                         let state_styled = match state_raw.as_str() {
                             "OPEN" => style(state_padded).green().to_string(),
                             "MERGED" => style(state_padded).blue().to_string(),
@@ -540,7 +537,7 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
                         };
 
                         let ci_raw = summarize_ci(&pr.status_check_rollup);
-                        let ci_padded = format!("{:<8}", ci_raw);
+                        let ci_padded = format!("{ci_raw:<8}");
                         let ci_styled = match ci_raw {
                             "pass" => style(ci_padded).green().to_string(),
                             "pending" => style(ci_padded).yellow().to_string(),

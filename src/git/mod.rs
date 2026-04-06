@@ -239,7 +239,7 @@ impl GitOps for RealGit {
     }
 
     fn log_oneline(&self, path: &Path, count: u32) -> Result<Vec<String>> {
-        let output = Self::run(&["log", "--oneline", &format!("-{}", count)], path)?;
+        let output = Self::run(&["log", "--oneline", &format!("-{count}")], path)?;
         Ok(output.lines().map(String::from).collect())
     }
 
