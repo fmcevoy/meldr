@@ -27,6 +27,8 @@ pub trait GitOps: Send + Sync {
     fn current_head(&self, path: &Path) -> Result<String>;
     /// Hard-reset to a specific commit.
     fn reset_hard(&self, path: &Path, commit: &str) -> Result<()>;
+    /// Push a branch to a remote.
+    fn push(&self, path: &Path, remote: &str, branch: &str) -> Result<()>;
     /// Fast-forward a local branch ref to match a remote tracking ref.
     /// Uses `git fetch . <src>:<dst>` which only succeeds for fast-forwards.
     fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()>;
@@ -247,6 +249,11 @@ impl GitOps for RealGit {
 
     fn reset_hard(&self, path: &Path, commit: &str) -> Result<()> {
         Self::run(&["reset", "--hard", commit], path)?;
+        Ok(())
+    }
+
+    fn push(&self, path: &Path, remote: &str, branch: &str) -> Result<()> {
+        Self::run(&["push", "-u", remote, branch], path)?;
         Ok(())
     }
 

@@ -183,7 +183,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 exclude,
                 groups: group,
             };
-            cli::status::run(&git, &root, &filter)
+            cli::status::run(&git, &root, &config, &filter)
         }
 
         Commands::Exec {
@@ -236,6 +236,7 @@ fn run(cli: Cli) -> error::Result<()> {
         Commands::Pr { action } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
+            let (pr_config, _) = build_effective_config(&root, &cli_overrides)?;
             match action {
                 PrAction::Create {
                     title,
@@ -250,7 +251,7 @@ fn run(cli: Cli) -> error::Result<()> {
                         exclude,
                         groups: group,
                     };
-                    cli::pr::create(&git, &root, &cwd, &filter, title, body, draft)
+                    cli::pr::create(&git, &root, &cwd, &pr_config, &filter, title, body, draft)
                 }
                 PrAction::Status {
                     only,

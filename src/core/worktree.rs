@@ -206,6 +206,7 @@ pub fn add_worktree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn remove_worktree(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,
@@ -214,6 +215,7 @@ pub fn remove_worktree(
     workspace_root: &Path,
     branch: &str,
     force: bool,
+    partial: bool,
 ) -> Result<()> {
     if state.get_worktree(branch).is_none() {
         return Err(MeldrError::WorktreeNotFound(branch.to_string()));
@@ -239,12 +241,7 @@ pub fn remove_worktree(
         workspace::worktree_path(workspace_root, branch, pkg_name)
     });
 
-    // Capture tmux window ID before modifying state
-    let tmux_window_id = state
-        .get_worktree(branch)
-        .and_then(|wt| wt.tmux_window.clone());
-
-    // Remove git worktrees for ALL packages BEFORE killing the tmux window.
+    // Remove git worktrees for the requested packages BEFORE killing the tmux window.
     // If we kill the tmux window first and the user is running this command
     // from within that window, the process gets terminated before cleanup.
     for pkg in &manifest.packages {
@@ -259,6 +256,18 @@ pub fn remove_worktree(
             );
         }
     }
+
+    // When a filter is active (partial removal), only remove the filtered packages'
+    // worktrees. Don't delete the branch directory, state, or tmux window — other
+    // packages still need them.
+    if partial {
+        return Ok(());
+    }
+
+    // Capture tmux window ID before modifying state
+    let tmux_window_id = state
+        .get_worktree(branch)
+        .and_then(|wt| wt.tmux_window.clone());
 
     let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     if branch_dir.exists() {
@@ -502,6 +511,9 @@ mod tests {
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
             Ok(())
         }
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
+            Ok(())
+        }
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
             Ok(())
         }
@@ -630,6 +642,9 @@ mod tests {
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
             Ok(())
         }
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
+            Ok(())
+        }
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
             Ok(())
         }
@@ -737,6 +752,7 @@ mod tests {
             tmp.path(),
             "feat-rm",
             false,
+            false,
         )
         .unwrap();
 
@@ -792,6 +808,7 @@ mod tests {
             tmp.path(),
             "feat-order",
             false,
+            false,
         )
         .unwrap();
 
@@ -824,6 +841,7 @@ mod tests {
             tmp.path(),
             "no-such",
             false,
+            false,
         );
         assert!(result.is_err(), "removing nonexistent worktree should fail");
     }
@@ -853,6 +871,7 @@ mod tests {
             &mut state,
             tmp.path(),
             "feat-notab",
+            false,
             false,
         )
         .unwrap();
@@ -1052,6 +1071,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((key, commit.to_string()));
+            Ok(())
+        }
+
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
             Ok(())
         }
 
@@ -2140,10 +2163,12 @@ pub fn sync_worktree(
         }
     }
 
-    // Run post_sync hooks
-    hooks::run_hooks("post_sync", manifest, &packages, |pkg_name| {
-        workspace::worktree_path(workspace_root, branch, pkg_name)
-    });
+    // Run post_sync hooks (skip during dry-run)
+    if !options.dry_run {
+        hooks::run_hooks("post_sync", manifest, &packages, |pkg_name| {
+            workspace::worktree_path(workspace_root, branch, pkg_name)
+        });
+    }
 
     Ok(outcomes)
 }

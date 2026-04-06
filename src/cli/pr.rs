@@ -3,6 +3,7 @@ use std::process::Command;
 
 use console::style;
 
+use crate::core::config::EffectiveConfig;
 use crate::core::filter::PackageFilter;
 use crate::core::hooks;
 use crate::core::state::WorkspaceState;
@@ -41,11 +42,11 @@ pub fn extract_github_repo(url: &str) -> Option<String> {
 }
 
 /// Check whether a package has unpushed commits or uncommitted changes.
-pub fn has_changes(git: &dyn GitOps, path: &Path, branch: &str) -> Result<bool> {
+pub fn has_changes(git: &dyn GitOps, path: &Path, branch: &str, remote: &str) -> Result<bool> {
     if git.is_dirty(path)? {
         return Ok(true);
     }
-    let upstream = format!("origin/{branch}");
+    let upstream = format!("{remote}/{branch}");
     match git.divergence(path, &upstream) {
         Ok((ahead, _)) => Ok(ahead > 0),
         // If upstream doesn't exist yet, the branch is entirely new — treat as having changes
@@ -104,6 +105,7 @@ pub fn create(
     git: &dyn GitOps,
     root: &Path,
     cwd: &Path,
+    config: &EffectiveConfig,
     filter: &PackageFilter,
     title: Option<String>,
     body: Option<String>,
@@ -127,7 +129,8 @@ pub fn create(
         if !wt_path.exists() {
             continue;
         }
-        match has_changes(git, &wt_path, &branch) {
+        let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+        match has_changes(git, &wt_path, &branch, remote) {
             Ok(true) => dirty_packages.push(*pkg),
             Ok(false) => {}
             Err(e) => {
@@ -175,35 +178,17 @@ pub fn create(
         };
 
         // Push
+        let push_remote = pkg.remote.as_deref().unwrap_or(&config.remote);
         println!("  {} {}", style("pushing").cyan(), style(&pkg.name).bold());
-        let push_result = Command::new("git")
-            .args(["push", "-u", "origin", &branch])
-            .current_dir(&wt_path)
-            .output();
-
-        match push_result {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                eprintln!(
-                    "  {} {}: push failed: {}",
-                    style("error").red(),
-                    style(&pkg.name).bold(),
-                    stderr.trim()
-                );
-                failures.push((&pkg.name, format!("push failed: {}", stderr.trim())));
-                continue;
-            }
-            Err(e) => {
-                eprintln!(
-                    "  {} {}: push failed: {}",
-                    style("error").red(),
-                    style(&pkg.name).bold(),
-                    e
-                );
-                failures.push((&pkg.name, format!("push failed: {e}")));
-                continue;
-            }
+        if let Err(e) = git.push(&wt_path, push_remote, &branch) {
+            eprintln!(
+                "  {} {}: push failed: {}",
+                style("error").red(),
+                style(&pkg.name).bold(),
+                e
+            );
+            failures.push((&pkg.name, format!("push failed: {e}")));
+            continue;
         }
 
         // Create PR
@@ -283,19 +268,13 @@ pub fn create(
                 .and_then(|(_, _, r)| r.split('#').next())
                 .unwrap_or("");
 
-            let edit_result = Command::new("gh")
+            let comment_result = Command::new("gh")
                 .args([
-                    "pr",
-                    "edit",
-                    pr_url,
-                    "--repo",
-                    repo_slug,
-                    "--add-body",
-                    &xref_body,
+                    "pr", "comment", pr_url, "--repo", repo_slug, "--body", &xref_body,
                 ])
                 .output();
 
-            match edit_result {
+            match comment_result {
                 Ok(output) if output.status.success() => {
                     eprintln!(
                         "  {} cross-reference added to {}",
@@ -303,11 +282,21 @@ pub fn create(
                         style(pkg_name).bold()
                     );
                 }
-                _ => {
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
                     eprintln!(
-                        "  {} could not add cross-reference to {}",
+                        "  {} could not add cross-reference to {}: {}",
                         style("warning:").yellow(),
-                        style(pkg_name).bold()
+                        style(pkg_name).bold(),
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  {} could not add cross-reference to {}: {}",
+                        style("warning:").yellow(),
+                        style(pkg_name).bold(),
+                        e
                     );
                 }
             }
@@ -349,6 +338,13 @@ pub fn create(
         for (pkg, reason) in &failures {
             println!("  {} {}", style(pkg).red().bold(), reason);
         }
+    }
+
+    if successes.is_empty() && !failures.is_empty() {
+        return Err(crate::error::MeldrError::Git(format!(
+            "All {} PR creation(s) failed",
+            failures.len()
+        )));
     }
 
     Ok(())
@@ -474,8 +470,13 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
             .output();
 
         match gh_output {
-            Err(_) => {
-                // gh not available
+            Err(e) => {
+                eprintln!(
+                    "  {} {}: gh CLI error: {}",
+                    style("warning:").yellow(),
+                    style(&pkg.name).bold(),
+                    e
+                );
                 println!(
                     "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  —",
                     style(&pkg.name).bold(),
@@ -499,7 +500,13 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
             Ok(output) => {
                 let json_str = String::from_utf8_lossy(&output.stdout);
                 match serde_json::from_str::<GhPrView>(&json_str) {
-                    Err(_) => {
+                    Err(e) => {
+                        eprintln!(
+                            "  {} {}: JSON parse error: {}",
+                            style("warning:").yellow(),
+                            style(&pkg.name).bold(),
+                            e
+                        );
                         println!(
                             "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  ?",
                             style(&pkg.name).bold(),
@@ -511,26 +518,34 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
                     }
                     Ok(pr) => {
                         let pr_num = format!("#{}", pr.number);
-                        let title: String = if pr.title.len() > title_w {
-                            format!("{}…", &pr.title[..title_w.saturating_sub(1)])
+                        let title: String = if pr.title.chars().count() > title_w {
+                            format!(
+                                "{}…",
+                                pr.title
+                                    .chars()
+                                    .take(title_w.saturating_sub(1))
+                                    .collect::<String>()
+                            )
                         } else {
                             pr.title.clone()
                         };
 
-                        let state_str = pr.state.to_uppercase();
-                        let state_styled = match state_str.as_str() {
-                            "OPEN" => style(state_str.as_str()).green().to_string(),
-                            "MERGED" => style(state_str.as_str()).blue().to_string(),
-                            "CLOSED" => style(state_str.as_str()).red().to_string(),
-                            other => style(other).dim().to_string(),
+                        let state_raw = pr.state.to_uppercase();
+                        let state_padded = format!("{:<8}", state_raw);
+                        let state_styled = match state_raw.as_str() {
+                            "OPEN" => style(state_padded).green().to_string(),
+                            "MERGED" => style(state_padded).blue().to_string(),
+                            "CLOSED" => style(state_padded).red().to_string(),
+                            _ => style(state_padded).dim().to_string(),
                         };
 
                         let ci_raw = summarize_ci(&pr.status_check_rollup);
+                        let ci_padded = format!("{:<8}", ci_raw);
                         let ci_styled = match ci_raw {
-                            "pass" => style(ci_raw).green().to_string(),
-                            "pending" => style(ci_raw).yellow().to_string(),
-                            "fail" => style(ci_raw).red().to_string(),
-                            other => style(other).dim().to_string(),
+                            "pass" => style(ci_padded).green().to_string(),
+                            "pending" => style(ci_padded).yellow().to_string(),
+                            "fail" => style(ci_padded).red().to_string(),
+                            _ => style(ci_padded).dim().to_string(),
                         };
 
                         let approved = pr
@@ -545,7 +560,7 @@ pub fn status(_git: &dyn GitOps, root: &Path, cwd: &Path, filter: &PackageFilter
                         };
 
                         println!(
-                            "{:<pkg_w$}  {:<6}  {:<title_w$}  {:<8}  {:<8}  {}",
+                            "{:<pkg_w$}  {:<6}  {:<title_w$}  {}  {}  {}",
                             style(&pkg.name).bold(),
                             pr_num,
                             title,

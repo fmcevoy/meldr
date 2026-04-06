@@ -2,6 +2,7 @@ use std::path::Path;
 
 use console::style;
 
+use crate::core::config::EffectiveConfig;
 use crate::core::filter::PackageFilter;
 use crate::core::state::WorkspaceState;
 use crate::core::workspace::{self, Manifest};
@@ -9,11 +10,9 @@ use crate::error::Result;
 use crate::git::GitOps;
 
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum SyncState {
     Synced,
     Stale,
-    Conflict,
 }
 
 impl SyncState {
@@ -24,17 +23,21 @@ impl SyncState {
             SyncState::Synced
         }
     }
-    #[allow(dead_code)]
+
     pub fn label(&self) -> &str {
         match self {
             SyncState::Synced => "synced",
             SyncState::Stale => "stale",
-            SyncState::Conflict => "conflict",
         }
     }
 }
 
-pub fn run(git: &dyn GitOps, workspace_root: &Path, filter: &PackageFilter) -> Result<()> {
+pub fn run(
+    git: &dyn GitOps,
+    workspace_root: &Path,
+    config: &EffectiveConfig,
+    filter: &PackageFilter,
+) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let state = WorkspaceState::load(workspace_root)?;
 
@@ -99,44 +102,67 @@ pub fn run(git: &dyn GitOps, workspace_root: &Path, filter: &PackageFilter) -> R
                 continue;
             }
 
-            let dirty = git.is_dirty(&wt_path).unwrap_or(false);
-            let (ahead, behind) = git
-                .divergence(&wt_path, &format!("origin/{branch}"))
-                .unwrap_or((0, 0));
+            let remote = pkg.remote.as_deref().unwrap_or(&config.remote);
+            let dirty = match git.is_dirty(&wt_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!(
+                        "  {} {}: {}",
+                        style("warning:").yellow(),
+                        style(&pkg.name).bold(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            let (ahead, behind) = match git.divergence(&wt_path, &format!("{remote}/{branch}")) {
+                Ok(ab) => ab,
+                Err(e) => {
+                    eprintln!(
+                        "  {} {}: divergence check failed: {}",
+                        style("warning:").yellow(),
+                        style(&pkg.name).bold(),
+                        e
+                    );
+                    (0, 0)
+                }
+            };
             let last_commit = git
                 .log_oneline(&wt_path, 1)
                 .unwrap_or_default()
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| "\u{2014}".to_string());
-            let last_commit = if last_commit.len() > 30 {
-                format!("{}…", &last_commit[..29])
+            let last_commit = if last_commit.chars().count() > 30 {
+                format!("{}…", last_commit.chars().take(29).collect::<String>())
             } else {
                 last_commit
             };
             let sync_state = SyncState::from_divergence(ahead, behind);
 
+            let status_padded = format!("{:<8}", if dirty { "dirty" } else { "clean" });
             let status_str = if dirty {
-                style("dirty").yellow().to_string()
+                style(status_padded).yellow().to_string()
             } else {
-                style("clean").green().to_string()
+                style(status_padded).green().to_string()
             };
-            let ab_str = format!("\u{2191}{} \u{2193}{}", ahead, behind);
+            let ab_raw = format!("\u{2191}{} \u{2193}{}", ahead, behind);
+            let ab_padded = format!("{:<12}", ab_raw);
             let ab_styled = if behind > 0 {
-                style(ab_str).red().to_string()
+                style(ab_padded).red().to_string()
             } else if ahead > 0 {
-                style(ab_str).yellow().to_string()
+                style(ab_padded).yellow().to_string()
             } else {
-                style(ab_str).green().to_string()
+                style(ab_padded).green().to_string()
             };
+            let sync_padded = format!("{:<8}", sync_state.label());
             let sync_str = match sync_state {
-                SyncState::Synced => style("synced").green().to_string(),
-                SyncState::Stale => style("stale").yellow().to_string(),
-                SyncState::Conflict => style("conflict").red().to_string(),
+                SyncState::Synced => style(sync_padded).green().to_string(),
+                SyncState::Stale => style(sync_padded).yellow().to_string(),
             };
 
             println!(
-                "  {:<16} {:<8} {:<12} {:<30} {:<8}",
+                "  {:<16} {} {} {:<30} {}",
                 pkg.name, status_str, ab_styled, last_commit, sync_str,
             );
         }
@@ -161,6 +187,5 @@ mod tests {
     fn test_sync_state_labels() {
         assert_eq!(SyncState::Synced.label(), "synced");
         assert_eq!(SyncState::Stale.label(), "stale");
-        assert_eq!(SyncState::Conflict.label(), "conflict");
     }
 }
