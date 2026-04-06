@@ -4,6 +4,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::core::config::{EffectiveConfig, GlobalConfig};
+use crate::core::hooks;
 use crate::core::state::{WorkspaceState, WorktreeState};
 use crate::core::workspace::{self, Manifest};
 use crate::error::{MeldrError, Result};
@@ -196,9 +197,16 @@ pub fn add_worktree(
     );
     state.save(workspace_root)?;
 
+    // Run post_worktree_create hooks
+    let all_pkgs: Vec<&_> = manifest.packages.iter().collect();
+    hooks::run_hooks("post_worktree_create", manifest, &all_pkgs, |pkg_name| {
+        workspace::worktree_path(workspace_root, branch, pkg_name)
+    });
+
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn remove_worktree(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,
@@ -207,6 +215,7 @@ pub fn remove_worktree(
     workspace_root: &Path,
     branch: &str,
     force: bool,
+    partial: bool,
 ) -> Result<()> {
     if state.get_worktree(branch).is_none() {
         return Err(MeldrError::WorktreeNotFound(branch.to_string()));
@@ -226,12 +235,13 @@ pub fn remove_worktree(
         }
     }
 
-    // Capture tmux window ID before modifying state
-    let tmux_window_id = state
-        .get_worktree(branch)
-        .and_then(|wt| wt.tmux_window.clone());
+    // Run pre_remove hooks before any cleanup
+    let all_pkgs: Vec<&_> = manifest.packages.iter().collect();
+    hooks::run_hooks("pre_remove", manifest, &all_pkgs, |pkg_name| {
+        workspace::worktree_path(workspace_root, branch, pkg_name)
+    });
 
-    // Remove git worktrees for ALL packages BEFORE killing the tmux window.
+    // Remove git worktrees for the requested packages BEFORE killing the tmux window.
     // If we kill the tmux window first and the user is running this command
     // from within that window, the process gets terminated before cleanup.
     for pkg in &manifest.packages {
@@ -246,6 +256,18 @@ pub fn remove_worktree(
             );
         }
     }
+
+    // When a filter is active (partial removal), only remove the filtered packages'
+    // worktrees. Don't delete the branch directory, state, or tmux window — other
+    // packages still need them.
+    if partial {
+        return Ok(());
+    }
+
+    // Capture tmux window ID before modifying state
+    let tmux_window_id = state
+        .get_worktree(branch)
+        .and_then(|wt| wt.tmux_window.clone());
 
     let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     if branch_dir.exists() {
@@ -480,10 +502,16 @@ mod tests {
         fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
+        }
         fn current_head(&self, _path: &Path) -> Result<String> {
             Ok("mock_sha".to_string())
         }
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
             Ok(())
         }
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
@@ -498,6 +526,7 @@ mod tests {
             },
             settings: Default::default(),
             layout: None,
+            hooks: crate::core::workspace::WorkspaceHooks::default(),
             packages: packages
                 .iter()
                 .map(|name| PackageEntry {
@@ -506,6 +535,8 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: None,
+                    groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 })
                 .collect(),
         }
@@ -602,10 +633,16 @@ mod tests {
         fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
+        }
         fn current_head(&self, _path: &Path) -> Result<String> {
             Ok("mock_sha".to_string())
         }
         fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
             Ok(())
         }
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
@@ -715,6 +752,7 @@ mod tests {
             tmp.path(),
             "feat-rm",
             false,
+            false,
         )
         .unwrap();
 
@@ -770,6 +808,7 @@ mod tests {
             tmp.path(),
             "feat-order",
             false,
+            false,
         )
         .unwrap();
 
@@ -802,6 +841,7 @@ mod tests {
             tmp.path(),
             "no-such",
             false,
+            false,
         );
         assert!(result.is_err(), "removing nonexistent worktree should fail");
     }
@@ -831,6 +871,7 @@ mod tests {
             &mut state,
             tmp.path(),
             "feat-notab",
+            false,
             false,
         )
         .unwrap();
@@ -1011,6 +1052,10 @@ mod tests {
             Ok(conflicts.get(&key).cloned().unwrap_or_default())
         }
 
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec!["abc1234 mock commit".to_string()])
+        }
+
         fn current_head(&self, path: &Path) -> Result<String> {
             let key = path.to_string_lossy().to_string();
             let heads = self.heads.lock().unwrap();
@@ -1026,6 +1071,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((key, commit.to_string()));
+            Ok(())
+        }
+
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
             Ok(())
         }
 
@@ -1411,6 +1460,7 @@ mod tests {
             },
             settings: Default::default(),
             layout: None,
+            hooks: crate::core::workspace::WorkspaceHooks::default(),
             packages: vec![
                 PackageEntry {
                     name: "frontend".to_string(),
@@ -1418,6 +1468,8 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: Some("theirs".to_string()),
+                    groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 },
                 PackageEntry {
                     name: "backend".to_string(),
@@ -1425,6 +1477,8 @@ mod tests {
                     branch: None,
                     remote: None,
                     sync_strategy: None,
+                    groups: Vec::new(),
+                    hooks: crate::core::workspace::WorkspaceHooks::default(),
                 },
             ],
         };
@@ -1758,6 +1812,7 @@ pub struct SyncOptions {
     pub dry_run: bool,
     pub only: Vec<String>,
     pub exclude: Vec<String>,
+    pub groups: Vec<String>,
     /// When true, skip Phase 1 (fetch) and Phase 1.5 (fast-forward main).
     /// Used when the caller has already called `fetch_and_update_main()`.
     pub skip_fetch: bool,
@@ -1927,20 +1982,13 @@ pub fn sync_worktree(
         .as_deref()
         .unwrap_or(&config.sync_strategy);
 
-    // Filter packages based on --only / --exclude
-    let packages: Vec<&crate::core::workspace::PackageEntry> = manifest
-        .packages
-        .iter()
-        .filter(|pkg| {
-            if !options.only.is_empty() {
-                return options.only.iter().any(|o| o == &pkg.name);
-            }
-            if !options.exclude.is_empty() {
-                return !options.exclude.iter().any(|e| e == &pkg.name);
-            }
-            true
-        })
-        .collect();
+    // Filter packages based on --only / --exclude / --group
+    let filter = crate::core::filter::PackageFilter {
+        only: options.only.clone(),
+        exclude: options.exclude.clone(),
+        groups: options.groups.clone(),
+    };
+    let packages = filter.apply(&manifest.packages);
 
     // Phase 1 + 1.5: Fetch and fast-forward main (unless caller already did it)
     let fetch_results_owned: Vec<(String, std::result::Result<(), String>)> = if options.skip_fetch
@@ -2113,6 +2161,13 @@ pub fn sync_worktree(
                 });
             }
         }
+    }
+
+    // Run post_sync hooks (skip during dry-run)
+    if !options.dry_run {
+        hooks::run_hooks("post_sync", manifest, &packages, |pkg_name| {
+            workspace::worktree_path(workspace_root, branch, pkg_name)
+        });
     }
 
     Ok(outcomes)

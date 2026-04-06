@@ -3,6 +3,7 @@ pub mod create;
 pub mod exec;
 pub mod init;
 pub mod package;
+pub mod pr;
 pub mod prompt_check;
 pub mod status;
 pub mod sync;
@@ -71,13 +72,33 @@ pub enum Commands {
 
     /// Show workspace status dashboard
     #[command(alias = "st")]
-    Status,
+    Status {
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
+    },
 
     /// Run a command in every package's worktree directory (must be run from within a worktree)
     Exec {
         /// Launch an interactive shell so aliases and rc files are loaded
         #[arg(short, long)]
         interactive: bool,
+
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
 
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, required = true)]
@@ -106,6 +127,9 @@ pub enum Commands {
         /// Exclude these packages from sync (comma-separated)
         #[arg(long, value_delimiter = ',')]
         exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
         /// Undo the last sync (reset to pre-sync state)
         #[arg(long)]
         undo: bool,
@@ -118,6 +142,12 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+
+    /// Create and manage coordinated PRs across packages
+    Pr {
+        #[command(subcommand)]
+        action: PrAction,
     },
 }
 
@@ -147,6 +177,15 @@ pub enum WorktreeAction {
     Add {
         /// Branch name for the worktrees
         branch: String,
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
     },
     /// Remove worktrees for a branch (checks for dirty state). Auto-detects branch when run from within a worktree directory.
     Remove {
@@ -155,6 +194,15 @@ pub enum WorktreeAction {
         /// Force removal even with uncommitted changes
         #[arg(long)]
         force: bool,
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
     },
     /// Reopen tmux windows for an existing worktree (e.g. after a crash)
     Open {
@@ -202,4 +250,41 @@ pub enum ConfigAction {
     },
     /// Show where each setting value comes from
     Show,
+}
+
+#[derive(Subcommand)]
+pub enum PrAction {
+    /// Create linked PRs for all dirty packages in current worktree
+    Create {
+        /// PR title (defaults to branch name)
+        #[arg(long)]
+        title: Option<String>,
+        /// PR body/description
+        #[arg(long)]
+        body: Option<String>,
+        /// Create as draft PR
+        #[arg(long)]
+        draft: bool,
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
+    },
+    /// Show status of PRs in current worktree
+    Status {
+        /// Only include these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Exclude these packages (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Filter by group (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        group: Vec<String>,
+    },
 }

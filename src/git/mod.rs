@@ -21,10 +21,14 @@ pub trait GitOps: Send + Sync {
     /// Returns a list of conflicting file paths. Empty means clean merge.
     /// Uses `git merge-tree --write-tree` (Git 2.38+). Falls back gracefully on older Git.
     fn check_merge_conflicts(&self, path: &Path, upstream: &str) -> Result<Vec<String>>;
+    /// Returns the last N commits as "short_sha message" lines.
+    fn log_oneline(&self, path: &Path, count: u32) -> Result<Vec<String>>;
     /// Returns the current HEAD commit SHA.
     fn current_head(&self, path: &Path) -> Result<String>;
     /// Hard-reset to a specific commit.
     fn reset_hard(&self, path: &Path, commit: &str) -> Result<()>;
+    /// Push a branch to a remote.
+    fn push(&self, path: &Path, remote: &str, branch: &str) -> Result<()>;
     /// Fast-forward a local branch ref to match a remote tracking ref.
     /// Uses `git fetch . <src>:<dst>` which only succeeds for fast-forwards.
     fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()>;
@@ -234,12 +238,22 @@ impl GitOps for RealGit {
         Ok(conflicts)
     }
 
+    fn log_oneline(&self, path: &Path, count: u32) -> Result<Vec<String>> {
+        let output = Self::run(&["log", "--oneline", &format!("-{count}")], path)?;
+        Ok(output.lines().map(String::from).collect())
+    }
+
     fn current_head(&self, path: &Path) -> Result<String> {
         Self::run(&["rev-parse", "HEAD"], path)
     }
 
     fn reset_hard(&self, path: &Path, commit: &str) -> Result<()> {
         Self::run(&["reset", "--hard", commit], path)?;
+        Ok(())
+    }
+
+    fn push(&self, path: &Path, remote: &str, branch: &str) -> Result<()> {
+        Self::run(&["push", "-u", remote, branch], path)?;
         Ok(())
     }
 

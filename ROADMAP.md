@@ -1,46 +1,61 @@
 # Meldr Roadmap
 
+## Vision
+
+Meldr is the virtual monorepo for AI teams — keep repos separate, work as one. Unified worktree management, coordinated PRs, and first-class AI agent integration across multi-repo projects.
+
 ## Recently Completed
 
-- [x] **Smart sync with conflict detection** (was Priority 2)
+- [x] **Smart sync with conflict detection**
   Default strategy changed from `theirs` to `safe`. Pre-sync conflict detection via `git merge-tree --write-tree`. Dry-run mode, parallel fetch, sync snapshots with undo, per-package strategy overrides, selective sync (--only/--exclude), summary table, and sync logging.
 
-## Priority 1 — Table Stakes (competitive parity)
+## Priority 1 — Adoption & Differentiation
 
-- [ ] **Repo groups / subset targeting**
-  Allow tagging packages into groups (e.g., `frontend`, `backend`) and targeting commands at subsets: `meldr exec --group frontend`, `meldr sync --only api,auth`. Every mature multi-repo tool supports this.
+- [x] **Status dashboard (`meldr status`)**
+  Color-coded workspace dashboard showing per-package, per-worktree: branch name, clean/dirty state, ahead/behind counts vs remote, last commit summary, and sync state (synced/stale/conflict). Benchmarked against `gita ll` — worktree-aware. Table format with color coding (green = clean/synced, yellow = dirty/stale, red = conflict/behind).
 
-- [ ] **Pinned revisions / manifest locking**
-  Let `meldr.toml` pin packages to specific commits, tags, or branches. Add `meldr lock` to snapshot current state and `meldr.lock` for reproducible workspace setup across teams.
+- [x] **Package groups & universal filtering**
+  Tag packages into named groups (`groups = ["backend", "rust"]`) and target commands at subsets. `--group <name>` filters to packages with that tag. `--only` and `--exclude` flags extended to all commands: `sync`, `exec`, `worktree add`, `worktree remove`, `status`.
 
-- [ ] **Cross-repo PR automation**
-  `meldr pr` creates coordinated, linked pull requests across all dirty packages in a worktree. Supports GitHub and GitLab. Reduces the pain of multi-repo feature branches.
+- [x] **`meldr pr` — cross-repo PR automation**
+  `meldr pr create` creates coordinated, linked pull requests across all dirty packages in a worktree via `gh`. Auto-links PRs with cross-references in the body. Supports `--title`, `--body`, `--draft`. `meldr pr status` shows open/merged/closed state, CI status, and review state across packages.
 
-- [ ] **Richer status dashboard**
-  Expand `meldr status` to show: ahead/behind counts, sync state vs remote, last commit summary, branch tracking info — all in a color-coded table (similar to `gita ll`).
+- [x] **Hook system**
+  User-defined hooks on workspace lifecycle events: `post_sync`, `post_worktree_create`, `pre_remove`, `post_pr`. Defined in `meldr.toml` at workspace level with optional per-package overrides. Hooks run in the package worktree directory; failures warn but don't block the parent operation.
 
-## Priority 2 — Safety & Usability
+## Priority 2 — Team Readiness & Integration
 
-- [x] **Smart sync with conflict detection**
-  Warn or refuse when sync would cause non-trivial merges instead of silently applying `--strategy theirs`. Offer interactive resolution or at minimum surface a clear warning.
+- [ ] **Lock file (`meldr.lock`)**
+  Pin exact commit SHAs per package for reproducible workspaces. `meldr lock` snapshots current HEADs. `meldr sync --locked` restores exact state from lock file. Lock file committed to version control.
 
 - [ ] **Manifest sharing / URL-based init**
-  `meldr init --from <url>` clones a manifest repo and sets up the workspace from a shared `meldr.toml`. Enables team onboarding in one command.
+  `meldr init --from <url>` clones a manifest repo and sets up workspace from shared `meldr.toml` (and `meldr.lock` if present). One-command team onboarding.
 
-- [ ] **Hook system**
-  User-defined hooks on workspace events: post-sync, post-add, post-worktree-create. Useful for running `npm install`, applying patches, or triggering builds after operations.
+- [ ] **`meldr doctor` & richer status**
+  Detect stale tmux windows, orphaned worktrees, missing packages, config validation. Richer status additions: branch tracking info, last sync timestamp, stale worktree warnings.
 
-## Priority 3 — Remaining Configurability
+- [ ] **`meldr.local.toml`**
+  Gitignored local overrides for personal preferences (editor, agent, layout) without polluting the shared manifest. Added to `.gitignore` on `meldr init`. Sits between env vars and workspace `[settings]` in the config precedence chain.
 
-- [ ] **Directory names** — hardcoded `"packages"`, `"worktrees"`, `".meldr"` in `workspace.rs` and `state.rs`. Configurable in `[workspace]` section. Requires threading config through all path helpers.
+- [ ] **Claude Code plugin**
+  Bundle meldr skills into an installable Claude Code plugin. `claude-plugin/` directory in the meldr repo with plugin manifest and bundled skills (`meldr-ops`, `meldr-workflow`, `verify-build`, plus skills for `meldr pr` and `meldr status`). Distribute via the meldr repo — no MCP server needed.
 
-## Priority 4 — Nice to Have
+## Priority 3 — Advanced Coordination
 
-- [ ] **Topological task ordering**
-  If packages have inter-dependencies, `meldr exec` runs commands in dependency order. Optional dependency declaration in `meldr.toml`.
+- [ ] **Atomic merge orchestration**
+  Extend `meldr pr` with dependency-aware merge: `meldr pr merge` merges all PRs in a changeset in declared order. Halt-and-notify if any PR fails CI or review. Uses `gh pr merge --auto` under the hood.
 
-- [ ] **Export / import workspace**
-  `meldr export` saves workspace definition (packages, groups, pins) to a portable file. `meldr import` restores it.
+- [ ] **Cross-repo CI coordination**
+  Enable testing the combined state of changes across repos before merge. `meldr pr` triggers a "combined CI" check via a reference GitHub Action workflow that checks out all PR branches together.
 
-- [ ] **Shallow clone support**
-  `meldr package add --depth 1` for faster initial cloning of large repositories.
+- [ ] **Pinned revisions**
+  Pin packages to specific commits, tags, or branches in `meldr.toml` via a `pin` field. Works with the lock file from P2 for full reproducibility.
+
+## Priority 4 — Someday
+
+Kept on the roadmap. Low priority, may be revisited if demand surfaces.
+
+- [ ] **Topological task ordering** — run `meldr exec` in dependency order if packages have inter-dependencies
+- [ ] **Export/import workspace** — portable workspace definitions
+- [ ] **Shallow clone support** — `meldr package add --depth 1` for large repos
+- [ ] **Configurable directory names** — rename `packages/`, `worktrees/`, `.meldr/`

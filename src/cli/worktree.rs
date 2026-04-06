@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::core::config::{EffectiveConfig, GlobalConfig};
+use crate::core::filter::PackageFilter;
 use crate::core::state::WorkspaceState;
 use crate::core::workspace::Manifest;
 use crate::error::Result;
@@ -14,13 +15,25 @@ pub fn add(
     branch: &str,
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
+    filter: &PackageFilter,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
+    let filtered_manifest = if filter.is_empty() {
+        manifest.clone()
+    } else {
+        let mut m = manifest.clone();
+        m.packages = filter
+            .apply(&manifest.packages)
+            .into_iter()
+            .cloned()
+            .collect();
+        m
+    };
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::add_worktree(
         git,
         tmux,
-        &manifest,
+        &filtered_manifest,
         &mut state,
         workspace_root,
         branch,
@@ -37,19 +50,41 @@ pub fn remove(
     workspace_root: &Path,
     branch: &str,
     force: bool,
+    filter: &PackageFilter,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
+    let partial = !filter.is_empty();
+    let filtered_manifest = if partial {
+        let mut m = manifest.clone();
+        m.packages = filter
+            .apply(&manifest.packages)
+            .into_iter()
+            .cloned()
+            .collect();
+        m
+    } else {
+        manifest.clone()
+    };
     let mut state = WorkspaceState::load(workspace_root)?;
     crate::core::worktree::remove_worktree(
         git,
         tmux,
-        &manifest,
+        &filtered_manifest,
         &mut state,
         workspace_root,
         branch,
         force,
+        partial,
     )?;
-    println!("Removed worktree '{branch}'");
+    if partial {
+        let names: Vec<_> = filtered_manifest.packages.iter().map(|p| &p.name).collect();
+        println!(
+            "Removed {} package(s) from worktree '{branch}'",
+            names.len()
+        );
+    } else {
+        println!("Removed worktree '{branch}'");
+    }
     Ok(())
 }
 
