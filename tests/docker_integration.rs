@@ -3395,3 +3395,115 @@ fn test_no_agent_flag_with_no_tabs() {
             .exists()
     );
 }
+
+// ─── 20. NEW BUILT-IN AGENTS ──────────────────────────────────────────────────
+
+#[test]
+fn test_worktree_add_with_kiro_tui_agent_inside_tmux() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "set", "agent", "kiro-tui"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = kiro-tui")
+                .and(predicate::str::contains("agent_command = kiro-cli --tui")),
+        );
+
+    meldr()
+        .args(["worktree", "add", "kiro-tui-branch"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Created worktree 'kiro-tui-branch'",
+        ));
+
+    assert!(
+        tmp.path()
+            .join("worktrees/kiro-tui-branch/spoon-knife")
+            .exists()
+    );
+
+    kill_tmux_session(&session);
+}
+
+#[test]
+fn test_worktree_add_with_deepseek_tui_agent_inside_tmux() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "set", "agent", "deepseek-tui"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = deepseek-tui")
+                .and(predicate::str::contains("agent_command = deepseek-tui")),
+        );
+
+    meldr()
+        .args(["worktree", "add", "deepseek-tui-branch"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Created worktree 'deepseek-tui-branch'",
+        ));
+
+    assert!(
+        tmp.path()
+            .join("worktrees/deepseek-tui-branch/spoon-knife")
+            .exists()
+    );
+
+    kill_tmux_session(&session);
+}

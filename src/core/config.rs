@@ -202,6 +202,12 @@ pub fn ensure_global_config() -> Result<()> {
             "#\n",
             "# [agents.kiro]\n",
             "# command = \"kiro-cli chat --trust-all-tools\"\n",
+            "#\n",
+            "# [agents.kiro-tui]\n",
+            "# command = \"kiro-cli --tui\"\n",
+            "#\n",
+            "# [agents.deepseek-tui]\n",
+            "# command = \"deepseek-tui\"\n",
         );
         std::fs::write(&path, default_content)?;
     }
@@ -371,6 +377,16 @@ pub const BUILTIN_AGENTS: &[AgentDef] = &[
         name: "kiro",
         command: "kiro-cli chat --trust-all-tools",
         description: "AWS Kiro CLI",
+    },
+    AgentDef {
+        name: "kiro-tui",
+        command: "kiro-cli --tui",
+        description: "AWS Kiro (TUI mode)",
+    },
+    AgentDef {
+        name: "deepseek-tui",
+        command: "deepseek-tui",
+        description: "DeepSeek TUI",
     },
 ];
 
@@ -605,13 +621,15 @@ mod tests {
             default_agent_command("kiro"),
             "kiro-cli chat --trust-all-tools"
         );
+        assert_eq!(default_agent_command("kiro-tui"), "kiro-cli --tui");
+        assert_eq!(default_agent_command("deepseek-tui"), "deepseek-tui");
         assert_eq!(default_agent_command("custom-agent"), "custom-agent");
     }
 
     #[test]
     fn test_builtin_agent_names() {
         let names: Vec<&str> = builtin_agent_names().collect();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 9);
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"cursor"));
         assert!(names.contains(&"gemini"));
@@ -619,6 +637,8 @@ mod tests {
         assert!(names.contains(&"opencode"));
         assert!(names.contains(&"pi"));
         assert!(names.contains(&"kiro"));
+        assert!(names.contains(&"kiro-tui"));
+        assert!(names.contains(&"deepseek-tui"));
     }
 
     #[test]
@@ -627,6 +647,77 @@ mod tests {
         assert_eq!(claude.command, "claude --dangerously-skip-permissions");
         assert_eq!(claude.description, "Anthropic Claude Code");
         assert!(builtin_agent("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_kiro_tui_builtin_agent() {
+        let agent = builtin_agent("kiro-tui").expect("kiro-tui should be a built-in");
+        assert_eq!(agent.name, "kiro-tui");
+        assert_eq!(agent.command, "kiro-cli --tui");
+        assert_eq!(agent.description, "AWS Kiro (TUI mode)");
+    }
+
+    #[test]
+    fn test_deepseek_tui_builtin_agent() {
+        let agent = builtin_agent("deepseek-tui").expect("deepseek-tui should be a built-in");
+        assert_eq!(agent.name, "deepseek-tui");
+        assert_eq!(agent.command, "deepseek-tui");
+        assert_eq!(agent.description, "DeepSeek TUI");
+    }
+
+    #[test]
+    fn test_default_kiro_tui_command_resolved() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            agent: Some("kiro-tui".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "kiro-tui");
+        assert_eq!(config.agent_command, "kiro-cli --tui");
+    }
+
+    #[test]
+    fn test_default_deepseek_tui_command_resolved() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            agent: Some("deepseek-tui".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "deepseek-tui");
+        assert_eq!(config.agent_command, "deepseek-tui");
+    }
+
+    #[test]
+    fn test_kiro_tui_user_override_wins_over_builtin() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "kiro-tui".to_string(),
+            AgentConfig {
+                command: "kiro-cli --tui --custom-flag".to_string(),
+            },
+        );
+        let global = GlobalConfig {
+            agents,
+            ..Default::default()
+        };
+        let workspace = Settings {
+            agent: Some("kiro-tui".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "kiro-tui");
+        assert_eq!(config.agent_command, "kiro-cli --tui --custom-flag");
     }
 
     #[test]

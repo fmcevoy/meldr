@@ -41,16 +41,22 @@ meldr worktree add feature-auth
 | `meldr package remove <names...>` | `pkg` | Remove packages |
 | `meldr package list` | `pkg` | List registered packages |
 | `meldr worktree add <branch>` | `wt` | Create worktrees for all packages |
-| `meldr worktree remove <branch>` | `wt` | Remove worktrees (checks for dirty state) |
+| `meldr worktree remove [branch]` | `wt` | Remove worktrees (auto-detects branch from cwd; checks for dirty state) |
+| `meldr worktree open <branch>` | `wt` | Reopen tmux windows for an existing worktree (e.g. after a crash) |
 | `meldr worktree list` | `wt` | List active worktrees |
 | `meldr status` | `st` | Show workspace dashboard |
 | `meldr sync [branch]` | | Sync worktree with upstream |
-| `meldr exec <command...>` | | Run command in all packages |
+| `meldr exec <command...>` | | Run command in every package's worktree directory |
 | `meldr pr create` | | Create linked PRs across packages |
 | `meldr pr status` | | Show PR state across packages |
-| `meldr config set <key> <value>` | | Set workspace config |
-| `meldr config get <key>` | | Get workspace config |
+| `meldr config set <key> <value>` | | Set workspace or global config |
+| `meldr config get <key>` | | Get a config value |
+| `meldr config unset <key>` | | Remove a config value |
 | `meldr config list` | | Show effective configuration |
+| `meldr config show` | | Show where each setting value comes from |
+| `meldr prompt-check` | | Exit 0 if cwd's branch matches the worktree (for shell prompts) |
+
+Subcommand names can be abbreviated (e.g. `meldr wt a` for `meldr worktree add`).
 
 ### Global flags
 
@@ -58,11 +64,24 @@ meldr worktree add feature-auth
 |------|-------------|
 | `--no-agent` | Skip agent launch in tmux panes |
 | `--no-tabs` | Skip tmux window/pane creation entirely |
-| `--group <name>` | Filter by package group (repeatable) |
-| `--only <pkgs>` | Only include these packages (comma-separated) |
-| `--exclude <pkgs>` | Exclude these packages (comma-separated) |
 
-The `--group`, `--only`, and `--exclude` flags work on all commands: `sync`, `exec`, `worktree add`, `worktree remove`, `status`.
+### Per-command flags
+
+| Flag | Commands | Description |
+|------|----------|-------------|
+| `--only <pkgs>` | `sync`, `exec`, `worktree add`, `worktree remove`, `status`, `pr create`, `pr status` | Only include these packages (comma-separated) |
+| `--exclude <pkgs>` | same as `--only` | Exclude these packages (comma-separated) |
+| `--group <name>` | same as `--only` | Filter by package group (comma-separated, repeatable) |
+| `--leader <pkg>` | `create`, `worktree add` | Package to `cd` into for the AI agent pane (prompts interactively if omitted) |
+| `--force` | `worktree remove` | Remove even with uncommitted changes |
+| `-i`, `--interactive` | `exec` | Launch an interactive shell so aliases and rc files are loaded |
+| `--global` | `config set/get/unset/list` | Apply to `~/.meldr/config.toml` instead of workspace |
+| `--merge` | `sync` | Use merge instead of rebase |
+| `--strategy <s>` | `sync` | Override sync strategy (`safe`, `theirs`, `ours`, `manual`) |
+| `--dry-run` | `sync` | Preview what sync would do without making changes |
+| `--undo` | `sync` | Roll back to the pre-sync snapshot |
+| `--all` | `sync` | Sync all active worktrees |
+| `--draft` | `pr create` | Create PRs as drafts |
 
 ## Directory Layout
 
@@ -117,7 +136,7 @@ Auto-detects default branch from remote, falling back to configured `default_bra
 
 | Key | Default | Env var | Description |
 |-----|---------|---------|-------------|
-| `agent` | `claude` | `MELDR_AGENT` | AI agent to launch |
+| `agent` | `claude` | `MELDR_AGENT` | AI agent to launch (see built-ins below) |
 | `mode` | `full` | `MELDR_MODE` | `full`, `no-agent`, or `no-tabs` |
 | `sync_method` | `rebase` | | `rebase` or `merge` |
 | `sync_strategy` | `safe` | | `safe`, `theirs`, `ours`, or `manual` |
@@ -127,13 +146,30 @@ Auto-detects default branch from remote, falling back to configured `default_bra
 | `shell` | `sh` | `MELDR_SHELL`, `$SHELL` | Shell for `meldr exec` |
 | `layout` | `default` | `MELDR_LAYOUT` | Tmux layout preset |
 | `window_name` | `{ws}/{branch}:{pkg}` | | Tmux window name template |
+| `leader_package` | (none) | `MELDR_LEADER_PACKAGE` | Package the AI agent `cd`s into on launch |
+
+### Built-in AI agents
+
+| Name | Default command | Description |
+|------|-----------------|-------------|
+| `claude` | `claude --dangerously-skip-permissions` | Anthropic Claude Code |
+| `cursor` | `cursor agent --yolo` | Cursor AI agent |
+| `gemini` | `gemini --yolo` | Google Gemini CLI |
+| `codex` | `codex --approval-mode full-auto` | OpenAI Codex CLI |
+| `opencode` | `opencode` | OpenCode CLI |
+| `pi` | `pi` | Pi coding agent |
+| `kiro` | `kiro-cli chat --trust-all-tools` | AWS Kiro CLI |
+| `kiro-tui` | `kiro-cli --tui` | AWS Kiro (TUI mode) |
+| `deepseek-tui` | `deepseek-tui` | DeepSeek TUI |
+
+Override any command in `~/.meldr/config.toml` under `[agents.<name>]`, or register custom agents by name — an unknown agent name is run verbatim as the shell command.
 
 ### Configuration layering (highest priority first)
 
 1. **CLI flags** (`--no-agent`, `--no-tabs`)
 2. **Environment variables** (`MELDR_*`, `$EDITOR`, `$VISUAL`, `$SHELL`)
 3. **Workspace settings** (`meldr.toml [settings]`)
-4. **Global config** (`~/.config/meldr/config.toml`)
+4. **Global config** (`~/.meldr/config.toml`)
 5. **Built-in defaults**
 
 ## Tmux Integration
@@ -175,7 +211,7 @@ When running inside tmux, `meldr worktree add` creates a development environment
 
 ### Custom layouts
 
-Define in `~/.config/meldr/config.toml`:
+Define in `~/.meldr/config.toml`:
 
 ```toml
 [layouts.my-layout]
@@ -232,7 +268,7 @@ All integration tests run inside Docker for consistent, isolated environments.
 name = "my-project"
 
 [settings]
-# agent = "claude"          # "claude" | "cursor" | "none"
+# agent = "claude"          # any built-in (claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui) or a custom command
 # mode = "full"             # "full" | "no-agent" | "no-tabs"
 # sync_method = "rebase"    # "rebase" | "merge"
 # sync_strategy = "safe"    # "safe" | "theirs" | "ours" | "manual"
@@ -240,8 +276,9 @@ name = "my-project"
 # default_branch = "main"   # fallback branch for sync
 # remote = "origin"         # default git remote
 # shell = "sh"              # shell for exec (or uses $SHELL)
-# layout = "default"        # "default" | "minimal" | "editor-only"
+# layout = "default"        # "default" | "minimal" | "editor-only" | custom layout name
 # window_name = "{ws}/{branch}:{pkg}"  # tmux window name template
+# leader_package = "frontend"          # package the AI agent cd's into on launch
 
 [[package]]
 name = "frontend"
