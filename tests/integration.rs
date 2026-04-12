@@ -986,6 +986,86 @@ fn test_create_with_agent_sets_setting() {
 }
 
 #[test]
+fn test_create_with_agent_kiro_tui() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws", "-a", "kiro-tui"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
+    assert!(
+        content.contains("agent = \"kiro-tui\""),
+        "kiro-tui agent setting should persist"
+    );
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path().join("my-ws"))
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = kiro-tui")
+                .and(predicate::str::contains("agent_command = kiro-cli --tui")),
+        );
+}
+
+#[test]
+fn test_create_with_agent_deepseek_tui() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws", "-a", "deepseek-tui"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
+    assert!(
+        content.contains("agent = \"deepseek-tui\""),
+        "deepseek-tui agent setting should persist"
+    );
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path().join("my-ws"))
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = deepseek-tui")
+                .and(predicate::str::contains("agent_command = deepseek-tui")),
+        );
+}
+
+#[test]
+fn test_config_set_agent_new_builtins() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    for agent in ["kiro-tui", "deepseek-tui"] {
+        meldr()
+            .args(["config", "set", "agent", agent])
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!("Set agent = {agent}")));
+
+        meldr()
+            .args(["config", "get", "agent"])
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(agent));
+    }
+}
+
+#[test]
 fn test_package_add_creates_worktrees_for_existing_branches() {
     let tmp = TempDir::new().unwrap();
     let repos_dir = TempDir::new().unwrap();
