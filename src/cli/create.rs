@@ -16,6 +16,7 @@ pub fn run(
     repos: &[String],
     branch: Option<&str>,
     agent: Option<&str>,
+    leader: Option<&str>,
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
 ) -> Result<()> {
@@ -59,6 +60,7 @@ pub fn run(
                 branch_name,
                 config,
                 global_config,
+                leader,
             )?;
             println!("Created worktree '{branch_name}'");
         }

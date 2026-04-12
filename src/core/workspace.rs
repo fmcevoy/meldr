@@ -43,6 +43,8 @@ pub struct Settings {
     pub layout: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_package: Option<String>,
 }
 
 impl Settings {
@@ -57,6 +59,7 @@ impl Settings {
             && self.shell.is_none()
             && self.layout.is_none()
             && self.window_name.is_none()
+            && self.leader_package.is_none()
     }
 }
 
