@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -10,6 +11,79 @@ use crate::core::workspace::{self, Manifest};
 use crate::error::{MeldrError, Result};
 use crate::git::GitOps;
 use crate::tmux::TmuxOps;
+
+/// Resolve which package the AI agent pane should cd into before launching.
+///
+/// Precedence: CLI flag → env/workspace settings (already merged into
+/// `config_leader`) → interactive picker (TTY only). Returns `Ok(None)` when
+/// no leader is needed — either no agent is being launched, a manifest layout
+/// override is in play, or tmux is disabled.
+pub(crate) fn resolve_leader<F>(
+    cli_leader: Option<&str>,
+    config_leader: Option<&str>,
+    selected_packages: &[String],
+    agent_enabled: bool,
+    layout_override: bool,
+    is_tty: bool,
+    picker: F,
+) -> Result<Option<String>>
+where
+    F: FnOnce(&[String]) -> Result<String>,
+{
+    if !agent_enabled {
+        return Ok(None);
+    }
+    if layout_override {
+        if cli_leader.is_some() {
+            eprintln!(
+                "Warning: --leader is ignored when the manifest defines a [layout] override."
+            );
+        }
+        return Ok(None);
+    }
+    if selected_packages.is_empty() {
+        return Ok(None);
+    }
+    if selected_packages.len() == 1 {
+        return Ok(Some(selected_packages[0].clone()));
+    }
+
+    let chosen = match cli_leader {
+        Some(v) => v.to_string(),
+        None => match config_leader {
+            Some(v) => v.to_string(),
+            None => {
+                if !is_tty {
+                    return Err(MeldrError::Config(format!(
+                        "No leader package specified and no TTY to prompt. Pass --leader <pkg>, set MELDR_LEADER_PACKAGE, or add leader_package to meldr.toml. Available: {}",
+                        selected_packages.join(", ")
+                    )));
+                }
+                picker(selected_packages)?
+            }
+        },
+    };
+
+    if !selected_packages.iter().any(|p| p == &chosen) {
+        return Err(MeldrError::Config(format!(
+            "leader '{}' not in selection; available: {}",
+            chosen,
+            selected_packages.join(", ")
+        )));
+    }
+    Ok(Some(chosen))
+}
+
+fn interactive_leader_picker(packages: &[String]) -> Result<String> {
+    use dialoguer::{Select, theme::ColorfulTheme};
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select leader package (where the AI agent will run)")
+        .items(packages)
+        .default(0)
+        .interact()
+        .map_err(|e| MeldrError::Config(format!("leader picker failed: {e}")))?;
+    Ok(packages[idx].clone())
+}
 
 /// Expand template variables in a string.
 ///
@@ -38,6 +112,7 @@ fn setup_tmux_windows(
     branch: &str,
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
+    leader: Option<&str>,
 ) -> Result<TmuxSetupResult> {
     let ws_name = &manifest.workspace.name;
     let mut tmux_windows = Vec::new();
@@ -88,6 +163,10 @@ fn setup_tmux_windows(
         if config.should_launch_agent()
             && let Some(ref agent_pane) = dev.agent
         {
+            if let Some(leader_pkg) = leader {
+                let leader_path = workspace::worktree_path(workspace_root, branch, leader_pkg);
+                tmux.send_keys(agent_pane, &format!("cd {}", leader_path.display()))?;
+            }
             tmux.send_keys(agent_pane, &config.agent_command)?;
         }
         if let Some(ref agent_pane) = dev.agent {
@@ -119,6 +198,7 @@ pub fn add_worktree(
     branch: &str,
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
+    cli_leader: Option<&str>,
 ) -> Result<()> {
     if state.get_worktree(branch).is_some() {
         return Err(MeldrError::WorktreeAlreadyExists(branch.to_string()));
@@ -129,6 +209,23 @@ pub fn add_worktree(
     if needs_tmux && !tmux.is_inside_tmux() {
         return Err(MeldrError::NotInTmux);
     }
+
+    // Resolve the leader package BEFORE any git work so a validation failure
+    // (bad name, non-TTY with no config, picker cancelled) leaves no side
+    // effects on disk.
+    let selected_names: Vec<String> = manifest.packages.iter().map(|p| p.name.clone()).collect();
+    let agent_enabled = needs_tmux && config.should_launch_agent();
+    let layout_override = manifest.layout.is_some();
+    let is_tty = std::io::stdin().is_terminal();
+    let leader = resolve_leader(
+        cli_leader,
+        config.leader_package.as_deref(),
+        &selected_names,
+        agent_enabled,
+        layout_override,
+        is_tty,
+        interactive_leader_picker,
+    )?;
 
     // Fetch all packages and fast-forward main before creating worktree
     fetch_and_update_main(git, manifest, workspace_root, config);
@@ -179,6 +276,7 @@ pub fn add_worktree(
             branch,
             config,
             global_config,
+            leader.as_deref(),
         )?
     } else {
         TmuxSetupResult {
@@ -321,6 +419,16 @@ pub fn open_worktree(
         return Err(MeldrError::NotInTmux);
     }
 
+    // On reopen we don't prompt — use whatever leader the config resolves to,
+    // validated against the current package list. Unknown names fall back to
+    // the branch-root default so a stale config can't block reopening.
+    let leader = config.leader_package.as_deref().filter(|pkg| {
+        manifest
+            .packages
+            .iter()
+            .any(|entry| entry.name.as_str() == *pkg)
+    });
+
     let setup = setup_tmux_windows(
         tmux,
         manifest,
@@ -328,6 +436,7 @@ pub fn open_worktree(
         branch,
         config,
         global_config,
+        leader,
     )?;
 
     state.add_worktree(
@@ -1662,6 +1771,7 @@ mod tests {
             "feature-new",
             &config,
             None,
+            None,
         )
         .unwrap();
 
@@ -1692,7 +1802,7 @@ mod tests {
         git.set_divergence(&fe_repo, 0, 5);
 
         let result = add_worktree(
-            &git, &tmux, &manifest, &mut state, root, "blocked", &config, None,
+            &git, &tmux, &manifest, &mut state, root, "blocked", &config, None, None,
         );
         assert!(
             result.is_err(),
@@ -1727,6 +1837,7 @@ mod tests {
             "ok-branch",
             &config,
             None,
+            None,
         );
         assert!(result.is_ok(), "should succeed when main is up-to-date");
         assert!(state.get_worktree("ok-branch").is_some());
@@ -1760,6 +1871,220 @@ mod tests {
             ff_calls.is_empty(),
             "should not fast-forward when skip_fetch is true"
         );
+    }
+
+    // --- resolve_leader tests ---
+
+    fn pkgs(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn panic_picker(_: &[String]) -> Result<String> {
+        panic!("picker should not be invoked in this test")
+    }
+
+    #[test]
+    fn test_resolve_leader_single_package_shortcut() {
+        let selected = pkgs(&["only-pkg"]);
+        let result =
+            resolve_leader(None, None, &selected, true, false, false, panic_picker).unwrap();
+        assert_eq!(result, Some("only-pkg".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_cli_flag_wins() {
+        let selected = pkgs(&["a", "b", "c"]);
+        let result = resolve_leader(
+            Some("b"),
+            Some("c"),
+            &selected,
+            true,
+            false,
+            true,
+            panic_picker,
+        )
+        .unwrap();
+        assert_eq!(result, Some("b".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_config_used_when_no_cli() {
+        let selected = pkgs(&["a", "b", "c"]);
+        let result =
+            resolve_leader(None, Some("c"), &selected, true, false, false, panic_picker).unwrap();
+        assert_eq!(result, Some("c".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_invalid_cli_name_errors() {
+        let selected = pkgs(&["a", "b"]);
+        let result = resolve_leader(
+            Some("ghost"),
+            None,
+            &selected,
+            true,
+            false,
+            true,
+            panic_picker,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ghost") && err.contains("not in selection"),
+            "error should name invalid leader and available packages, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_leader_cli_name_filtered_out_errors() {
+        // simulates --only pkgA,pkgB --leader pkgC (pkgC not in selection)
+        let selected = pkgs(&["pkgA", "pkgB"]);
+        let result = resolve_leader(
+            Some("pkgC"),
+            None,
+            &selected,
+            true,
+            false,
+            true,
+            panic_picker,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_leader_non_tty_no_source_errors() {
+        let selected = pkgs(&["a", "b"]);
+        let result = resolve_leader(None, None, &selected, true, false, false, panic_picker);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("--leader") && err.contains("leader_package"),
+            "error should point to both cli and config remedies, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_leader_tty_calls_picker() {
+        let selected = pkgs(&["a", "b", "c"]);
+        let picker = |pkgs: &[String]| -> Result<String> {
+            assert_eq!(pkgs.len(), 3);
+            Ok(pkgs[2].clone())
+        };
+        let result = resolve_leader(None, None, &selected, true, false, true, picker).unwrap();
+        assert_eq!(result, Some("c".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_picker_returns_invalid_errors() {
+        let selected = pkgs(&["a", "b"]);
+        let picker = |_: &[String]| -> Result<String> { Ok("z".to_string()) };
+        let result = resolve_leader(None, None, &selected, true, false, true, picker);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_leader_agent_disabled_returns_none() {
+        let selected = pkgs(&["a", "b"]);
+        let result = resolve_leader(
+            Some("a"),
+            Some("b"),
+            &selected,
+            false,
+            false,
+            true,
+            panic_picker,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_leader_layout_override_returns_none() {
+        let selected = pkgs(&["a", "b"]);
+        // Even with a CLI leader, layout mode wins (layout already assigns panes per-pkg)
+        let result =
+            resolve_leader(Some("a"), None, &selected, true, true, true, panic_picker).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_setup_tmux_windows_sends_cd_to_agent_pane_for_leader() {
+        let packages = &["frontend", "backend", "shared"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig::default();
+
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "feat-leader",
+            &config,
+            None,
+            Some("backend"),
+        )
+        .unwrap();
+
+        let calls = tmux.calls();
+        // Find the index of the cd-to-backend send_keys call on the agent pane.
+        let expected_cd = format!(
+            "cd {}",
+            workspace::worktree_path(root, "feat-leader", "backend").display()
+        );
+        let cd_idx = calls
+            .send_keys
+            .iter()
+            .position(|(target, keys)| target == "%1" && keys == &expected_cd)
+            .expect("expected a cd to backend's worktree on the agent pane (%1)");
+
+        // The agent command must be sent AFTER the cd so it inherits the right cwd.
+        let agent_idx = calls
+            .send_keys
+            .iter()
+            .position(|(target, keys)| target == "%1" && keys == &config.agent_command)
+            .expect("agent command should be sent on the agent pane");
+        assert!(
+            agent_idx > cd_idx,
+            "agent command must be sent after the cd (agent={agent_idx}, cd={cd_idx})"
+        );
+    }
+
+    #[test]
+    fn test_setup_tmux_windows_no_leader_keeps_branch_root_cwd() {
+        let packages = &["frontend", "backend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig::default();
+
+        setup_tmux_windows(&tmux, &manifest, root, "feat-noleader", &config, None, None).unwrap();
+
+        let calls = tmux.calls();
+        // Without a leader, no cd should be sent to the agent pane (%1).
+        for (target, keys) in calls.send_keys.iter() {
+            if target == "%1" {
+                assert!(
+                    !keys.starts_with("cd "),
+                    "unexpected cd sent to agent pane without leader: {keys}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_leader_cli_precedence_over_env_and_config() {
+        let selected = pkgs(&["a", "b", "c"]);
+        // CLI=a, simulated env/config=c → CLI wins
+        let result = resolve_leader(
+            Some("a"),
+            Some("c"),
+            &selected,
+            true,
+            false,
+            false,
+            panic_picker,
+        )
+        .unwrap();
+        assert_eq!(result, Some("a".to_string()));
     }
 }
 

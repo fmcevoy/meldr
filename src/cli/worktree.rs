@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::git::GitOps;
 use crate::tmux::TmuxOps;
 
+#[allow(clippy::too_many_arguments)]
 pub fn add(
     git: &dyn GitOps,
     tmux: &dyn TmuxOps,
@@ -16,6 +17,7 @@ pub fn add(
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
     filter: &PackageFilter,
+    leader: Option<&str>,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let filtered_manifest = if filter.is_empty() {
@@ -39,6 +41,7 @@ pub fn add(
         branch,
         config,
         global_config,
+        leader,
     )?;
     println!("Created worktree '{branch}'");
     Ok(())

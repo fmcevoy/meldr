@@ -54,6 +54,9 @@ pub enum Commands {
         /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro)
         #[arg(short, long)]
         agent: Option<String>,
+        /// Package to run the AI agent in (prompts interactively if omitted)
+        #[arg(long)]
+        leader: Option<String>,
     },
 
     /// Manage packages (repositories) in the workspace
@@ -186,6 +189,9 @@ pub enum WorktreeAction {
         /// Filter by group (comma-separated)
         #[arg(long, value_delimiter = ',')]
         group: Vec<String>,
+        /// Package to run the AI agent in (prompts interactively if omitted)
+        #[arg(long)]
+        leader: Option<String>,
     },
     /// Remove worktrees for a branch (checks for dirty state). Auto-detects branch when run from within a worktree directory.
     Remove {

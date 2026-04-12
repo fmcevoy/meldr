@@ -107,6 +107,7 @@ pub struct EffectiveConfig {
     pub shell: String,
     pub layout: String,
     pub window_name_template: String,
+    pub leader_package: Option<String>,
 }
 
 impl Default for EffectiveConfig {
@@ -125,6 +126,7 @@ impl Default for EffectiveConfig {
             shell: DEFAULT_SHELL.to_string(),
             layout: DEFAULT_LAYOUT.to_string(),
             window_name_template: DEFAULT_WINDOW_NAME.to_string(),
+            leader_package: None,
         }
     }
 }
@@ -277,6 +279,9 @@ pub fn resolve_config(
     if let Some(ref v) = workspace_settings.window_name {
         config.window_name_template = v.clone();
     }
+    if let Some(ref v) = workspace_settings.leader_package {
+        config.leader_package = Some(v.clone());
+    }
 
     // Layer 2: Environment variables
     if let Some(agent) = env_overrides.get("MELDR_AGENT") {
@@ -305,6 +310,9 @@ pub fn resolve_config(
     }
     if let Some(v) = env_overrides.get("MELDR_LAYOUT") {
         config.layout = v.clone();
+    }
+    if let Some(v) = env_overrides.get("MELDR_LEADER_PACKAGE") {
+        config.leader_package = Some(v.clone());
     }
 
     // Layer 1: CLI flags (these are independent — both can be true)
@@ -392,6 +400,7 @@ const VALID_SETTINGS_KEYS: &[&str] = &[
     "shell",
     "layout",
     "window_name",
+    "leader_package",
 ];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
@@ -544,6 +553,7 @@ pub fn collect_env_overrides() -> HashMap<String, String> {
         "MELDR_REMOTE",
         "MELDR_SHELL",
         "MELDR_LAYOUT",
+        "MELDR_LEADER_PACKAGE",
         "VISUAL",
         "EDITOR",
         "SHELL",
@@ -847,8 +857,8 @@ mod tests {
         // Verify the total count matches expectations (no accidental duplicates or missing keys)
         assert_eq!(
             VALID_SETTINGS_KEYS.len(),
-            10,
-            "Expected exactly 10 valid settings keys"
+            11,
+            "Expected exactly 11 valid settings keys"
         );
 
         // Verify that invalid keys are not accepted by config_set
@@ -920,6 +930,72 @@ agent = "cursor"
         assert_eq!(settings_after["editor"].as_str().unwrap(), "code .");
         // workspace name should be preserved
         assert_eq!(doc_after["workspace"]["name"].as_str().unwrap(), "test");
+    }
+
+    #[test]
+    fn test_leader_package_from_workspace_settings() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            leader_package: Some("frontend".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.leader_package.as_deref(), Some("frontend"));
+    }
+
+    #[test]
+    fn test_leader_package_env_overrides_workspace() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            leader_package: Some("frontend".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let mut env = HashMap::new();
+        env.insert("MELDR_LEADER_PACKAGE".to_string(), "backend".to_string());
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.leader_package.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn test_leader_package_defaults_to_none() {
+        let global = GlobalConfig::default();
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert!(config.leader_package.is_none());
+    }
+
+    #[test]
+    fn test_leader_package_settings_key_is_valid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = "[workspace]\nname = \"test\"\n";
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+
+        config_set(tmp.path(), "leader_package", "frontend").unwrap();
+        assert_eq!(
+            config_get(tmp.path(), "leader_package").unwrap(),
+            Some("frontend".to_string())
+        );
+    }
+
+    #[test]
+    fn test_leader_package_roundtrips_through_manifest() {
+        let input = r#"
+[workspace]
+name = "ws"
+
+[settings]
+leader_package = "api"
+"#;
+        let manifest: crate::core::workspace::Manifest = toml::from_str(input).unwrap();
+        assert_eq!(manifest.settings.leader_package.as_deref(), Some("api"));
     }
 
     #[test]

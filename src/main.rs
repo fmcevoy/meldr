@@ -66,6 +66,7 @@ fn run(cli: Cli) -> error::Result<()> {
             repos,
             branch,
             agent,
+            leader,
         } => {
             let cwd = std::env::current_dir()?;
             let global = config::load_global_config()?;
@@ -90,6 +91,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 &repos,
                 branch.as_deref(),
                 agent.as_deref(),
+                leader.as_deref(),
                 &config,
                 Some(&global),
             )
@@ -118,6 +120,7 @@ fn run(cli: Cli) -> error::Result<()> {
                     only,
                     exclude,
                     group,
+                    leader,
                 } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
                     let filter = PackageFilter {
@@ -125,7 +128,16 @@ fn run(cli: Cli) -> error::Result<()> {
                         exclude,
                         groups: group,
                     };
-                    cli::worktree::add(&git, &tmux, &root, &branch, &config, Some(&global), &filter)
+                    cli::worktree::add(
+                        &git,
+                        &tmux,
+                        &root,
+                        &branch,
+                        &config,
+                        Some(&global),
+                        &filter,
+                        leader.as_deref(),
+                    )
                 }
                 WorktreeAction::Remove {
                     branch,
