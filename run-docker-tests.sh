@@ -29,12 +29,12 @@ if [[ -n "$TEST_FILTER" ]]; then
     docker run --rm \
         -e MELDR_TEST_REPOS=/test-repos \
         "$IMAGE_NAME" \
-        cargo test --test docker_integration --test integration -- --test-threads=8 "$TEST_FILTER"
+        cargo test --features docker-tests --test docker_integration --test integration -- --test-threads=8 "$TEST_FILTER"
 else
     docker run --rm \
         -e MELDR_TEST_REPOS=/test-repos \
         "$IMAGE_NAME" \
-        cargo test --test docker_integration --test integration -- --test-threads=8
+        cargo test --features docker-tests --test docker_integration --test integration -- --test-threads=8
 fi
 
 echo "==> All tests passed."

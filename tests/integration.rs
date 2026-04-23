@@ -3606,3 +3606,176 @@ fn test_worktree_add_works_with_non_bare_checked_out_main() {
         "Worktree should be based on latest main and contain the new file"
     );
 }
+
+// --- scan subcommand tests ---
+
+#[test]
+fn test_worktree_scan_discovers_orphaned_worktrees() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create a git worktree manually, bypassing meldr's state tracking.
+    let bare = tmp.path().join("packages/frontend");
+    let wt_path = tmp.path().join("worktrees/manual-branch/frontend");
+    fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+    let status = process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            "manual-branch",
+            wt_path.to_str().unwrap(),
+        ])
+        .current_dir(&bare)
+        .status()
+        .unwrap();
+    assert!(status.success(), "manual `git worktree add` must succeed");
+
+    // List should NOT see it yet (state.json doesn't know about it).
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No active worktrees")
+                .or(predicate::str::contains("manual-branch").not()),
+        );
+
+    // Scan repairs state.
+    meldr()
+        .args(["worktree", "scan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("+ manual-branch"));
+
+    // Now list picks it up.
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("manual-branch"));
+}
+
+#[test]
+fn test_worktree_scan_on_empty_workspace_is_noop() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "scan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported 0"));
+
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active worktrees"));
+}
+
+#[test]
+fn test_worktree_scan_preserves_meldr_created_worktree() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "feat-a"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let state_path = tmp.path().join(".meldr/state.json");
+    let before = fs::read_to_string(&state_path).unwrap();
+
+    meldr()
+        .args(["worktree", "scan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already tracked 1"));
+
+    let after = fs::read_to_string(&state_path).unwrap();
+    assert_eq!(
+        before, after,
+        "scan must not rewrite state for already-tracked worktrees"
+    );
+}
+
+#[test]
+fn test_worktree_scan_prune_removes_stale_entries() {
+    let tmp = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "to-be-removed"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Nuke the branch dir out-of-band, leaving a stale state entry.
+    fs::remove_dir_all(tmp.path().join("worktrees/to-be-removed")).unwrap();
+
+    // Without --prune, the stale entry is retained.
+    meldr()
+        .args(["worktree", "scan"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("to-be-removed"));
+
+    // With --prune, it's gone.
+    meldr()
+        .args(["worktree", "scan", "--prune"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("- to-be-removed"));
+
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active worktrees"));
+}

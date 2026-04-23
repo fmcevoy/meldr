@@ -40,6 +40,8 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && \
 COPY . .
 RUN cargo build --tests
 
-# Default: run ALL integration tests with high parallelism
+# Default: run ALL integration tests with high parallelism.
+# `--features docker-tests` is required to compile tests/docker_integration.rs
+# (see its #![cfg(feature = "docker-tests")] header).
 ENV MELDR_TEST_REPOS=/test-repos
-CMD ["cargo", "test", "--test", "docker_integration", "--test", "integration", "--", "--test-threads=8"]
+CMD ["cargo", "test", "--features", "docker-tests", "--test", "docker_integration", "--test", "integration", "--", "--test-threads=8"]

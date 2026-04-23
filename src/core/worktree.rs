@@ -456,6 +456,167 @@ pub fn list_worktrees(state: &WorkspaceState) -> Vec<&WorktreeState> {
     state.worktrees.values().collect()
 }
 
+/// Summary of what `scan_and_import` did.
+#[derive(Debug, Default, Clone)]
+pub struct ScanReport {
+    pub imported: Vec<String>,
+    pub already_tracked: Vec<String>,
+    pub pruned: Vec<String>,
+}
+
+/// Reconstruct `state.json` entries from on-disk git worktrees.
+///
+/// For each package in the manifest, asks git which worktrees exist in its
+/// bare repo, then cross-references with the `worktrees/<branch>/<pkg>/`
+/// directory layout. Branch names come from git — the filesystem directory
+/// name is lossy (sanitised), so we can't invert it reliably.
+///
+/// Additive by default: never overwrites an existing entry (preserves the
+/// `tmux_window` / `pane_mappings` of a live meldr session). With `prune`,
+/// also drops state entries whose worktree directory is gone from disk.
+/// Fail-soft on missing bare repos — a partially-bootstrapped machine
+/// shouldn't abort the whole scan.
+pub fn scan_and_import(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    state: &mut WorkspaceState,
+    workspace_root: &Path,
+) -> Result<ScanReport> {
+    scan_and_import_inner(git, manifest, state, workspace_root, false)
+}
+
+/// Variant that also prunes stale state entries. See [`scan_and_import`].
+pub fn scan_and_import_with_prune(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    state: &mut WorkspaceState,
+    workspace_root: &Path,
+) -> Result<ScanReport> {
+    scan_and_import_inner(git, manifest, state, workspace_root, true)
+}
+
+fn scan_and_import_inner(
+    git: &dyn GitOps,
+    manifest: &Manifest,
+    state: &mut WorkspaceState,
+    workspace_root: &Path,
+    prune: bool,
+) -> Result<ScanReport> {
+    let mut report = ScanReport::default();
+
+    // 1. Ask git for every worktree path → branch mapping, per package.
+    let mut wt_by_path: HashMap<std::path::PathBuf, String> = HashMap::new();
+    for pkg in &manifest.packages {
+        let bare = workspace::package_path(workspace_root, &pkg.name);
+        if !bare.exists() {
+            continue; // fail-soft: package not cloned on this machine
+        }
+        match git.worktree_list(&bare) {
+            Ok(entries) => {
+                for entry in entries {
+                    if let Some(branch) = entry.branch {
+                        wt_by_path.insert(entry.path, branch);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not list worktrees for package '{}': {e}",
+                    pkg.name
+                );
+            }
+        }
+    }
+
+    // 2. Walk worktrees/<branch_dir>/ and cross-reference by package subdir.
+    let branch_root = workspace_root.join("worktrees");
+    let mut discovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if branch_root.exists() {
+        let entries = std::fs::read_dir(&branch_root)?;
+        for dir_entry in entries.flatten() {
+            let path = dir_entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            for pkg in &manifest.packages {
+                let candidate = path.join(&pkg.name);
+                if let Some(branch) = lookup_path(&wt_by_path, &candidate) {
+                    discovered.insert(branch.clone());
+                    break; // one package is enough to confirm the branch
+                }
+            }
+        }
+    }
+
+    // 3. Merge discovered branches into state (additive).
+    for branch in &discovered {
+        if state.get_worktree(branch).is_some() {
+            report.already_tracked.push(branch.clone());
+        } else {
+            state.add_worktree(
+                branch,
+                WorktreeState {
+                    branch: branch.clone(),
+                    tmux_window: None,
+                    pane_mappings: HashMap::new(),
+                },
+            );
+            report.imported.push(branch.clone());
+        }
+    }
+
+    // 4. Optional prune.
+    if prune {
+        let to_prune: Vec<String> = state
+            .worktrees
+            .keys()
+            .filter(|b| !discovered.contains(b.as_str()))
+            .cloned()
+            .collect();
+        for branch in &to_prune {
+            state.remove_worktree(branch);
+        }
+        report.pruned = to_prune;
+    }
+
+    // Only touch state.json when scan actually changed something — avoids
+    // mtime churn and HashMap-key-order shuffle on no-op scans.
+    if !report.imported.is_empty() || !report.pruned.is_empty() {
+        state.save(workspace_root)?;
+    }
+    Ok(report)
+}
+
+/// Canonicalise both sides if possible so symlinked temp dirs (e.g. `/var`
+/// vs `/private/var` on macOS) still match. Falls back to the raw path.
+fn lookup_path<'a>(
+    map: &'a HashMap<std::path::PathBuf, String>,
+    candidate: &std::path::Path,
+) -> Option<&'a String> {
+    if let Some(v) = map.get(candidate) {
+        return Some(v);
+    }
+    let canon_candidate = std::fs::canonicalize(candidate).ok();
+    for (k, v) in map {
+        if let Some(ref c) = canon_candidate
+            && k == c
+        {
+            return Some(v);
+        }
+        if let Ok(canon_k) = std::fs::canonicalize(k) {
+            if canon_k == candidate {
+                return Some(v);
+            }
+            if let Some(ref c) = canon_candidate
+                && &canon_k == c
+            {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +787,9 @@ mod tests {
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
             Ok(())
         }
+        fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
+            Ok(vec![])
+        }
     }
 
     fn test_manifest(packages: &[&str]) -> Manifest {
@@ -756,6 +920,9 @@ mod tests {
         }
         fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
             Ok(())
+        }
+        fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
+            Ok(vec![])
         }
     }
 
@@ -1198,6 +1365,10 @@ mod tests {
                 return Err(MeldrError::Git(format!("fast-forward failed for {key}")));
             }
             Ok(())
+        }
+
+        fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
+            Ok(vec![])
         }
     }
 
@@ -2085,6 +2256,297 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, Some("a".to_string()));
+    }
+
+    // --- scan_and_import tests ---
+
+    /// Mock that returns pre-seeded `worktree_list` results per bare-repo path.
+    struct ScanMockGit {
+        entries: Mutex<HashMap<std::path::PathBuf, Vec<crate::git::WorktreeEntry>>>,
+    }
+
+    impl ScanMockGit {
+        fn new() -> Self {
+            Self {
+                entries: Mutex::new(HashMap::new()),
+            }
+        }
+        fn set_entries(&self, bare: &Path, entries: Vec<crate::git::WorktreeEntry>) {
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(bare.to_path_buf(), entries);
+        }
+    }
+
+    impl GitOps for ScanMockGit {
+        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> {
+            Ok(())
+        }
+        fn is_dirty(&self, _path: &Path) -> Result<bool> {
+            Ok(false)
+        }
+        fn fetch(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn rebase(
+            &self,
+            _path: &Path,
+            _onto: &str,
+            _strategy: &str,
+            _autostash: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn merge(&self, _path: &Path, _branch: &str, _strategy: &str) -> Result<()> {
+            Ok(())
+        }
+        fn status_porcelain(&self, _path: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn detect_default_branch(&self, _path: &Path, _remote: &str) -> Option<String> {
+            None
+        }
+        fn ensure_remote_tracking(&self, _path: &Path, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn divergence(&self, _path: &Path, _upstream: &str) -> Result<(u32, u32)> {
+            Ok((0, 0))
+        }
+        fn check_merge_conflicts(&self, _path: &Path, _upstream: &str) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn log_oneline(&self, _path: &Path, _count: u32) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn current_head(&self, _path: &Path) -> Result<String> {
+            Ok("mock_sha".to_string())
+        }
+        fn reset_hard(&self, _path: &Path, _commit: &str) -> Result<()> {
+            Ok(())
+        }
+        fn push(&self, _path: &Path, _remote: &str, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn fast_forward_branch(&self, _repo: &Path, _branch: &str, _remote: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_list(&self, repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .get(repo)
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
+    /// Set up a workspace with empty `packages/<name>` bare-repo dirs and a
+    /// `worktrees/<branch>/<pkg>` tree for every (branch, pkg) pair given.
+    fn scan_fixture(
+        packages: &[&str],
+        worktrees: &[(&str, &[&str])],
+    ) -> (tempfile::TempDir, Manifest, ScanMockGit) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        std::fs::create_dir_all(root.join("worktrees")).unwrap();
+        for p in packages {
+            std::fs::create_dir_all(root.join("packages").join(p)).unwrap();
+        }
+        let mock = ScanMockGit::new();
+        for (branch, pkgs) in worktrees {
+            let branch_dir = crate::core::workspace::sanitize_branch_for_dir(branch);
+            for p in *pkgs {
+                let wt = root.join("worktrees").join(&branch_dir).join(p);
+                std::fs::create_dir_all(&wt).unwrap();
+                // register with the mock under the matching bare repo
+                let bare = root.join("packages").join(p);
+                let mut map = mock.entries.lock().unwrap();
+                map.entry(bare)
+                    .or_default()
+                    .push(crate::git::WorktreeEntry {
+                        path: wt,
+                        branch: Some((*branch).to_string()),
+                    });
+            }
+        }
+        let manifest = test_manifest(packages);
+        (tmp, manifest, mock)
+    }
+
+    #[test]
+    fn test_scan_imports_missing_worktree() {
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("feature-a", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert_eq!(report.imported, vec!["feature-a".to_string()]);
+        assert!(report.already_tracked.is_empty());
+        let wt = state.get_worktree("feature-a").expect("imported");
+        assert!(wt.tmux_window.is_none());
+        assert!(wt.pane_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_scan_preserves_existing_state_entries() {
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("feature-a", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        let mut pane_mappings = HashMap::new();
+        pane_mappings.insert("agent".to_string(), "%42".to_string());
+        state.add_worktree(
+            "feature-a",
+            WorktreeState {
+                branch: "feature-a".to_string(),
+                tmux_window: Some("@5".to_string()),
+                pane_mappings: pane_mappings.clone(),
+            },
+        );
+        let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert!(report.imported.is_empty());
+        assert_eq!(report.already_tracked, vec!["feature-a".to_string()]);
+        let wt = state.get_worktree("feature-a").unwrap();
+        assert_eq!(wt.tmux_window.as_deref(), Some("@5"));
+        assert_eq!(wt.pane_mappings, pane_mappings);
+    }
+
+    #[test]
+    fn test_scan_handles_sanitized_branch_name() {
+        // On disk directory is `feature-foo` (sanitised); git reports `feature/foo`.
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("feature/foo", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert_eq!(report.imported, vec!["feature/foo".to_string()]);
+        assert!(state.get_worktree("feature/foo").is_some());
+        assert!(
+            state.get_worktree("feature-foo").is_none(),
+            "state key must use the git branch name, not the sanitised dir name"
+        );
+    }
+
+    #[test]
+    fn test_scan_skips_detached_head() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages/frontend")).unwrap();
+        let wt = root.join("worktrees/detached-branch/frontend");
+        std::fs::create_dir_all(&wt).unwrap();
+        let mock = ScanMockGit::new();
+        mock.set_entries(
+            &root.join("packages/frontend"),
+            vec![crate::git::WorktreeEntry {
+                path: wt,
+                branch: None,
+            }],
+        );
+        let manifest = test_manifest(&["frontend"]);
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, root).unwrap();
+        assert!(report.imported.is_empty());
+        assert!(state.worktrees.is_empty());
+    }
+
+    #[test]
+    fn test_scan_skips_branch_dir_with_no_package_subdirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages/frontend")).unwrap();
+        // A branch dir exists but has no package subdirs.
+        std::fs::create_dir_all(root.join("worktrees/stale-branch")).unwrap();
+        let mock = ScanMockGit::new();
+        let manifest = test_manifest(&["frontend"]);
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, root).unwrap();
+        assert!(report.imported.is_empty());
+        assert!(state.worktrees.is_empty());
+    }
+
+    #[test]
+    fn test_scan_fail_soft_on_missing_bare_repo() {
+        // Manifest has two packages but only `frontend` is cloned locally.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages/frontend")).unwrap();
+        // backend bare repo intentionally NOT created.
+        let wt_fe = root.join("worktrees/feature-a/frontend");
+        std::fs::create_dir_all(&wt_fe).unwrap();
+        let mock = ScanMockGit::new();
+        mock.set_entries(
+            &root.join("packages/frontend"),
+            vec![crate::git::WorktreeEntry {
+                path: wt_fe,
+                branch: Some("feature-a".to_string()),
+            }],
+        );
+        let manifest = test_manifest(&["frontend", "backend"]);
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, root).unwrap();
+        assert_eq!(report.imported, vec!["feature-a".to_string()]);
+    }
+
+    #[test]
+    fn test_scan_prune_removes_stale_state_entries() {
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("live-branch", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        state.add_worktree(
+            "gone",
+            WorktreeState {
+                branch: "gone".to_string(),
+                tmux_window: Some("@7".to_string()),
+                pane_mappings: HashMap::new(),
+            },
+        );
+        let report = scan_and_import_with_prune(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert_eq!(report.imported, vec!["live-branch".to_string()]);
+        assert_eq!(report.pruned, vec!["gone".to_string()]);
+        assert!(state.get_worktree("gone").is_none());
+        assert!(state.get_worktree("live-branch").is_some());
+    }
+
+    #[test]
+    fn test_scan_prune_default_off_keeps_stale() {
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("live-branch", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        state.add_worktree(
+            "gone",
+            WorktreeState {
+                branch: "gone".to_string(),
+                tmux_window: None,
+                pane_mappings: HashMap::new(),
+            },
+        );
+        let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert!(report.pruned.is_empty());
+        assert!(state.get_worktree("gone").is_some());
+    }
+
+    #[test]
+    fn test_scan_is_idempotent() {
+        let (tmp, manifest, mock) = scan_fixture(&["frontend"], &[("feature-a", &["frontend"])]);
+        let mut state = WorkspaceState::default();
+        let r1 = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert_eq!(r1.imported, vec!["feature-a".to_string()]);
+        let r2 = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert!(r2.imported.is_empty());
+        assert_eq!(r2.already_tracked, vec!["feature-a".to_string()]);
+    }
+
+    #[test]
+    fn test_scan_multiple_packages_agree_on_branch() {
+        let (tmp, manifest, mock) = scan_fixture(
+            &["frontend", "backend"],
+            &[("feature-x", &["frontend", "backend"])],
+        );
+        let mut state = WorkspaceState::default();
+        let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
+        assert_eq!(report.imported, vec!["feature-x".to_string()]);
+        assert_eq!(state.worktrees.len(), 1);
     }
 }
 

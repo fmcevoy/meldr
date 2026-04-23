@@ -217,6 +217,14 @@ pub enum WorktreeAction {
     },
     /// List all active worktrees
     List,
+    /// Rebuild .meldr/state.json from on-disk git worktrees.
+    /// Additive by default — existing entries are preserved. Pass `--prune` to
+    /// also drop state entries whose worktree directory no longer exists.
+    Scan {
+        /// Also remove state entries whose worktree directory is gone from disk.
+        #[arg(long)]
+        prune: bool,
+    },
 }
 
 #[derive(Subcommand)]

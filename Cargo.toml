@@ -19,3 +19,9 @@ dirs = "6"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+[features]
+# Enable integration tests that require Docker + network-cloned GitHub repos.
+# These live in tests/docker_integration.rs and are driven by ./run-docker-tests.sh.
+# Off by default so `cargo test` on a bare host doesn't try to run them.
+docker-tests = []

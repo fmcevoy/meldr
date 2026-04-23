@@ -11,6 +11,11 @@
 //!   - octocat/boysenberry-repo-1 (small test repo)
 //!
 //! Run via: ./run-docker-tests.sh
+//!
+//! Gated behind the `docker-tests` Cargo feature so a bare `cargo test` on the
+//! host doesn't try to run them (MELDR_TEST_REPOS only exists inside the image).
+
+#![cfg(feature = "docker-tests")]
 
 use assert_cmd::Command;
 use predicates::prelude::*;

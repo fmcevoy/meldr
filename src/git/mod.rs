@@ -1,8 +1,16 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{MeldrError, Result};
 use crate::trace;
+
+/// A single entry from `git worktree list --porcelain`.
+/// `branch` is `None` for detached-HEAD worktrees; bare entries are filtered out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+}
 
 pub trait GitOps: Send + Sync {
     fn clone_repo(&self, url: &str, path: &Path) -> Result<()>;
@@ -32,6 +40,9 @@ pub trait GitOps: Send + Sync {
     /// Fast-forward a local branch ref to match a remote tracking ref.
     /// Uses `git fetch . <src>:<dst>` which only succeeds for fast-forwards.
     fn fast_forward_branch(&self, repo: &Path, branch: &str, remote: &str) -> Result<()>;
+    /// List the worktrees registered in `repo` (a bare or non-bare git dir).
+    /// Bare entries are filtered out; detached-HEAD worktrees yield `branch: None`.
+    fn worktree_list(&self, repo: &Path) -> Result<Vec<WorktreeEntry>>;
 }
 
 #[derive(Default)]
@@ -280,5 +291,142 @@ impl GitOps for RealGit {
             Self::run(&["fetch", ".", &refspec], repo)?;
         }
         Ok(())
+    }
+
+    fn worktree_list(&self, repo: &Path) -> Result<Vec<WorktreeEntry>> {
+        let output = Self::run(&["worktree", "list", "--porcelain"], repo)?;
+        Ok(parse_worktree_list_porcelain(&output))
+    }
+}
+
+/// Parse the output of `git worktree list --porcelain`.
+///
+/// Entries are separated by blank lines. Each entry has a `worktree <path>` line
+/// and optional `HEAD <sha>`, `branch refs/heads/<name>`, `bare`, `detached`,
+/// `locked`, `prunable` lines. Bare entries are dropped. Detached entries yield
+/// `branch: None`. Annotation lines (`locked`, `prunable`, ...) are ignored.
+pub fn parse_worktree_list_porcelain(s: &str) -> Vec<WorktreeEntry> {
+    let mut out = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_branch: Option<String> = None;
+    let mut is_bare = false;
+
+    let flush = |path: &mut Option<PathBuf>,
+                 branch: &mut Option<String>,
+                 bare: &mut bool,
+                 out: &mut Vec<WorktreeEntry>| {
+        if let Some(p) = path.take()
+            && !*bare
+        {
+            out.push(WorktreeEntry {
+                path: p,
+                branch: branch.take(),
+            });
+        }
+        branch.take();
+        *bare = false;
+    };
+
+    for line in s.lines() {
+        if line.is_empty() {
+            flush(
+                &mut current_path,
+                &mut current_branch,
+                &mut is_bare,
+                &mut out,
+            );
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            // Defensive: if we hit a new `worktree` without a blank line, flush first
+            flush(
+                &mut current_path,
+                &mut current_branch,
+                &mut is_bare,
+                &mut out,
+            );
+            current_path = Some(PathBuf::from(rest));
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            current_branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
+        } else if line == "bare" {
+            is_bare = true;
+        }
+        // Ignore HEAD, detached, locked, prunable, and anything else.
+    }
+    // Final entry (no trailing blank line)
+    flush(
+        &mut current_path,
+        &mut current_branch,
+        &mut is_bare,
+        &mut out,
+    );
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_worktree_list_porcelain_canonical() {
+        let input = "\
+worktree /repo/packages/pkg.git
+HEAD 0000000000000000000000000000000000000000
+bare
+
+worktree /repo/worktrees/main-wt/pkg
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /repo/worktrees/feat-wt/pkg
+HEAD 2222222222222222222222222222222222222222
+detached
+";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries.len(), 2, "bare entry should be filtered out");
+        assert_eq!(
+            entries[0].path,
+            PathBuf::from("/repo/worktrees/main-wt/pkg")
+        );
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert_eq!(
+            entries[1].path,
+            PathBuf::from("/repo/worktrees/feat-wt/pkg")
+        );
+        assert!(entries[1].branch.is_none(), "detached yields None branch");
+    }
+
+    #[test]
+    fn test_parse_worktree_list_porcelain_empty() {
+        assert!(parse_worktree_list_porcelain("").is_empty());
+        assert!(parse_worktree_list_porcelain("\n\n").is_empty());
+    }
+
+    #[test]
+    fn test_parse_worktree_list_porcelain_ignores_annotations() {
+        let input = "\
+worktree /repo/worktrees/a/pkg
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/feature/foo
+locked
+
+worktree /repo/worktrees/b/pkg
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/main
+prunable gitdir file points to non-existent location
+";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].branch.as_deref(), Some("feature/foo"));
+        assert_eq!(entries[1].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_parse_worktree_list_porcelain_preserves_slash_branches() {
+        let input = "worktree /w/a\nbranch refs/heads/team/epic/story\n";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch.as_deref(), Some("team/epic/story"));
     }
 }
