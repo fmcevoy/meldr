@@ -125,3 +125,31 @@ pub fn list(workspace_root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn scan(git: &dyn GitOps, workspace_root: &Path, prune: bool) -> Result<()> {
+    let manifest = Manifest::load(workspace_root)?;
+    let mut state = WorkspaceState::load(workspace_root)?;
+    let report = if prune {
+        crate::core::worktree::scan_and_import_with_prune(
+            git,
+            &manifest,
+            &mut state,
+            workspace_root,
+        )?
+    } else {
+        crate::core::worktree::scan_and_import(git, &manifest, &mut state, workspace_root)?
+    };
+    println!(
+        "Scan: imported {}, already tracked {}, pruned {}",
+        report.imported.len(),
+        report.already_tracked.len(),
+        report.pruned.len()
+    );
+    for branch in &report.imported {
+        println!("  + {branch}");
+    }
+    for branch in &report.pruned {
+        println!("  - {branch}");
+    }
+    Ok(())
+}

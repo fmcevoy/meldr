@@ -178,6 +178,7 @@ fn run(cli: Cli) -> error::Result<()> {
                     cli::worktree::open(&tmux, &root, &branch, &config, Some(&global))
                 }
                 WorktreeAction::List => cli::worktree::list(&root),
+                WorktreeAction::Scan { prune } => cli::worktree::scan(&git, &root, prune),
             }
         }
 
