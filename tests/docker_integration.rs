@@ -3197,14 +3197,17 @@ fn test_worktree_layout_top_bottom_geometry() {
     let mid_row = row(tops[1]);
     let bot_row = row(tops[2]);
 
+    // Widths can spread up to 2 cells across 3 columns due to integer rounding
+    // when tmux splits an even-width pane via two successive percentage splits
+    // (e.g. 200 → 65/66/67). 2 cells out of ~200 is < 1% — visually equal.
     for (label, r) in [("top", &top_row), ("mid", &mid_row), ("bot", &bot_row)] {
         assert_eq!(r.len(), 3, "{label} row should have 3 panes, got {r:?}");
         let widths: Vec<u32> = r.iter().map(|p| p.2).collect();
         let max = *widths.iter().max().unwrap();
         let min = *widths.iter().min().unwrap();
         assert!(
-            max - min <= 1,
-            "{label} row widths should be equal (±1), got {widths:?}"
+            max - min <= 2,
+            "{label} row widths should be equal (±2), got {widths:?}"
         );
     }
 
