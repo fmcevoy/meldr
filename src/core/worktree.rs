@@ -160,17 +160,22 @@ fn setup_tmux_windows(
             pane_mappings.insert("editor".to_string(), editor_pane.clone());
         }
 
-        if config.should_launch_agent()
-            && let Some(ref agent_pane) = dev.agent
-        {
-            if let Some(leader_pkg) = leader {
-                let leader_path = workspace::worktree_path(workspace_root, branch, leader_pkg);
-                tmux.send_keys(agent_pane, &format!("cd {}", leader_path.display()))?;
+        let leader_cd = leader.map(|leader_pkg| {
+            let leader_path = workspace::worktree_path(workspace_root, branch, leader_pkg);
+            format!("cd {}", leader_path.display())
+        });
+
+        for (i, agent_pane) in dev.agents.iter().enumerate() {
+            if config.should_launch_agent() {
+                if let Some(ref cd_cmd) = leader_cd {
+                    tmux.send_keys(agent_pane, cd_cmd)?;
+                }
+                tmux.send_keys(agent_pane, &config.agent_command)?;
             }
-            tmux.send_keys(agent_pane, &config.agent_command)?;
-        }
-        if let Some(ref agent_pane) = dev.agent {
-            pane_mappings.insert("agent".to_string(), agent_pane.clone());
+            pane_mappings.insert(format!("agent_{i}"), agent_pane.clone());
+            if i == 0 {
+                pane_mappings.insert("agent".to_string(), agent_pane.clone());
+            }
         }
 
         tmux_windows.push(dev.window_id);
@@ -709,12 +714,13 @@ mod tests {
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
                 editor: Some("@100.0".to_string()),
-                agent: Some("%1".to_string()),
+                agents: vec!["%1".to_string(), "%2".to_string(), "%3".to_string()],
                 terms: vec![
-                    "%2".to_string(),
-                    "%3".to_string(),
                     "%4".to_string(),
                     "%5".to_string(),
+                    "%6".to_string(),
+                    "%7".to_string(),
+                    "%8".to_string(),
                 ],
             })
         }
@@ -972,12 +978,13 @@ mod tests {
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
                 editor: Some("@100.0".to_string()),
-                agent: Some("%1".to_string()),
+                agents: vec!["%1".to_string(), "%2".to_string(), "%3".to_string()],
                 terms: vec![
-                    "%2".to_string(),
-                    "%3".to_string(),
                     "%4".to_string(),
                     "%5".to_string(),
+                    "%6".to_string(),
+                    "%7".to_string(),
+                    "%8".to_string(),
                 ],
             })
         }

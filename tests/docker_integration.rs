@@ -3105,6 +3105,127 @@ fn test_worktree_add_inside_tmux_creates_windows() {
     kill_tmux_session(&session);
 }
 
+/// Verifies the default layout produces 9 panes laid out as
+/// 3 equal-width claude panes filling the top ~2/3 of the window
+/// and 6 equal-size terminals filling the bottom ~1/3 in a 2×3 grid.
+#[test]
+fn test_worktree_layout_top_bottom_geometry() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "add", "geometry"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Read the window id meldr recorded in state.json — meldr issues `new-window`
+    // without an explicit session target, so the window may land in whichever
+    // session tmux treats as "current" for the supplied TMUX env var (not
+    // necessarily our test session). Querying by window_id avoids that ambiguity.
+    let state_content = fs::read_to_string(tmp.path().join(".meldr/state.json")).unwrap();
+    let window_id = state_content
+        .lines()
+        .find_map(|l| {
+            l.trim().strip_prefix("\"tmux_window\":").map(|rest| {
+                rest.trim()
+                    .trim_matches(|c: char| c == '"' || c == ',')
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| panic!("tmux_window not found in: {state_content}"));
+
+    let panes_out = process::Command::new("tmux")
+        .args([
+            "list-panes",
+            "-t",
+            &window_id,
+            "-F",
+            "#{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+        ])
+        .output()
+        .expect("tmux list-panes");
+    let panes: Vec<(u32, u32, u32, u32)> = String::from_utf8_lossy(&panes_out.stdout)
+        .lines()
+        .map(|l| {
+            let mut it = l.split_whitespace().map(|n| n.parse::<u32>().unwrap());
+            (
+                it.next().unwrap(),
+                it.next().unwrap(),
+                it.next().unwrap(),
+                it.next().unwrap(),
+            )
+        })
+        .collect();
+
+    kill_tmux_session(&session);
+
+    assert_eq!(
+        panes.len(),
+        9,
+        "expected 9 panes (3 claude + 6 terminals), got {}: {panes:?}",
+        panes.len()
+    );
+
+    // Group panes by pane_top (y-origin → row).
+    let mut tops: Vec<u32> = panes.iter().map(|p| p.1).collect();
+    tops.sort();
+    tops.dedup();
+    assert_eq!(tops.len(), 3, "expected 3 distinct rows, got {tops:?}");
+
+    let row = |top: u32| -> Vec<(u32, u32, u32, u32)> {
+        let mut r: Vec<_> = panes.iter().copied().filter(|p| p.1 == top).collect();
+        r.sort_by_key(|p| p.0);
+        r
+    };
+    let top_row = row(tops[0]);
+    let mid_row = row(tops[1]);
+    let bot_row = row(tops[2]);
+
+    for (label, r) in [("top", &top_row), ("mid", &mid_row), ("bot", &bot_row)] {
+        assert_eq!(r.len(), 3, "{label} row should have 3 panes, got {r:?}");
+        let widths: Vec<u32> = r.iter().map(|p| p.2).collect();
+        let max = *widths.iter().max().unwrap();
+        let min = *widths.iter().min().unwrap();
+        assert!(
+            max - min <= 1,
+            "{label} row widths should be equal (±1), got {widths:?}"
+        );
+    }
+
+    // Top row height should be ~2/3 of total. Total here = sum of one column's heights + 2 borders.
+    let total_h = top_row[0].3 + mid_row[0].3 + bot_row[0].3 + 2;
+    let top_h = top_row[0].3;
+    let expected = (total_h * 2) / 3;
+    assert!(
+        top_h.abs_diff(expected) <= 2,
+        "top row height should be ~2/3 of total ({expected} of {total_h}), got {top_h}"
+    );
+
+    // Middle and bottom row heights should be equal (±1 row from integer rounding).
+    let mid_h = mid_row[0].3;
+    let bot_h = bot_row[0].3;
+    assert!(
+        mid_h.abs_diff(bot_h) <= 1,
+        "middle ({mid_h}) and bottom ({bot_h}) row heights should match within 1"
+    );
+}
+
 #[test]
 fn test_worktree_remove_inside_tmux_kills_window() {
     let Some((tmux_var, session)) = start_tmux_server() else {
