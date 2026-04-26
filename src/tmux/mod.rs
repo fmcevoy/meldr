@@ -15,7 +15,7 @@ pub struct TmuxLayout {
 pub struct DevWindowPanes {
     pub window_id: String,
     pub editor: Option<String>,
-    pub agent: Option<String>,
+    pub agents: Vec<String>,
     #[allow(dead_code)]
     pub terms: Vec<String>,
 }
@@ -66,18 +66,17 @@ impl RealTmux {
 
     #[allow(dead_code)] // Layout variant available for tmux window configuration
     fn create_default_layout(name: &str, cwd: &str) -> Result<DevWindowPanes> {
-        // Layout:
-        // +-------------------+-----------+
-        // |                   |           |
-        // |    editor (0)     | agent (1) |
-        // |                   |           |
-        // +--------+----------+           |
-        // | t1 (2) | t3 (4)   |           |
-        // +--------+----------+           |
-        // | t2 (3) | t4 (5)   |           |
-        // +--------+----------+-----------+
+        // Layout: 9 panes — 3 claude (top 2/3) + 6 terminals (bottom 1/3 in 2×3 grid).
+        // The middle-row leftmost terminal runs the configured editor (e.g. nvim).
+        //
+        // +-----------+-----------+-----------+
+        // | claude P0 | claude P3 | claude P4 |   top 2/3
+        // +-----------+-----------+-----------+
+        // | nvim  P1  |  term P5  |  term P6  |   1/2 of bottom 1/3
+        // +-----------+-----------+-----------+
+        // |  term P2  |  term P7  |  term P8  |   1/2 of bottom 1/3
+        // +-----------+-----------+-----------+
 
-        // Create window — pane 0 (editor)
         let window_id = Self::run(&[
             "new-window",
             "-n",
@@ -88,92 +87,52 @@ impl RealTmux {
             "-F",
             "#{window_id}",
         ])?;
-        let pane0 = format!("{window_id}.0");
+        let p0 = format!("{window_id}.0");
 
-        // Split right for agent — full-height right column, 35% width
-        let agent_pane = Self::run(&[
-            "split-window",
-            "-t",
-            &pane0,
-            "-h",
-            "-p",
-            "35",
-            "-c",
-            cwd,
-            "-P",
-            "-F",
-            "#{pane_id}",
-        ])?;
+        // Split off the bottom 1/3 (full width) → P1 below P0.
+        let p1 = Self::split(&p0, "-v", 33, cwd)?;
+        // Split P1 in half vertically → P2 (bottom row).
+        let p2 = Self::split(&p1, "-v", 50, cwd)?;
 
-        // Split editor (pane 0) below for left terminal column — 30% height
-        let t1_pane = Self::run(&[
-            "split-window",
-            "-t",
-            &pane0,
-            "-v",
-            "-p",
-            "30",
-            "-c",
-            cwd,
-            "-P",
-            "-F",
-            "#{pane_id}",
-        ])?;
+        // Top row: split P0 into 3 equal columns (P0 | P3 | P4).
+        let p3 = Self::split(&p0, "-h", 67, cwd)?;
+        let p4 = Self::split(&p3, "-h", 50, cwd)?;
 
-        // Split t1 below for t2
-        let t2_pane = Self::run(&[
-            "split-window",
-            "-t",
-            &t1_pane,
-            "-v",
-            "-p",
-            "50",
-            "-c",
-            cwd,
-            "-P",
-            "-F",
-            "#{pane_id}",
-        ])?;
+        // Middle row: split P1 into 3 equal columns (P1 | P5 | P6).
+        let p5 = Self::split(&p1, "-h", 67, cwd)?;
+        let p6 = Self::split(&p5, "-h", 50, cwd)?;
 
-        // Split t1 right for t3
-        let t3_pane = Self::run(&[
-            "split-window",
-            "-t",
-            &t1_pane,
-            "-h",
-            "-p",
-            "50",
-            "-c",
-            cwd,
-            "-P",
-            "-F",
-            "#{pane_id}",
-        ])?;
+        // Bottom row: split P2 into 3 equal columns (P2 | P7 | P8).
+        let p7 = Self::split(&p2, "-h", 67, cwd)?;
+        let p8 = Self::split(&p7, "-h", 50, cwd)?;
 
-        // Split t2 right for t4
-        let t4_pane = Self::run(&[
-            "split-window",
-            "-t",
-            &t2_pane,
-            "-h",
-            "-p",
-            "50",
-            "-c",
-            cwd,
-            "-P",
-            "-F",
-            "#{pane_id}",
-        ])?;
-
-        // Select the editor pane as active
-        Self::run(&["select-pane", "-t", &pane0])?;
+        // Focus the editor pane.
+        Self::run(&["select-pane", "-t", &p1])?;
 
         Ok(DevWindowPanes {
             window_id,
-            editor: Some(pane0),
-            agent: Some(agent_pane),
-            terms: vec![t1_pane, t2_pane, t3_pane, t4_pane],
+            editor: Some(p1),
+            agents: vec![p0, p3, p4],
+            terms: vec![p5, p6, p2, p7, p8],
         })
+    }
+
+    /// Run `split-window` with a percentage and capture the new pane id.
+    fn split(target: &str, direction: &str, pct: u32, cwd: &str) -> Result<String> {
+        let pct_str = pct.to_string();
+        Self::run(&[
+            "split-window",
+            "-t",
+            target,
+            direction,
+            "-p",
+            &pct_str,
+            "-c",
+            cwd,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])
     }
 
     #[allow(dead_code)] // Layout variant available for tmux window configuration
@@ -216,7 +175,7 @@ impl RealTmux {
         Ok(DevWindowPanes {
             window_id,
             editor: Some(pane0),
-            agent: Some(agent_pane),
+            agents: vec![agent_pane],
             terms: vec![],
         })
     }
@@ -239,7 +198,7 @@ impl RealTmux {
         Ok(DevWindowPanes {
             window_id,
             editor: Some(pane0),
-            agent: None,
+            agents: vec![],
             terms: vec![],
         })
     }
@@ -289,12 +248,16 @@ impl RealTmux {
             .editor_pane
             .and_then(|i| pane_ids.get(i).cloned());
 
-        let agent_pane = layout_def.agent_pane.and_then(|i| pane_ids.get(i).cloned());
+        let agents = layout_def
+            .agent_pane
+            .and_then(|i| pane_ids.get(i).cloned())
+            .map(|p| vec![p])
+            .unwrap_or_default();
 
         Ok(DevWindowPanes {
             window_id,
             editor: editor_pane,
-            agent: agent_pane,
+            agents,
             terms: vec![],
         })
     }
