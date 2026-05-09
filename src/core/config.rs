@@ -208,6 +208,9 @@ pub fn ensure_global_config() -> Result<()> {
             "#\n",
             "# [agents.deepseek-tui]\n",
             "# command = \"deepseek-tui\"\n",
+            "#\n",
+            "# [agents.devin]\n",
+            "# command = \"devin --permission-mode bypass\"\n",
         );
         std::fs::write(&path, default_content)?;
     }
@@ -387,6 +390,11 @@ pub const BUILTIN_AGENTS: &[AgentDef] = &[
         name: "deepseek-tui",
         command: "deepseek-tui",
         description: "DeepSeek TUI",
+    },
+    AgentDef {
+        name: "devin",
+        command: "devin --permission-mode bypass",
+        description: "Devin for Terminal",
     },
 ];
 
@@ -623,13 +631,17 @@ mod tests {
         );
         assert_eq!(default_agent_command("kiro-tui"), "kiro-cli --tui");
         assert_eq!(default_agent_command("deepseek-tui"), "deepseek-tui");
+        assert_eq!(
+            default_agent_command("devin"),
+            "devin --permission-mode bypass"
+        );
         assert_eq!(default_agent_command("custom-agent"), "custom-agent");
     }
 
     #[test]
     fn test_builtin_agent_names() {
         let names: Vec<&str> = builtin_agent_names().collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"cursor"));
         assert!(names.contains(&"gemini"));
@@ -639,6 +651,7 @@ mod tests {
         assert!(names.contains(&"kiro"));
         assert!(names.contains(&"kiro-tui"));
         assert!(names.contains(&"deepseek-tui"));
+        assert!(names.contains(&"devin"));
     }
 
     #[test]
@@ -693,6 +706,57 @@ mod tests {
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "deepseek-tui");
         assert_eq!(config.agent_command, "deepseek-tui");
+    }
+
+    #[test]
+    fn test_devin_builtin_agent() {
+        let agent = builtin_agent("devin").expect("devin should be a built-in");
+        assert_eq!(agent.name, "devin");
+        assert_eq!(agent.command, "devin --permission-mode bypass");
+        assert_eq!(agent.description, "Devin for Terminal");
+    }
+
+    #[test]
+    fn test_default_devin_command_resolved() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            agent: Some("devin".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "devin");
+        assert_eq!(config.agent_command, "devin --permission-mode bypass");
+    }
+
+    #[test]
+    fn test_devin_user_override_wins_over_builtin() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "devin".to_string(),
+            AgentConfig {
+                command: "devin --permission-mode bypass --custom-flag".to_string(),
+            },
+        );
+        let global = GlobalConfig {
+            agents,
+            ..Default::default()
+        };
+        let workspace = Settings {
+            agent: Some("devin".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "devin");
+        assert_eq!(
+            config.agent_command,
+            "devin --permission-mode bypass --custom-flag"
+        );
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub enum Commands {
         /// Create a worktree on this branch after adding packages
         #[arg(short, long)]
         branch: Option<String>,
-        /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui)
+        /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui, devin)
         #[arg(short, long)]
         agent: Option<String>,
         /// Package to run the AI agent in (prompts interactively if omitted)

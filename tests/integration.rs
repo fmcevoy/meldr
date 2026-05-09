@@ -1044,11 +1044,41 @@ fn test_create_with_agent_deepseek_tui() {
 }
 
 #[test]
+fn test_create_with_agent_devin() {
+    let tmp = TempDir::new().unwrap();
+
+    meldr()
+        .args(["create", "my-ws", "-a", "devin"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("my-ws/meldr.toml")).unwrap();
+    assert!(
+        content.contains("agent = \"devin\""),
+        "devin agent setting should persist"
+    );
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path().join("my-ws"))
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = devin").and(predicate::str::contains(
+                "agent_command = devin --permission-mode bypass",
+            )),
+        );
+}
+
+#[test]
 fn test_config_set_agent_new_builtins() {
     let tmp = TempDir::new().unwrap();
     init_workspace(tmp.path());
 
-    for agent in ["kiro-tui", "deepseek-tui"] {
+    for agent in ["kiro-tui", "deepseek-tui", "devin"] {
         meldr()
             .args(["config", "set", "agent", agent])
             .current_dir(tmp.path())

@@ -3636,3 +3636,57 @@ fn test_worktree_add_with_deepseek_tui_agent_inside_tmux() {
 
     kill_tmux_session(&session);
 }
+
+#[test]
+fn test_worktree_add_with_devin_agent_inside_tmux() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "set", "agent", "devin"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("agent = devin").and(predicate::str::contains(
+                "agent_command = devin --permission-mode bypass",
+            )),
+        );
+
+    meldr()
+        .args(["worktree", "add", "devin-branch"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created worktree 'devin-branch'"));
+
+    assert!(
+        tmp.path()
+            .join("worktrees/devin-branch/spoon-knife")
+            .exists()
+    );
+
+    kill_tmux_session(&session);
+}
