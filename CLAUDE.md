@@ -35,7 +35,7 @@ Four layers, each behind a trait for testability:
 - **Parallel fetch via Rayon, sequential sync** — maximizes fetch speed, enforces ordering on state changes
 - **Pre-sync snapshots** — saved to `.meldr/sync-snapshots/` for undo without git reflog complexity
 - **Conflict detection before rebase** — "safe" strategy uses `git merge-tree --write-tree` (Git 2.38+)
-- **9 built-in agents** — claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui (configurable via global config)
+- **10 built-in agents** — claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui, devin (configurable via global config)
 
 ## Roadmap
 

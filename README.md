@@ -161,6 +161,7 @@ Auto-detects default branch from remote, falling back to configured `default_bra
 | `kiro` | `kiro-cli chat --trust-all-tools` | AWS Kiro CLI |
 | `kiro-tui` | `kiro-cli --tui` | AWS Kiro (TUI mode) |
 | `deepseek-tui` | `deepseek-tui` | DeepSeek TUI |
+| `devin` | `devin --permission-mode bypass` | Devin for Terminal |
 
 Override any command in `~/.meldr/config.toml` under `[agents.<name>]`, or register custom agents by name — an unknown agent name is run verbatim as the shell command.
 
@@ -268,7 +269,7 @@ All integration tests run inside Docker for consistent, isolated environments.
 name = "my-project"
 
 [settings]
-# agent = "claude"          # any built-in (claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui) or a custom command
+# agent = "claude"          # any built-in (claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui, devin) or a custom command
 # mode = "full"             # "full" | "no-agent" | "no-tabs"
 # sync_method = "rebase"    # "rebase" | "merge"
 # sync_strategy = "safe"    # "safe" | "theirs" | "ours" | "manual"
