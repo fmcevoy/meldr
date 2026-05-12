@@ -613,10 +613,7 @@ mod tests {
 
     #[test]
     fn test_default_agent_commands() {
-        assert_eq!(
-            default_agent_command("claude"),
-            "claude agents"
-        );
+        assert_eq!(default_agent_command("claude"), "claude agents");
         assert_eq!(default_agent_command("cursor"), "cursor agent --yolo");
         assert_eq!(default_agent_command("gemini"), "gemini --yolo");
         assert_eq!(
@@ -873,10 +870,7 @@ mod tests {
 
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "claude");
-        assert_eq!(
-            config.agent_command,
-            "claude agents"
-        );
+        assert_eq!(config.agent_command, "claude agents");
     }
 
     #[test]
