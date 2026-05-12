@@ -183,7 +183,7 @@ pub fn ensure_global_config() -> Result<()> {
             "# Built-in agents and their default commands (override to customise):\n",
             "#\n",
             "# [agents.claude]\n",
-            "# command = \"claude --dangerously-skip-permissions\"\n",
+            "# command = \"claude agents\"\n",
             "#\n",
             "# [agents.cursor]\n",
             "# command = \"cursor agent --yolo\"\n",
@@ -348,7 +348,7 @@ pub struct AgentDef {
 pub const BUILTIN_AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
-        command: "claude --dangerously-skip-permissions",
+        command: "claude agents",
         description: "Anthropic Claude Code",
     },
     AgentDef {
@@ -613,10 +613,7 @@ mod tests {
 
     #[test]
     fn test_default_agent_commands() {
-        assert_eq!(
-            default_agent_command("claude"),
-            "claude --dangerously-skip-permissions"
-        );
+        assert_eq!(default_agent_command("claude"), "claude agents");
         assert_eq!(default_agent_command("cursor"), "cursor agent --yolo");
         assert_eq!(default_agent_command("gemini"), "gemini --yolo");
         assert_eq!(
@@ -657,7 +654,7 @@ mod tests {
     #[test]
     fn test_builtin_agent_lookup() {
         let claude = builtin_agent("claude").unwrap();
-        assert_eq!(claude.command, "claude --dangerously-skip-permissions");
+        assert_eq!(claude.command, "claude agents");
         assert_eq!(claude.description, "Anthropic Claude Code");
         assert!(builtin_agent("nonexistent").is_none());
     }
@@ -873,10 +870,7 @@ mod tests {
 
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "claude");
-        assert_eq!(
-            config.agent_command,
-            "claude --dangerously-skip-permissions"
-        );
+        assert_eq!(config.agent_command, "claude agents");
     }
 
     #[test]
