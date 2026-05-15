@@ -1,3 +1,4 @@
+pub mod claude_prune;
 pub mod config;
 pub mod filter;
 pub mod hooks;

@@ -54,6 +54,7 @@ pub fn remove(
     branch: &str,
     force: bool,
     filter: &PackageFilter,
+    config: &EffectiveConfig,
 ) -> Result<()> {
     let manifest = Manifest::load(workspace_root)?;
     let partial = !filter.is_empty();
@@ -78,6 +79,7 @@ pub fn remove(
         branch,
         force,
         partial,
+        config,
     )?;
     if partial {
         let names: Vec<_> = filtered_manifest.packages.iter().map(|p| &p.name).collect();

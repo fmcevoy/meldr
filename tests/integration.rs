@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process;
 use tempfile::TempDir;
 
@@ -3801,6 +3802,419 @@ fn test_worktree_scan_prune_removes_stale_entries() {
         .assert()
         .success()
         .stdout(predicate::str::contains("- to-be-removed"));
+
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active worktrees"));
+}
+
+// ─── Claude prune integration tests ───────────────────────────────
+
+/// Write a shim shell script at `<dir>/claude-shim` that logs its argv to
+/// `<dir>/claude-calls.log` and exits with `exit_code`.
+fn write_claude_shim(dir: &std::path::Path, exit_code: i32) -> std::path::PathBuf {
+    let shim = dir.join("claude-shim");
+    fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> \"{}/claude-calls.log\"\nexit {exit_code}\n",
+            dir.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    shim
+}
+
+/// Return a Command pre-wired with a temp HOME and a `MELDR_CLAUDE_BIN` shim.
+fn meldr_with_claude_env(home: &std::path::Path, claude_shim: &std::path::Path) -> Command {
+    let mut cmd = meldr_with_home(home);
+    cmd.env("MELDR_CLAUDE_BIN", claude_shim);
+    cmd
+}
+
+/// Encode `path` the way Claude Code does for its `~/.claude/projects/` dir name.
+fn encode_claude_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('/', "-")
+}
+
+/// Plant a fake Claude project dir (with one session `.jsonl` file) in `home`.
+fn plant_claude_project(home: &std::path::Path, wt_pkg_path: &std::path::Path) -> String {
+    let encoded = encode_claude_path(wt_pkg_path);
+    let proj_dir = home.join(".claude").join("projects").join(&encoded);
+    fs::create_dir_all(&proj_dir).unwrap();
+    fs::write(
+        proj_dir.join("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"),
+        b"{}",
+    )
+    .unwrap();
+    encoded
+}
+
+/// Plant fake tasks and file-history state for a known session UUID.
+fn plant_claude_sibling_state(home: &std::path::Path, uuid: &str) {
+    let tasks = home.join(".claude").join("tasks").join(uuid);
+    fs::create_dir_all(&tasks).unwrap();
+    fs::write(tasks.join("task.json"), b"{}").unwrap();
+
+    let fh = home.join(".claude").join("file-history").join(uuid);
+    fs::create_dir_all(&fh).unwrap();
+    fs::write(fh.join("history.json"), b"{}").unwrap();
+}
+
+/// Walk `<archive_root>/<ts>/<subdir>/<name>` for any timestamp, returning true if found.
+fn find_archived_entry(archive_root: &std::path::Path, subdir: &str, name: &str) -> bool {
+    let Ok(ts_dirs) = fs::read_dir(archive_root) else {
+        return false;
+    };
+    for ts_entry in ts_dirs.flatten() {
+        let candidate = ts_entry.path().join(subdir).join(name);
+        if candidate.exists() {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn test_claude_prune_archives_project_dir_on_worktree_remove() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 0);
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Canonicalize to match the path meldr derives internally (macOS: /var → /private/var).
+    let wt_pkg = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("worktrees")
+        .join("prune-test")
+        .join("frontend");
+    let encoded = plant_claude_project(home.path(), &wt_pkg);
+    plant_claude_sibling_state(home.path(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+    meldr_with_claude_env(home.path(), &shim)
+        .args(["--no-tabs", "worktree", "remove", "prune-test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archived Claude state"));
+
+    // Original project dir must be gone.
+    assert!(
+        !home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join(&encoded)
+            .exists()
+    );
+
+    // Archive must exist.
+    let archive_projects = home.path().join(".claude").join("projects-archive");
+    assert!(archive_projects.exists(), "archive root should be created");
+    assert!(
+        find_archived_entry(&archive_projects, "projects", &encoded),
+        "archived project dir should exist"
+    );
+
+    let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    assert!(
+        find_archived_entry(&archive_projects, "tasks", uuid),
+        "archived tasks dir should exist"
+    );
+    assert!(
+        find_archived_entry(&archive_projects, "file-history", uuid),
+        "archived file-history dir should exist"
+    );
+
+    // Shim was invoked (claude project purge).
+    assert!(
+        home.path().join("claude-calls.log").exists(),
+        "claude shim should have been called"
+    );
+}
+
+#[test]
+fn test_claude_prune_skipped_with_no_claude_prune_flag() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 0);
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-off"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Canonicalize to match the path meldr derives internally (macOS: /var → /private/var).
+    let wt_pkg = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("worktrees")
+        .join("prune-off")
+        .join("frontend");
+    let encoded = plant_claude_project(home.path(), &wt_pkg);
+
+    meldr_with_claude_env(home.path(), &shim)
+        .args([
+            "--no-tabs",
+            "worktree",
+            "remove",
+            "--no-claude-prune",
+            "prune-off",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        home.path()
+            .join(".claude")
+            .join("projects")
+            .join(&encoded)
+            .exists(),
+        "project dir should remain when --no-claude-prune is passed"
+    );
+    assert!(
+        !home.path().join("claude-calls.log").exists(),
+        "shim should NOT be called with --no-claude-prune"
+    );
+}
+
+#[test]
+fn test_claude_prune_skipped_for_non_claude_agent() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 0);
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Canonicalize to match the path meldr derives internally (macOS: /var → /private/var).
+    let wt_pkg = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("worktrees")
+        .join("prune-cursor")
+        .join("frontend");
+    let encoded = plant_claude_project(home.path(), &wt_pkg);
+
+    meldr_with_claude_env(home.path(), &shim)
+        .env("MELDR_AGENT", "cursor")
+        .args(["--no-tabs", "worktree", "remove", "prune-cursor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        home.path()
+            .join(".claude")
+            .join("projects")
+            .join(&encoded)
+            .exists(),
+        "project dir should remain when agent is not claude"
+    );
+    assert!(
+        !home.path().join("claude-calls.log").exists(),
+        "shim should NOT be called for non-claude agent"
+    );
+}
+
+#[test]
+fn test_claude_prune_skipped_via_env_var() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 0);
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-env"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Canonicalize to match the path meldr derives internally (macOS: /var → /private/var).
+    let wt_pkg = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("worktrees")
+        .join("prune-env")
+        .join("frontend");
+    let encoded = plant_claude_project(home.path(), &wt_pkg);
+
+    meldr_with_claude_env(home.path(), &shim)
+        .env("MELDR_CLAUDE_PRUNE", "false")
+        .args(["--no-tabs", "worktree", "remove", "prune-env"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        home.path()
+            .join(".claude")
+            .join("projects")
+            .join(&encoded)
+            .exists(),
+        "project dir should remain when MELDR_CLAUDE_PRUNE=false"
+    );
+    assert!(
+        !home.path().join("claude-calls.log").exists(),
+        "shim should NOT be called when MELDR_CLAUDE_PRUNE=false"
+    );
+}
+
+#[test]
+fn test_claude_prune_no_claude_state_still_calls_purge() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 0);
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-no-state"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // No Claude project dir — nothing to archive.
+    meldr_with_claude_env(home.path(), &shim)
+        .args(["--no-tabs", "worktree", "remove", "prune-no-state"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Archive dir must NOT be created.
+    assert!(
+        !home
+            .path()
+            .join(".claude")
+            .join("projects-archive")
+            .exists(),
+        "archive dir should not be created when there is no claude state"
+    );
+
+    // But purge shim should still have been called.
+    assert!(
+        home.path().join("claude-calls.log").exists(),
+        "shim should be called even when no project dir exists"
+    );
+}
+
+#[test]
+fn test_claude_prune_purge_failure_does_not_block_remove() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+    let shim = write_claude_shim(home.path(), 1); // exit 1
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-fail"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr_with_claude_env(home.path(), &shim)
+        .args(["--no-tabs", "worktree", "remove", "prune-fail"])
+        .current_dir(tmp.path())
+        .assert()
+        .success() // remove must succeed despite purge failure
+        .stderr(predicate::str::contains("Warning:"));
+
+    meldr()
+        .args(["worktree", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active worktrees"));
+}
+
+#[test]
+fn test_claude_prune_missing_binary_does_not_block_remove() {
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let repos_dir = TempDir::new().unwrap();
+    let repo_url = create_bare_repo(repos_dir.path(), "frontend");
+
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo_url])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "prune-nobin"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr_with_home(home.path())
+        .env("MELDR_CLAUDE_BIN", "/no/such/claude")
+        .args(["--no-tabs", "worktree", "remove", "prune-nobin"])
+        .current_dir(tmp.path())
+        .assert()
+        .success() // remove must succeed despite missing binary
+        .stderr(predicate::str::contains("Warning:"));
 
     meldr()
         .args(["worktree", "list"])

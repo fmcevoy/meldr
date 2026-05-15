@@ -319,6 +319,7 @@ pub fn remove_worktree(
     branch: &str,
     force: bool,
     partial: bool,
+    config: &EffectiveConfig,
 ) -> Result<()> {
     if state.get_worktree(branch).is_none() {
         return Err(MeldrError::WorktreeNotFound(branch.to_string()));
@@ -337,6 +338,13 @@ pub fn remove_worktree(
             }
         }
     }
+
+    // Collect per-package paths up front — needed for Claude state cleanup below.
+    let wt_paths: Vec<std::path::PathBuf> = manifest
+        .packages
+        .iter()
+        .map(|pkg| workspace::worktree_path(workspace_root, branch, &pkg.name))
+        .collect();
 
     // Run pre_remove hooks before any cleanup
     let all_pkgs: Vec<&_> = manifest.packages.iter().collect();
@@ -357,6 +365,29 @@ pub fn remove_worktree(
                 "Warning: Failed to remove worktree for '{}': {}",
                 pkg.name, e
             );
+        }
+    }
+
+    // Archive and purge Claude Code project state for this worktree when the
+    // workspace agent is claude and pruning is enabled. Failures are warnings only.
+    if config.agent == "claude"
+        && config.claude_prune
+        && !partial
+        && let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
+    {
+        let claude_bin = std::env::var_os("MELDR_CLAUDE_BIN")
+            .unwrap_or_else(|| std::ffi::OsString::from("claude"));
+        let ts = crate::core::claude_prune::format_timestamp();
+        let report =
+            crate::core::claude_prune::prune_for_removed_paths(&home, &claude_bin, &wt_paths, &ts);
+        if !report.archived.is_empty() {
+            println!(
+                "Archived Claude state for {} path(s) → ~/.claude/projects-archive/{ts}",
+                report.archived.len()
+            );
+        }
+        for w in &report.warnings {
+            eprintln!("Warning: {w}");
         }
     }
 
@@ -1036,6 +1067,10 @@ mod tests {
             "feat-rm",
             false,
             false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1092,6 +1127,10 @@ mod tests {
             "feat-order",
             false,
             false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1125,6 +1164,10 @@ mod tests {
             "no-such",
             false,
             false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
         );
         assert!(result.is_err(), "removing nonexistent worktree should fail");
     }
@@ -1156,6 +1199,10 @@ mod tests {
             "feat-notab",
             false,
             false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
         )
         .unwrap();
 

@@ -53,6 +53,8 @@ pub struct GlobalDefaults {
     pub layout: Option<String>,
     #[serde(default)]
     pub window_name: Option<String>,
+    #[serde(default)]
+    pub claude_prune: Option<bool>,
 }
 
 impl Default for GlobalDefaults {
@@ -67,6 +69,7 @@ impl Default for GlobalDefaults {
             shell: None,
             layout: None,
             window_name: None,
+            claude_prune: None,
         }
     }
 }
@@ -101,6 +104,7 @@ pub struct EffectiveConfig {
     pub sync_strategy: String,
     pub no_agent: bool,
     pub no_tabs: bool,
+    pub claude_prune: bool,
     pub editor: String,
     pub default_branch: String,
     pub remote: String,
@@ -120,6 +124,7 @@ impl Default for EffectiveConfig {
             sync_strategy: DEFAULT_SYNC_STRATEGY.to_string(),
             no_agent: false,
             no_tabs: false,
+            claude_prune: true,
             editor: DEFAULT_EDITOR.to_string(),
             default_branch: DEFAULT_BRANCH.to_string(),
             remote: DEFAULT_REMOTE.to_string(),
@@ -238,6 +243,9 @@ pub fn resolve_config(
         mode: global.defaults.mode.clone(),
         ..Default::default()
     };
+    if let Some(v) = global.defaults.claude_prune {
+        config.claude_prune = v;
+    }
     if let Some(ref v) = global.defaults.editor {
         config.editor = v.clone();
     }
@@ -291,6 +299,9 @@ pub fn resolve_config(
     if let Some(ref v) = workspace_settings.leader_package {
         config.leader_package = Some(v.clone());
     }
+    if let Some(v) = workspace_settings.claude_prune {
+        config.claude_prune = v;
+    }
 
     // Layer 2: Environment variables
     if let Some(agent) = env_overrides.get("MELDR_AGENT") {
@@ -322,6 +333,13 @@ pub fn resolve_config(
     }
     if let Some(v) = env_overrides.get("MELDR_LEADER_PACKAGE") {
         config.leader_package = Some(v.clone());
+    }
+    if let Some(v) = env_overrides.get("MELDR_CLAUDE_PRUNE") {
+        match v.as_str() {
+            "false" | "0" | "no" => config.claude_prune = false,
+            "true" | "1" | "yes" => config.claude_prune = true,
+            _ => {}
+        }
     }
 
     // Layer 1: CLI flags (these are independent — both can be true)
@@ -425,7 +443,10 @@ const VALID_SETTINGS_KEYS: &[&str] = &[
     "layout",
     "window_name",
     "leader_package",
+    "claude_prune",
 ];
+
+const BOOL_SETTINGS_KEYS: &[&str] = &["claude_prune"];
 
 pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
     if !VALID_SETTINGS_KEYS.contains(&key) {
@@ -444,7 +465,20 @@ pub fn config_set(workspace_root: &Path, key: &str, value: &str) -> Result<()> {
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
 
     if let toml::Value::Table(table) = settings {
-        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        let toml_val = if BOOL_SETTINGS_KEYS.contains(&key) {
+            match value {
+                "true" | "1" | "yes" => toml::Value::Boolean(true),
+                "false" | "0" | "no" => toml::Value::Boolean(false),
+                _ => {
+                    return Err(MeldrError::Config(format!(
+                        "Invalid boolean value '{value}' for '{key}'. Use true/false."
+                    )));
+                }
+            }
+        } else {
+            toml::Value::String(value.to_string())
+        };
+        table.insert(key.to_string(), toml_val);
     }
 
     let new_content =
@@ -459,9 +493,14 @@ pub fn config_get(workspace_root: &Path, key: &str) -> Result<Option<String>> {
     let doc: toml::Table = toml::from_str(&content)?;
 
     if let Some(toml::Value::Table(settings)) = doc.get("settings")
-        && let Some(toml::Value::String(val)) = settings.get(key)
+        && let Some(val) = settings.get(key)
     {
-        return Ok(Some(val.clone()));
+        let s = match val {
+            toml::Value::String(s) => s.clone(),
+            toml::Value::Boolean(b) => b.to_string(),
+            _ => return Ok(None),
+        };
+        return Ok(Some(s));
     }
     Ok(None)
 }
@@ -498,6 +537,7 @@ const VALID_GLOBAL_KEYS: &[&str] = &[
     "shell",
     "layout",
     "window_name",
+    "claude_prune",
 ];
 
 pub fn global_config_set(key: &str, value: &str) -> Result<()> {
@@ -518,7 +558,20 @@ pub fn global_config_set(key: &str, value: &str) -> Result<()> {
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
 
     if let toml::Value::Table(table) = defaults {
-        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        let toml_val = if BOOL_SETTINGS_KEYS.contains(&key) {
+            match value {
+                "true" | "1" | "yes" => toml::Value::Boolean(true),
+                "false" | "0" | "no" => toml::Value::Boolean(false),
+                _ => {
+                    return Err(MeldrError::Config(format!(
+                        "Invalid boolean value '{value}' for '{key}'. Use true/false."
+                    )));
+                }
+            }
+        } else {
+            toml::Value::String(value.to_string())
+        };
+        table.insert(key.to_string(), toml_val);
     }
 
     let new_content =
@@ -536,9 +589,14 @@ pub fn global_config_get(key: &str) -> Result<Option<String>> {
     let doc: toml::Table = toml::from_str(&content)?;
 
     if let Some(toml::Value::Table(defaults)) = doc.get("defaults")
-        && let Some(toml::Value::String(val)) = defaults.get(key)
+        && let Some(val) = defaults.get(key)
     {
-        return Ok(Some(val.clone()));
+        let s = match val {
+            toml::Value::String(s) => s.clone(),
+            toml::Value::Boolean(b) => b.to_string(),
+            _ => return Ok(None),
+        };
+        return Ok(Some(s));
     }
     Ok(None)
 }
@@ -578,6 +636,7 @@ pub fn collect_env_overrides() -> HashMap<String, String> {
         "MELDR_SHELL",
         "MELDR_LAYOUT",
         "MELDR_LEADER_PACKAGE",
+        "MELDR_CLAUDE_PRUNE",
         "VISUAL",
         "EDITOR",
         "SHELL",
@@ -1003,11 +1062,13 @@ mod tests {
         assert!(VALID_SETTINGS_KEYS.contains(&"sync_method"));
         assert!(VALID_SETTINGS_KEYS.contains(&"sync_strategy"));
 
+        assert!(VALID_SETTINGS_KEYS.contains(&"claude_prune"));
+
         // Verify the total count matches expectations (no accidental duplicates or missing keys)
         assert_eq!(
             VALID_SETTINGS_KEYS.len(),
-            11,
-            "Expected exactly 11 valid settings keys"
+            12,
+            "Expected exactly 12 valid settings keys"
         );
 
         // Verify that invalid keys are not accepted by config_set
@@ -1029,6 +1090,25 @@ mod tests {
         }
         assert!(!VALID_GLOBAL_KEYS.contains(&"sync_method"));
         assert!(!VALID_GLOBAL_KEYS.contains(&"sync_strategy"));
+    }
+
+    #[test]
+    fn test_config_get_returns_boolean_as_string() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = "[workspace]\nname = \"test\"\n";
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+
+        config_set(tmp.path(), "claude_prune", "false").unwrap();
+        assert_eq!(
+            config_get(tmp.path(), "claude_prune").unwrap(),
+            Some("false".to_string())
+        );
+
+        config_set(tmp.path(), "claude_prune", "true").unwrap();
+        assert_eq!(
+            config_get(tmp.path(), "claude_prune").unwrap(),
+            Some("true".to_string())
+        );
     }
 
     #[test]

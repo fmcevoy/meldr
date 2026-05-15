@@ -145,7 +145,13 @@ fn run(cli: Cli) -> error::Result<()> {
                     only,
                     exclude,
                     group,
+                    claude_prune,
                 } => {
+                    let mut remove_config = wt_config.clone();
+                    // CLI --no-claude-prune overrides workspace/global/env setting.
+                    if !claude_prune {
+                        remove_config.claude_prune = false;
+                    }
                     let target = match branch {
                         Some(b) => b,
                         None => {
@@ -171,7 +177,15 @@ fn run(cli: Cli) -> error::Result<()> {
                         exclude,
                         groups: group,
                     };
-                    cli::worktree::remove(&git, &tmux, &root, &target, force, &filter)
+                    cli::worktree::remove(
+                        &git,
+                        &tmux,
+                        &root,
+                        &target,
+                        force,
+                        &filter,
+                        &remove_config,
+                    )
                 }
                 WorktreeAction::Open { branch } => {
                     let (config, global) = build_effective_config(&root, &cli_overrides)?;
