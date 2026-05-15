@@ -74,6 +74,7 @@ Subcommand names can be abbreviated (e.g. `meldr wt a` for `meldr worktree add`)
 | `--group <name>` | same as `--only` | Filter by package group (comma-separated, repeatable) |
 | `--leader <pkg>` | `create`, `worktree add` | Package to `cd` into for the AI agent pane (prompts interactively if omitted) |
 | `--force` | `worktree remove` | Remove even with uncommitted changes |
+| `--no-claude-prune` | `worktree remove` | Skip archiving and purging Claude Code state for the removed worktree |
 | `-i`, `--interactive` | `exec` | Launch an interactive shell so aliases and rc files are loaded |
 | `--global` | `config set/get/unset/list` | Apply to `~/.meldr/config.toml` instead of workspace |
 | `--merge` | `sync` | Use merge instead of rebase |
@@ -147,6 +148,18 @@ Auto-detects default branch from remote, falling back to configured `default_bra
 | `layout` | `default` | `MELDR_LAYOUT` | Tmux layout preset |
 | `window_name` | `{ws}/{branch}:{pkg}` | | Tmux window name template |
 | `leader_package` | (none) | `MELDR_LEADER_PACKAGE` | Package the AI agent `cd`s into on launch |
+| `claude_prune` | `true` | `MELDR_CLAUDE_PRUNE` | Archive and purge Claude Code state on `worktree remove` (claude agent only) |
+
+### Claude state cleanup on worktree remove
+
+When the workspace `agent` is `claude`, `meldr worktree remove` automatically archives each removed worktree's Claude Code project state before deleting the worktree:
+
+1. **Archive** — the `~/.claude/projects/<encoded-path>/` directory and any matching `tasks/` and `file-history/` session dirs are moved to `~/.claude/projects-archive/<timestamp>/`, preserving all transcripts for later recovery.
+2. **Purge** — `claude project purge -y <path>` is run to remove the stale config entry from `~/.claude.json`.
+
+Failures in either step are printed as `Warning:` messages and never block the worktree removal itself.
+
+**Opt out:** pass `--no-claude-prune` to a single remove, set `MELDR_CLAUDE_PRUNE=false` per-invocation, or add `claude_prune = false` to the workspace `[settings]` or global `[defaults]`.
 
 ### Built-in AI agents
 

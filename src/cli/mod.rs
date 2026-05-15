@@ -209,6 +209,9 @@ pub enum WorktreeAction {
         /// Filter by group (comma-separated)
         #[arg(long, value_delimiter = ',')]
         group: Vec<String>,
+        /// Skip archiving and purging Claude Code state for this worktree
+        #[arg(long = "no-claude-prune", action = clap::ArgAction::SetFalse, default_value_t = true)]
+        claude_prune: bool,
     },
     /// Reopen tmux windows for an existing worktree (e.g. after a crash)
     Open {
