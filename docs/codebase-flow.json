@@ -1,0 +1,157 @@
+{
+  "name": "meldr",
+  "description": "Workspace management tool for multi-repo projects with git worktrees and tmux integration. Written in Rust (edition 2024, requires 1.88+).",
+  "generated": "2026-05-16",
+  "layers": [
+    { "id": "entry", "label": "Entry",  "color": "#8b949e", "description": "CLI entry point and argument routing" },
+    { "id": "cli",   "label": "CLI",    "color": "#388bfd", "description": "Clap-based command handlers — one file per command" },
+    { "id": "core",  "label": "Core",   "color": "#3fb950", "description": "Business logic — workspace, config, worktree, state" },
+    { "id": "git",   "label": "Git",    "color": "#d29922", "description": "GitOps trait — RealGit uses subprocess git CLI (no libgit2)" },
+    { "id": "tmux",  "label": "Tmux",   "color": "#bc8cff", "description": "TmuxOps trait — RealTmux with 3 layout presets" }
+  ],
+  "nodes": [
+    { "id": "main",              "label": "main.rs",              "layer": "entry", "file": "src/main.rs",                 "description": "Arg rewriting (swaps reversed action/resource patterns like 'meldr add worktree' to 'meldr worktree add') then routes to CLI handlers. Builds EffectiveConfig before every command." },
+    { "id": "cli.init",          "label": "cli/init.rs",          "layer": "cli",   "file": "src/cli/init.rs",             "description": "Creates meldr.toml and .meldr/state.json in the current directory." },
+    { "id": "cli.create",        "label": "cli/create.rs",        "layer": "cli",   "file": "src/cli/create.rs",           "description": "One-shot workspace creation: init + package add + optional worktree add." },
+    { "id": "cli.package",       "label": "cli/package.rs",       "layer": "cli",   "file": "src/cli/package.rs",          "description": "Add/remove/list packages (bare-cloned git repos)." },
+    { "id": "cli.worktree",      "label": "cli/worktree.rs",      "layer": "cli",   "file": "src/cli/worktree.rs",         "description": "Add/remove/open/list/scan worktrees." },
+    { "id": "cli.sync",          "label": "cli/sync.rs",          "layer": "cli",   "file": "src/cli/sync.rs",             "description": "Sync worktree branches with upstream (fetch + rebase/merge) with snapshot-based undo." },
+    { "id": "cli.status",        "label": "cli/status.rs",        "layer": "cli",   "file": "src/cli/status.rs",           "description": "Renders a color-coded dashboard of git status across all packages and worktrees." },
+    { "id": "cli.exec",          "label": "cli/exec.rs",          "layer": "cli",   "file": "src/cli/exec.rs",             "description": "Runs a command in every package worktree directory for the current branch." },
+    { "id": "cli.pr",            "label": "cli/pr.rs",            "layer": "cli",   "file": "src/cli/pr.rs",               "description": "Creates and shows status of coordinated PRs across packages." },
+    { "id": "cli.config",        "label": "cli/config_cmd.rs",    "layer": "cli",   "file": "src/cli/config_cmd.rs",       "description": "Get/set/unset config values at workspace or global (~/.meldr/config.toml) scope." },
+    { "id": "core.workspace",    "label": "core/workspace.rs",    "layer": "core",  "file": "src/core/workspace.rs",       "description": "Parses meldr.toml manifest. Resolves package list, finds workspace root, detects current worktree from cwd." },
+    { "id": "core.config",       "label": "core/config.rs",       "layer": "core",  "file": "src/core/config.rs",          "description": "5-layer config resolution: CLI flags > env vars > workspace toml > global toml > built-in defaults. Produces EffectiveConfig passed to every handler." },
+    { "id": "core.worktree",     "label": "core/worktree.rs",     "layer": "core",  "file": "src/core/worktree.rs",        "description": "~2100 lines. Main business logic: worktree create/remove, sync with conflict detection, parallel fetch via Rayon, tmux window setup." },
+    { "id": "core.state",        "label": "core/state.rs",        "layer": "core",  "file": "src/core/state.rs",           "description": "Manages .meldr/state.json — tracks active worktrees, sync metadata, timestamps." },
+    { "id": "core.sync_history", "label": "core/sync_history.rs", "layer": "core",  "file": "src/core/sync_history.rs",    "description": "Saves pre-sync snapshots to .meldr/sync-snapshots/ for undo without git reflog complexity." },
+    { "id": "core.filter",       "label": "core/filter.rs",       "layer": "core",  "file": "src/core/filter.rs",          "description": "PackageFilter: applies --only, --exclude, --group flags. Used by most commands." },
+    { "id": "core.claude_prune", "label": "core/claude_prune.rs", "layer": "core",  "file": "src/core/claude_prune.rs",    "description": "Archives and purges Claude Code session state when a worktree is removed." },
+    { "id": "git",               "label": "git/ (GitOps)",         "layer": "git",   "file": "src/git/",                    "description": "GitOps trait abstracts all git operations. RealGit uses subprocess calls to the git CLI. Key ops: bare clone, worktree add/remove, fetch, rebase/merge, conflict detection via git merge-tree --write-tree (Git 2.38+)." },
+    { "id": "tmux",              "label": "tmux/ (TmuxOps)",       "layer": "tmux",  "file": "src/tmux/",                   "description": "TmuxOps trait abstracts tmux. Three presets: default 9-pane (3 claude top + 6 terminals in 2/3+1/3 split), minimal 2-pane, editor-only. Custom layouts via template variables." }
+  ],
+  "edges": [
+    {"from":"main","to":"cli.init"}, {"from":"main","to":"cli.create"}, {"from":"main","to":"cli.package"},
+    {"from":"main","to":"cli.worktree"}, {"from":"main","to":"cli.sync"}, {"from":"main","to":"cli.status"},
+    {"from":"main","to":"cli.exec"}, {"from":"main","to":"cli.pr"}, {"from":"main","to":"cli.config"},
+    {"from":"cli.init","to":"core.workspace"},
+    {"from":"cli.create","to":"core.workspace"}, {"from":"cli.create","to":"core.config"}, {"from":"cli.create","to":"core.worktree"},
+    {"from":"cli.package","to":"core.workspace"}, {"from":"cli.package","to":"git"},
+    {"from":"cli.worktree","to":"core.worktree"}, {"from":"cli.worktree","to":"core.workspace"}, {"from":"cli.worktree","to":"core.config"},
+    {"from":"cli.sync","to":"core.worktree"},
+    {"from":"cli.status","to":"core.worktree"},
+    {"from":"cli.exec","to":"core.workspace"}, {"from":"cli.exec","to":"core.state"},
+    {"from":"cli.pr","to":"git"},
+    {"from":"cli.config","to":"core.config"},
+    {"from":"core.worktree","to":"git"}, {"from":"core.worktree","to":"tmux"},
+    {"from":"core.worktree","to":"core.state"}, {"from":"core.worktree","to":"core.sync_history"},
+    {"from":"core.worktree","to":"core.filter"}, {"from":"core.worktree","to":"core.workspace"},
+    {"from":"core.worktree","to":"core.config"}, {"from":"core.worktree","to":"core.claude_prune"},
+    {"from":"core.state","to":"core.workspace"}
+  ],
+  "flows": [
+    {
+      "id": "worktree-add",
+      "label": "meldr worktree add <branch>",
+      "description": "Create coordinated git worktrees across all packages and open a tmux window with AI agent panes.",
+      "steps": [
+        { "node": "main",              "label": "Arg rewriting + config",         "detail": "Detects reversed patterns. Builds EffectiveConfig via 5-layer resolution." },
+        { "node": "cli.worktree",      "label": "cli/worktree.rs::add()",          "detail": "Resolves PackageFilter (--only/--exclude/--group) and leader package. Delegates to core." },
+        { "node": "core.workspace",    "label": "Manifest::load()",               "detail": "Reads meldr.toml — package list, git URLs, workspace settings." },
+        { "node": "core.state",        "label": "WorkspaceState::load()",          "detail": "Reads .meldr/state.json. Verifies no duplicate branch exists." },
+        { "node": "git",               "label": "fetch() parallel (Rayon)",        "detail": "Fetches origin for each package in parallel using Rayon thread pool." },
+        { "node": "git",               "label": "worktree_add() sequential",       "detail": "git worktree add worktrees/<branch>/<pkg>/ per package, sequentially for state consistency." },
+        { "node": "core.state",        "label": "state.add_worktree()",            "detail": "Records new worktree in state.json: branch name, package paths, creation timestamp." },
+        { "node": "tmux",              "label": "create_window()",                 "detail": "mode=full: 9-pane (3 claude top + 6 terminals 2/3+1/3). minimal: 2-pane. editor-only: 1-pane. Launches agent in leader package." }
+      ]
+    },
+    {
+      "id": "sync",
+      "label": "meldr sync [--all]",
+      "description": "Fetch and rebase/merge branches with upstream. Pre-sync snapshot enables lossless undo.",
+      "steps": [
+        { "node": "main",              "label": "Resolve branch target",           "detail": "Detects branch from cwd, explicit arg, or all branches with --all." },
+        { "node": "cli.sync",          "label": "cli/sync.rs::run()",              "detail": "Passes branch list, strategy, and --merge flag to core." },
+        { "node": "core.sync_history", "label": "save_snapshot()",                "detail": "Saves current HEAD refs to .meldr/sync-snapshots/<branch>-<timestamp>/ before any changes." },
+        { "node": "git",               "label": "fetch() parallel",               "detail": "git fetch origin for all packages in parallel via Rayon." },
+        { "node": "git",               "label": "merge-tree conflict check",       "detail": "strategy=safe: git merge-tree --write-tree detects conflicts before rebasing. Aborts cleanly if conflicts — no state changed." },
+        { "node": "git",               "label": "rebase or merge",                "detail": "git rebase origin/<branch> (or git merge if --merge). Strategy: -X theirs / -X ours for non-safe modes." },
+        { "node": "core.state",        "label": "update_sync_info()",             "detail": "Updates state.json with last-sync timestamp and ahead/behind commit counts." }
+      ]
+    },
+    {
+      "id": "create",
+      "label": "meldr create <name> -r <url>",
+      "description": "One-shot workspace creation: init, clone packages as bare repos, and optionally create a worktree.",
+      "steps": [
+        { "node": "main",           "label": "Route to create",              "detail": "Reads --agent override if provided. Merges into EffectiveConfig." },
+        { "node": "cli.create",     "label": "cli/create.rs::run()",         "detail": "Orchestrates three sub-operations sequentially." },
+        { "node": "cli.init",       "label": "init workspace",               "detail": "Creates <name>/meldr.toml and <name>/.meldr/state.json." },
+        { "node": "git",            "label": "git clone --bare",             "detail": "Bare-clones each -r URL into packages/<pkg>/. Bare clones allow multiple worktrees without branch switching." },
+        { "node": "core.workspace", "label": "register packages",           "detail": "Writes [[package]] entries to meldr.toml for each cloned repo." },
+        { "node": "core.worktree",  "label": "create_worktrees() if -b",    "detail": "Only runs if -b <branch> provided. Full worktree add + tmux setup flow." },
+        { "node": "tmux",           "label": "tmux window (if -b)",          "detail": "Opens workspace in tmux with AI agent panes if branch was specified." }
+      ]
+    },
+    {
+      "id": "worktree-remove",
+      "label": "meldr worktree remove <branch>",
+      "description": "Remove worktrees after checking dirty state, pruning Claude session data, and cleaning up tmux.",
+      "steps": [
+        { "node": "cli.worktree",      "label": "cli/worktree.rs::remove()",  "detail": "Auto-detects branch from cwd if not specified. Reads --force and --no-claude-prune flags." },
+        { "node": "git",               "label": "dirty-state check",           "detail": "git status per package. Aborts if uncommitted changes and not --force." },
+        { "node": "core.claude_prune", "label": "claude_prune() if enabled",  "detail": "Archives and purges Claude Code session state for this worktree. Disable with --no-claude-prune." },
+        { "node": "git",               "label": "git worktree remove",         "detail": "git worktree remove worktrees/<branch>/<pkg>/ per package." },
+        { "node": "core.state",        "label": "state.remove_worktree()",     "detail": "Removes branch entry from .meldr/state.json." },
+        { "node": "tmux",              "label": "kill tmux window",            "detail": "Kills the tmux window for this branch if one exists." }
+      ]
+    },
+    {
+      "id": "status",
+      "label": "meldr status",
+      "description": "Color-coded dashboard of git status across all packages and active worktrees.",
+      "steps": [
+        { "node": "cli.status",     "label": "cli/status.rs::run()",          "detail": "Applies PackageFilter. Delegates staleness check to core." },
+        { "node": "core.workspace", "label": "Manifest::load()",              "detail": "Gets package list from meldr.toml." },
+        { "node": "core.state",     "label": "WorkspaceState::load()",        "detail": "Gets active worktrees and last-sync info." },
+        { "node": "git",            "label": "check_worktree_staleness()",    "detail": "Parallel Rayon fetch + git rev-list to count ahead/behind commits per package x branch." },
+        { "node": "git",            "label": "git status --short",            "detail": "Per-package dirty-file detection." }
+      ]
+    },
+    {
+      "id": "exec",
+      "label": "meldr exec <command>",
+      "description": "Run a shell command in every package worktree directory for the current branch.",
+      "steps": [
+        { "node": "cli.exec",    "label": "cli/exec.rs::run()",           "detail": "Detects current branch from cwd. Applies PackageFilter." },
+        { "node": "core.state",  "label": "find worktree dirs",           "detail": "Looks up worktree paths from state.json for the current branch." },
+        { "node": "core.filter", "label": "apply PackageFilter",          "detail": "Filters by --only, --exclude, --group. Spawns command per package with stdout prefixed by pkg name." }
+      ]
+    }
+  ],
+  "config": {
+    "resolution_layers": [
+      { "priority": 1, "source": "CLI flags",                      "examples": ["--no-agent", "--no-tabs", "--strategy"] },
+      { "priority": 2, "source": "Environment variables",          "examples": ["MELDR_AGENT", "MELDR_MODE", "MELDR_SYNC_METHOD"] },
+      { "priority": 3, "source": "Workspace (meldr.toml)",         "examples": ["agent", "mode", "sync_method", "layout"] },
+      { "priority": 4, "source": "Global (~/.meldr/config.toml)",  "examples": ["agent", "editor", "default_branch"] },
+      { "priority": 5, "source": "Built-in defaults",              "examples": ["agent=claude", "mode=full", "strategy=safe", "method=rebase"] }
+    ],
+    "keys": ["agent", "mode", "sync_method", "sync_strategy", "editor", "default_branch", "remote", "shell", "layout", "window_name"]
+  },
+  "agents": {
+    "builtin": ["claude", "cursor", "gemini", "codex", "opencode", "pi", "kiro", "kiro-tui", "deepseek-tui", "devin"],
+    "custom": "Defined in ~/.meldr/config.toml under [agents.<name>] with a 'command' key"
+  },
+  "directory_layout": {
+    "<workspace>/": {
+      "meldr.toml": "workspace manifest",
+      ".meldr/": {
+        "state.json": "active worktrees + sync metadata",
+        "sync-snapshots/": "pre-sync HEAD snapshots for undo"
+      },
+      "packages/": { "<pkg>/": "bare-cloned repos" },
+      "worktrees/": { "<branch>/": { "<pkg>/": "git worktrees" } }
+    }
+  }
+}

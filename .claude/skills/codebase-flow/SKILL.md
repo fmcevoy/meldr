@@ -1,55 +1,65 @@
 # /codebase-flow
 
-Generate an interactive HTML flow diagram of any codebase — or regenerate the meldr architecture visualization.
+Document and describe the main flows in the meldr codebase. Outputs two files:
+
+- **`docs/codebase-flow.json`** — machine-readable flow data; feed this to Claude for instant codebase context when working on features or bugfixes
+- **`docs/codebase-flow.html`** — interactive node graph for humans; click flows to highlight the path, hover nodes for details
+
+## Inspired by
+
+[@DaveJ on X](https://x.com/DaveJ): “Ask Claude to document and describe the main flows in your app and output in a single page html + json data file. Incredibly useful for humans and the JSON file is very useful for explaining the flow to the LLM when working on new features/bugfixes.”
 
 ## Usage
 
-- `/codebase-flow` — Regenerate `docs/codebase-flow.html` for the current state of the meldr codebase
-- `/codebase-flow <command>` — Generate a focused flow for a specific command (e.g. `/codebase-flow sync`)
-- `/codebase-flow <file>` — Trace data flow starting from a specific source file
+- `/codebase-flow` — regenerate both files from current source
+- `/codebase-flow sync` — update only the sync flow
+- `/codebase-flow <file>` — trace data flow starting from a specific source file
 
-## What it produces
+## How to use the JSON with Claude
 
-A self-contained HTML file (`docs/codebase-flow.html`) with:
+When starting work on a new feature or bugfix, include the JSON in your prompt:
 
-- **Architecture tab** — layer dependencies (CLI → Core → Git → Tmux)
-- **Command flows tab** — flowcharts for each CLI command
-- **Config resolution tab** — 5-layer config priority chain
-- **Worktree lifecycle tab** — state machine + directory layout
+```
+Here is the meldr codebase flow map: <contents of docs/codebase-flow.json>
 
-## Approach (based on CJ Hess / wrode/flow-diagram pattern)
+I want to add X...
+```
 
-Instead of ASCII diagrams, Claude reads the actual source and generates interactive HTML with Mermaid.js flowcharts. The HTML is self-contained and git-trackable — it's the living documentation artifact.
+This gives Claude instant architectural context without reading every source file.
 
 ## Instructions
 
-1. **Read the relevant source files**:
-   - Always read: `src/main.rs`, `src/cli/mod.rs`, `CLAUDE.md`
-   - For command flows: read `src/cli/<command>.rs` + relevant sections of `src/core/worktree.rs`
-   - For deep dives: read the specific core file being traced
+1. **Read** the relevant source files:
+   - Always: `src/main.rs`, `src/cli/mod.rs`, `CLAUDE.md`
+   - Per command: `src/cli/<cmd>.rs` + relevant sections of `src/core/worktree.rs`
 
-2. **Generate the HTML** — follow the structure in `docs/codebase-flow.html`:
-   - Use Mermaid.js from CDN (`https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js`)
-   - Dark theme matching GitHub dark mode palette
-   - Tab navigation (vanilla JS, no framework)
-   - Color-code by layer: CLI=blue `#388bfd`, Core=green `#3fb950`, Git=orange `#d29922`, Tmux=purple `#bc8cff`
+2. **Write `docs/codebase-flow.json`** with this structure:
+   - `layers`: the abstraction layers (entry, cli, core, git, tmux) with colors
+   - `nodes`: every module/file with `id`, `label`, `layer`, `file`, `description`
+   - `edges`: directed connections between nodes
+   - `flows`: named command paths, each with ordered `steps` (`node`, `label`, `detail`)
+   - `config`: config resolution layers and keys
+   - `agents`: built-in agent list
+   - `directory_layout`: workspace directory structure
 
-3. **Save** the result to `docs/codebase-flow.html`
+3. **Write `docs/codebase-flow.html`** — self-contained interactive page:
+   - Embeds the JSON data as a JS constant
+   - SVG node graph: nodes in columns by layer, bezier curve edges
+   - Right panel: clickable flow list + numbered step details
+   - Hover nodes for description tooltip
+   - Click a flow → highlight nodes + edges on that path, dim everything else
+   - Dark theme: `--bg:#0d1117`, `--surface:#161b22`
+   - Layer colors: Entry=`#8b949e`, CLI=`#388bfd`, Core=`#3fb950`, Git=`#d29922`, Tmux=`#bc8cff`
 
-4. **Report** the path and a one-line summary of what changed
+4. **Report** paths to both files.
 
-## Color coding convention
+## Column layout for the SVG graph
 
-| Layer | Color | Mermaid classDef |
-|-------|-------|------------------|
-| CLI (`cli/`) | `#388bfd` blue | `:::cli` |
-| Core (`core/`) | `#3fb950` green | `:::core` |
-| Git (`git/`) | `#d29922` orange | `:::git` |
-| Tmux (`tmux/`) | `#bc8cff` purple | `:::tmux` |
-| Entry points | `#8b949e` gray | `:::entry` |
+| Column | Layer | x position |
+|--------|-------|------------|
+| Entry  | entry | 90px       |
+| CLI    | cli   | 270px      |
+| Core   | core  | 460px      |
+| Git/Tmux | git, tmux | 650px |
 
-## Notes
-
-- `docs/codebase-flow.html` is pre-generated from the current main branch.
-- Re-run `/codebase-flow` after significant architecture changes to keep it current.
-- For focused traces, prefer generating `docs/flow-<topic>.html` rather than overwriting the main one.
+Nodes within each column are evenly distributed vertically over 560px height with 48px top/bottom padding. Node size: 152×26px.
