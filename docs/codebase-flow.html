@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meldr — Codebase Flow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --blue: #388bfd;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  header h1 { font-size: 1.25rem; font-weight: 600; }
+  header .badge {
+    background: var(--blue);
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  header p { color: var(--muted); font-size: 0.875rem; margin-left: auto; }
+  .tabs {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+    background: none;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .content { padding: 32px 24px; max-width: 1200px; margin: 0 auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 8px; }
+  p.desc { color: var(--muted); font-size: 0.875rem; margin-bottom: 24px; }
+  .diagram-grid { display: grid; gap: 24px; }
+  .diagram-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+  }
+  .diagram-card h3 { font-size: 0.9rem; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+  .diagram-card .mermaid { overflow-x: auto; }
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .command-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .command-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text);
+    font-size: 0.875rem;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .command-btn:hover { border-color: var(--blue); }
+  .command-btn.active { border-color: var(--blue); background: rgba(56,139,253,0.1); }
+  .command-btn code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.8rem;
+    color: var(--blue);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .command-btn .cmd-desc { color: var(--muted); font-size: 0.75rem; }
+  .layer-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: monospace;
+    text-transform: uppercase;
+  }
+  .layer-cli { background: rgba(56,139,253,0.15); color: var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>meldr &mdash; Codebase Flow</h1></div>
+  <span class="badge">Interactive</span>
+  <p>Architecture &middot; Command Flows &middot; Config &middot; Lifecycle</p>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="showPanel('overview', this)">Architecture</button>
+  <button class="tab" onclick="showPanel('commands', this)">Command Flows</button>
+  <button class="tab" onclick="showPanel('config', this)">Config Resolution</button>
+  <button class="tab" onclick="showPanel('lifecycle', this)">Worktree Lifecycle</button>
+</div>
+
+<div class="content">
+
+  <!-- ARCHITECTURE -->
+  <div id="overview" class="panel active">
+    <h2>Architecture Overview</h2>
+    <p class="desc">Four abstraction layers, each behind a trait for testability. Commands enter via <code>main.rs</code>, dispatched through the CLI layer, resolved by core logic that delegates I/O to git and tmux abstractions.</p>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#388bfd"></div> CLI Layer</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div> Core Layer</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div> Git Layer</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div> Tmux Layer</div>
+    </div>
+    <div class="diagram-grid">
+      <div class="diagram-card">
+        <h3>Layer Dependencies</h3>
+        <div class="mermaid">
+graph TD
+    MAIN["main.rs\nArg rewriting + routing"]:::entry
+    CLI_MOD["cli/mod.rs\nClap commands + dispatch"]:::cli
+    INIT["cli/init.rs"]:::cli
+    CREATE["cli/create.rs"]:::cli
+    WT["cli/worktree.rs"]:::cli
+    SYNC["cli/sync.rs"]:::cli
+    STATUS["cli/status.rs"]:::cli
+    EXEC["cli/exec.rs"]:::cli
+    PKG["cli/package.rs"]:::cli
+    PR["cli/pr.rs"]:::cli
+    CFG["cli/config_cmd.rs"]:::cli
+    WS["core/workspace.rs\nManifest + package resolution"]:::core
+    CONF["core/config.rs\n5-layer config resolution"]:::core
+    COREWT["core/worktree.rs\n~2100 lines — main logic"]:::core
+    STATE["core/state.rs\n.meldr/state.json"]:::core
+    SYNCH["core/sync_history.rs\nundo snapshots"]:::core
+    FILTER["core/filter.rs"]:::core
+    GIT["git/GitOps trait\nRealGit via subprocess git"]:::git
+    TMUX["tmux/TmuxOps trait\nRealTmux — 3 layout presets"]:::tmux
+    MAIN --> CLI_MOD
+    CLI_MOD --> INIT & CREATE & WT & SYNC & STATUS & EXEC & PKG & PR & CFG
+    INIT --> WS
+    CREATE --> WS & CONF & COREWT
+    WT --> COREWT & WS & CONF
+    SYNC --> COREWT
+    STATUS --> COREWT
+    EXEC --> WS & STATE
+    PKG --> WS
+    PR --> GIT
+    CFG --> CONF
+    COREWT --> GIT & TMUX & STATE & SYNCH & FILTER & WS & CONF
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+    classDef tmux fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+        </div>
+      </div>
+      <div class="diagram-card">
+        <h3>Module Grouping</h3>
+        <div class="mermaid">
+graph LR
+    subgraph CLI ["CLI Layer — cli/"]
+        c1["init · create · package"]
+        c2["worktree · sync · status"]
+        c3["exec · pr · config · prompt_check"]
+    end
+    subgraph CORE ["Core Layer — core/"]
+        co1["workspace.rs — manifest"]
+        co2["worktree.rs — main logic"]
+        co3["config.rs — resolution"]
+        co4["state.rs · sync_history.rs"]
+        co5["filter.rs · hooks.rs · package.rs"]
+    end
+    subgraph GIT ["git/"]
+        g1["GitOps trait"]
+        g2["RealGit — subprocess git"]
+    end
+    subgraph TMUX ["tmux/"]
+        t1["TmuxOps trait"]
+        t2["RealTmux"]
+        t3["default(9-pane) · minimal · editor-only"]
+    end
+    CLI --> CORE
+    CORE --> GIT & TMUX
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMMAND FLOWS -->
+  <div id="commands" class="panel">
+    <h2>Command Flows</h2>
+    <p class="desc">Select a command to trace its path through the codebase layers.</p>
+    <div class="command-grid">
+      <button class="command-btn active" onclick="showCommand('worktree-add', this)">
+        <code>meldr worktree add &lt;branch&gt;</code>
+        <span class="cmd-desc">Create worktrees across all packages + tmux setup</span>
+      </button>
+      <button class="command-btn" onclick="showCommand('create', this)">
+        <code>meldr create &lt;name&gt; -r &lt;url&gt;</code>
+        <span class="cmd-desc">One-shot: init + package add + worktree</span>
+      </button>
+      <button class="command-btn" onclick="showCommand('sync', this)">
+        <code>meldr sync [--all]</code>
+        <span class="cmd-desc">Fetch + rebase/merge with snapshot undo</span>
+      </button>
+      <button class="command-btn" onclick="showCommand('worktree-remove', this)">
+        <code>meldr worktree remove &lt;branch&gt;</code>
+        <span class="cmd-desc">Dirty-check, Claude prune, remove worktrees</span>
+      </button>
+      <button class="command-btn" onclick="showCommand('status', this)">
+        <code>meldr status</code>
+        <span class="cmd-desc">Dashboard: git status across all packages</span>
+      </button>
+      <button class="command-btn" onclick="showCommand('exec', this)">
+        <code>meldr exec &lt;cmd&gt;</code>
+        <span class="cmd-desc">Run a command in every package worktree dir</span>
+      </button>
+    </div>
+
+    <div id="cmd-worktree-add" class="diagram-card command-flow">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr worktree add &lt;branch&gt;</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr worktree add &lt;branch&gt;"]:::entry
+    A --> B["main.rs::run()\nbuild_effective_config()"]:::entry
+    B --> C["cli/worktree.rs::add()\nresolve filter + leader"]:::cli
+    C --> D["core/worktree.rs::create_worktrees()"]:::core
+    D --> E["Manifest::load() — read meldr.toml"]:::core
+    D --> F["WorkspaceState::load() — .meldr/state.json"]:::core
+    E & F --> G["For each package (parallel Rayon):\ngit fetch origin"]:::git
+    G --> H["For each package (sequential):\ngit worktree add worktrees/branch/pkg/"]:::git
+    H --> I["state.add_worktree() → state.json"]:::core
+    I --> J{"mode == full?"}:::core
+    J -->|yes| K["tmux: new window\n3 claude panes + 6 terminals (2/3 / 1/3 split)\neditor in top-left terminal"]:::tmux
+    J -->|minimal| L["tmux: 2-pane layout"]:::tmux
+    J -->|editor-only| M["tmux: single editor pane"]:::tmux
+    K & L & M --> N["Print success summary"]:::entry
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+    classDef tmux fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+      </div>
+    </div>
+
+    <div id="cmd-create" class="diagram-card command-flow" style="display:none">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr create</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr create &lt;name&gt; -r &lt;url1&gt; -r &lt;url2&gt; -b &lt;branch&gt;"]:::entry
+    A --> B["cli/create.rs::run()"]:::cli
+    B --> C["cli/init.rs::run()\ncreate meldr.toml + .meldr/state.json"]:::cli
+    C --> D["cli/package::add() for each URL\ngit clone --bare → packages/pkg/"]:::git
+    D --> E{"branch provided?"}
+    E -->|yes| F["cli/worktree::add(branch)\n→ full worktree + tmux flow"]:::cli
+    E -->|no| G["Done — workspace ready\npackages cloned, no worktrees yet"]:::entry
+    F --> H["[see worktree add flow]"]:::core
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+      </div>
+    </div>
+
+    <div id="cmd-sync" class="diagram-card command-flow" style="display:none">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr sync</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr sync [branch] [--all] [--strategy safe]"]:::entry
+    A --> B["cli/sync.rs::run()"]:::cli
+    B --> C{"--all?"}
+    C -->|yes| D["collect all branches from state.json"]:::core
+    C -->|no| E["detect branch from cwd or explicit arg"]:::core
+    D & E --> F["For each branch x package:"]
+    F --> G["core/sync_history.rs::save_snapshot()\n→ .meldr/sync-snapshots/branch-timestamp/"]:::core
+    G --> H["git fetch origin (parallel, Rayon)"]:::git
+    H --> I{"strategy?"}
+    I -->|safe| J["git merge-tree --write-tree\nconflict detection (Git 2.38+)"]:::git
+    I -->|theirs/ours| K["git rebase -X theirs/ours"]:::git
+    I -->|manual| L["git rebase → user resolves"]:::git
+    J -->|clean| M["git rebase (or --merge)"]:::git
+    J -->|conflicts| N["Abort — list conflict paths\nno state changed"]:::entry
+    M & K --> O["state.update_sync_info()"]:::core
+    O --> P["Print sync summary"]:::entry
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+      </div>
+    </div>
+
+    <div id="cmd-worktree-remove" class="diagram-card command-flow" style="display:none">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr worktree remove</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr worktree remove [branch]"]:::entry
+    A --> B["cli/worktree.rs::remove()\nauto-detect branch from cwd if omitted"]:::cli
+    B --> C["For each package (filtered):"]
+    C --> D["git status check — uncommitted changes?"]:::git
+    D -->|dirty + not --force| E["Abort with dirty-state error"]:::entry
+    D -->|clean or --force| F{"claude_prune enabled?"}
+    F -->|yes| G["core/claude_prune.rs\narchive + purge Claude Code state"]:::core
+    F -->|no| H
+    G --> H["git worktree remove worktrees/branch/pkg/"]:::git
+    H --> I["state.remove_worktree()"]:::core
+    I --> J{"tmux window open?"}
+    J -->|yes| K["tmux kill-window"]:::tmux
+    J -->|no| L["Print removal summary"]:::entry
+    K --> L
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+    classDef tmux fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+      </div>
+    </div>
+
+    <div id="cmd-status" class="diagram-card command-flow" style="display:none">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr status</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr status [--only pkg1,pkg2]"]:::entry
+    A --> B["cli/status.rs::run()"]:::cli
+    B --> C["workspace::find_workspace_root()"]:::core
+    C --> D["WorkspaceState::load()"]:::core
+    D --> E["Manifest::load() — package list"]:::core
+    E --> F["core/worktree::check_worktree_staleness()\nparallel git fetch (Rayon)"]:::git
+    F --> G["For each package x worktree:"]
+    G --> H["git status --short\ngit rev-list ahead/behind counts"]:::git
+    H --> I["Render color-coded dashboard to terminal"]:::entry
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+      </div>
+    </div>
+
+    <div id="cmd-exec" class="diagram-card command-flow" style="display:none">
+      <h3><span class="layer-badge layer-cli">CLI</span> meldr exec</h3>
+      <div class="mermaid">
+flowchart TD
+    A["meldr exec [--only pkg] &lt;command...&gt;"]:::entry
+    A --> B["cli/exec.rs::run()"]:::cli
+    B --> C["detect current worktree from cwd"]:::core
+    C --> D["WorkspaceState::load()\nfind worktree dirs for branch"]:::core
+    D --> E["Apply PackageFilter (--only/--exclude/--group)"]:::core
+    E --> F["For each package worktree dir:"]
+    F --> G{"--interactive?"}
+    G -->|yes| H["spawn shell -i -c cmd\nloads rc files + aliases"]:::entry
+    G -->|no| I["spawn command directly\nin worktrees/branch/pkg/ dir"]:::entry
+    H & I --> J["Stream stdout/stderr\nprefix each line with pkg name"]:::entry
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef cli fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+      </div>
+    </div>
+  </div>
+
+  <!-- CONFIG RESOLUTION -->
+  <div id="config" class="panel">
+    <h2>Config Resolution</h2>
+    <p class="desc">Settings are resolved across 5 layers at startup by <code>core/config.rs::resolve_config()</code>. Higher layers shadow lower ones. The result is an <code>EffectiveConfig</code> passed to every handler.</p>
+    <div class="diagram-grid">
+      <div class="diagram-card">
+        <h3>Priority Chain (highest &#8594; lowest)</h3>
+        <div class="mermaid">
+flowchart LR
+    A["1 &middot; CLI Flags\n--no-agent\n--no-tabs\n--strategy"]:::p1
+    B["2 &middot; Env Vars\nMELDR_AGENT\nMELDR_MODE\nMELDR_SYNC_METHOD\netc."]:::p2
+    C["3 &middot; Workspace\nmeldr.toml\n[settings]"]:::p3
+    D["4 &middot; Global\n~/.meldr/config.toml"]:::p4
+    E["5 &middot; Built-in Defaults\nagent=claude\nmode=full\nstrategy=safe\nmethod=rebase"]:::p5
+    A -->|shadows| B -->|shadows| C -->|shadows| D -->|shadows| E
+    classDef p1 fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+    classDef p2 fill:#1a2d00,stroke:#3fb950,color:#7ee787
+    classDef p3 fill:#2d1d00,stroke:#d29922,color:#e3b341
+    classDef p4 fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+    classDef p5 fill:#1c2333,stroke:#8b949e,color:#8b949e
+        </div>
+      </div>
+      <div class="diagram-card">
+        <h3>Agent Resolution</h3>
+        <div class="mermaid">
+flowchart TD
+    A["agent name (e.g. 'claude')"]
+    A --> B{"In global\nagents table?"}
+    B -->|yes| C["Use custom command\nfrom ~/.meldr/config.toml\n[agents.claude]\ncommand = '...'"]:::p4
+    B -->|no| D["default_agent_command(name)\nBuilt-in map for 10 agents"]:::p5
+    C & D --> E["agent_command in EffectiveConfig"]
+    E --> F["Passed to tmux pane\nwhen creating worktree"]:::tmux
+    classDef p4 fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+    classDef p5 fill:#1c2333,stroke:#8b949e,color:#8b949e
+    classDef tmux fill:#1e0d3d,stroke:#bc8cff,color:#d2a8ff
+        </div>
+      </div>
+      <div class="diagram-card">
+        <h3>Built-in Agents (10)</h3>
+        <div class="mermaid">
+graph LR
+    subgraph AGENTS ["10 built-in agents"]
+        claude["claude"]
+        cursor["cursor"]
+        gemini["gemini"]
+        codex["codex"]
+        opencode["opencode"]
+        pi["pi"]
+        kiro["kiro"]
+        kirotui["kiro-tui"]
+        dstui["deepseek-tui"]
+        devin["devin"]
+    end
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WORKTREE LIFECYCLE -->
+  <div id="lifecycle" class="panel">
+    <h2>Worktree Lifecycle</h2>
+    <p class="desc">A worktree is a coordinated set of git worktrees across all packages sharing a branch name, tracked in <code>.meldr/state.json</code>.</p>
+    <div class="diagram-grid">
+      <div class="diagram-card">
+        <h3>Full Lifecycle</h3>
+        <div class="mermaid">
+stateDiagram-v2
+    [*] --> Empty : meldr init
+    Empty --> HasPackages : meldr package add url
+git clone --bare to packages/pkg/
+    HasPackages --> WorktreeActive : meldr worktree add branch
+git worktree add + tmux window
+    WorktreeActive --> WorktreeActive : meldr sync
+fetch + rebase, snapshot saved
+    WorktreeActive --> WorktreeActive : meldr exec cmd
+run in each pkg worktree dir
+    WorktreeActive --> HasPackages : meldr worktree remove branch
+clean check + prune + kill tmux
+    HasPackages --> HasPackages : meldr package remove pkg
+        </div>
+      </div>
+      <div class="diagram-card">
+        <h3>Directory Layout</h3>
+        <div class="mermaid">
+graph TD
+    ROOT["workspace/"]:::root
+    TOML["meldr.toml"]:::file
+    DOTMELDR[".meldr/"]:::dir
+    STATE["state.json"]:::file
+    SNAPS["sync-snapshots/"]:::dir
+    PACKAGES["packages/"]:::dir
+    PKG1["pkg1/ (bare clone)"]:::git
+    PKG2["pkg2/ (bare clone)"]:::git
+    WORKTREES["worktrees/"]:::dir
+    BRANCH["feature-branch/"]:::dir
+    WT1["pkg1/ (worktree)"]:::wt
+    WT2["pkg2/ (worktree)"]:::wt
+    ROOT --> TOML & DOTMELDR & PACKAGES & WORKTREES
+    DOTMELDR --> STATE & SNAPS
+    PACKAGES --> PKG1 & PKG2
+    WORKTREES --> BRANCH
+    BRANCH --> WT1 & WT2
+    classDef root fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef dir fill:#1a1a00,stroke:#d29922,color:#e3b341
+    classDef file fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+    classDef wt fill:#0d2149,stroke:#388bfd,color:#7cb8ff
+        </div>
+      </div>
+      <div class="diagram-card">
+        <h3>Sync Safety: Conflict Detection Before Rebase</h3>
+        <div class="mermaid">
+flowchart TD
+    A["meldr sync --strategy safe"]
+    A --> B["Save snapshot\n.meldr/sync-snapshots/branch-timestamp/"]:::core
+    B --> C["git fetch origin (parallel)"]:::git
+    C --> D["git merge-tree --write-tree\nbase=common-ancestor\nbranch=HEAD theirs=origin/branch"]:::git
+    D --> E{"Exit code?"}
+    E -->|0 clean| F["Proceed: git rebase origin/branch"]:::git
+    E -->|1 conflicts| G["Abort — list conflict paths\nno state changed\nno undo needed"]:::entry
+    F --> H{"Rebase result?"}
+    H -->|success| I["Update state.json sync_info"]:::core
+    H -->|unexpected conflict| J["meldr sync --undo\nrestore from snapshot"]:::core
+    classDef entry fill:#1c2333,stroke:#8b949e,color:#e6edf3
+    classDef core fill:#0d2010,stroke:#3fb950,color:#7ee787
+    classDef git fill:#2d1d00,stroke:#d29922,color:#e3b341
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    darkMode: true,
+    background: '#0d1117',
+    mainBkg: '#161b22',
+    nodeBorder: '#30363d',
+    titleColor: '#e6edf3',
+    edgeLabelBackground: '#161b22',
+    lineColor: '#8b949e',
+  },
+  flowchart: { curve: 'basis', padding: 20 },
+});
+
+function showPanel(id, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}
+
+function showCommand(id, btn) {
+  document.querySelectorAll('.command-flow').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.command-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('cmd-' + id).style.display = 'block';
+  btn.classList.add('active');
+}
+</script>
+</body>
+</html>
