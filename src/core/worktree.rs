@@ -48,6 +48,9 @@ where
         return Ok(Some(selected_packages[0].clone()));
     }
 
+    let mut sorted: Vec<String> = selected_packages.to_vec();
+    sorted.sort();
+
     let chosen = match cli_leader {
         Some(v) => v.to_string(),
         None => match config_leader {
@@ -56,10 +59,10 @@ where
                 if !is_tty {
                     return Err(MeldrError::Config(format!(
                         "No leader package specified and no TTY to prompt. Pass --leader <pkg>, set MELDR_LEADER_PACKAGE, or add leader_package to meldr.toml. Available: {}",
-                        selected_packages.join(", ")
+                        sorted.join(", ")
                     )));
                 }
-                picker(selected_packages)?
+                picker(&sorted)?
             }
         },
     };
@@ -68,16 +71,16 @@ where
         return Err(MeldrError::Config(format!(
             "leader '{}' not in selection; available: {}",
             chosen,
-            selected_packages.join(", ")
+            sorted.join(", ")
         )));
     }
     Ok(Some(chosen))
 }
 
 fn interactive_leader_picker(packages: &[String]) -> Result<String> {
-    use dialoguer::{Select, theme::ColorfulTheme};
-    let idx = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select leader package (where the AI agent will run)")
+    use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+    let idx = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select leader package (type to filter)")
         .items(packages)
         .default(0)
         .interact()
@@ -2310,6 +2313,103 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, Some("a".to_string()));
+    }
+
+    // --- resolve_leader sort / fuzzy-picker ordering tests ---
+
+    #[test]
+    fn test_resolve_leader_picker_receives_sorted_list() {
+        let selected = pkgs(&["zeta", "alpha", "mango"]);
+        let picker = |pkgs: &[String]| -> Result<String> {
+            assert_eq!(pkgs, &["alpha", "mango", "zeta"]);
+            Ok(pkgs[0].clone())
+        };
+        let result = resolve_leader(None, None, &selected, true, false, true, picker).unwrap();
+        assert_eq!(result, Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_sorted_input_noop() {
+        let selected = pkgs(&["a", "b", "c"]);
+        let picker = |pkgs: &[String]| -> Result<String> {
+            assert_eq!(pkgs, &["a", "b", "c"]);
+            Ok(pkgs[0].clone())
+        };
+        let result = resolve_leader(None, None, &selected, true, false, true, picker).unwrap();
+        assert_eq!(result, Some("a".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_invalid_cli_error_lists_sorted_available() {
+        let selected = pkgs(&["zeta", "alpha", "mango"]);
+        let err = resolve_leader(
+            Some("ghost"),
+            None,
+            &selected,
+            true,
+            false,
+            true,
+            panic_picker,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("available: alpha, mango, zeta"),
+            "error should list packages alphabetically, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_leader_non_tty_error_lists_sorted_available() {
+        let selected = pkgs(&["zeta", "alpha", "mango"]);
+        let err = resolve_leader(None, None, &selected, true, false, false, panic_picker)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Available: alpha, mango, zeta"),
+            "non-TTY error should list packages alphabetically, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_leader_sort_is_ascii_case_sensitive() {
+        // Uppercase letters sort before lowercase under ASCII byte order.
+        // This test documents the chosen collation so any future change is intentional.
+        let selected = pkgs(&["banana", "Apple", "apple", "Banana"]);
+        let picker = |pkgs: &[String]| -> Result<String> {
+            assert_eq!(pkgs, &["Apple", "Banana", "apple", "banana"]);
+            Ok(pkgs[0].clone())
+        };
+        resolve_leader(None, None, &selected, true, false, true, picker).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_leader_validation_accepts_name_regardless_of_sort() {
+        // "zeta" sorts last but should still be a valid CLI choice.
+        let selected = pkgs(&["zeta", "alpha"]);
+        let result = resolve_leader(
+            Some("zeta"),
+            None,
+            &selected,
+            true,
+            false,
+            false,
+            panic_picker,
+        )
+        .unwrap();
+        assert_eq!(result, Some("zeta".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_leader_does_not_mutate_caller_slice() {
+        let selected = pkgs(&["zeta", "alpha", "mango"]);
+        let original = selected.clone();
+        let picker = |pkgs: &[String]| -> Result<String> { Ok(pkgs[0].clone()) };
+        resolve_leader(None, None, &selected, true, false, true, picker).unwrap();
+        assert_eq!(
+            selected, original,
+            "resolve_leader must not mutate the caller's slice"
+        );
     }
 
     // --- scan_and_import tests ---
