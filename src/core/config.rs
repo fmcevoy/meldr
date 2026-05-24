@@ -216,6 +216,9 @@ pub fn ensure_global_config() -> Result<()> {
             "#\n",
             "# [agents.devin]\n",
             "# command = \"devin --permission-mode bypass\"\n",
+            "#\n",
+            "# [agents.antigravity]\n",
+            "# command = \"agy\"\n",
         );
         std::fs::write(&path, default_content)?;
     }
@@ -413,6 +416,11 @@ pub const BUILTIN_AGENTS: &[AgentDef] = &[
         name: "devin",
         command: "devin --permission-mode bypass",
         description: "Devin for Terminal",
+    },
+    AgentDef {
+        name: "antigravity",
+        command: "agy",
+        description: "Google Antigravity CLI",
     },
 ];
 
@@ -697,7 +705,7 @@ mod tests {
     #[test]
     fn test_builtin_agent_names() {
         let names: Vec<&str> = builtin_agent_names().collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"cursor"));
         assert!(names.contains(&"gemini"));
@@ -708,6 +716,7 @@ mod tests {
         assert!(names.contains(&"kiro-tui"));
         assert!(names.contains(&"deepseek-tui"));
         assert!(names.contains(&"devin"));
+        assert!(names.contains(&"antigravity"));
     }
 
     #[test]
@@ -785,6 +794,29 @@ mod tests {
         let config = resolve_config(&global, &workspace, &cli, &env);
         assert_eq!(config.agent, "devin");
         assert_eq!(config.agent_command, "devin --permission-mode bypass");
+    }
+
+    #[test]
+    fn test_antigravity_builtin_agent() {
+        let agent = builtin_agent("antigravity").expect("antigravity should be a built-in");
+        assert_eq!(agent.name, "antigravity");
+        assert_eq!(agent.command, "agy");
+        assert_eq!(agent.description, "Google Antigravity CLI");
+    }
+
+    #[test]
+    fn test_default_antigravity_command_resolved() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            agent: Some("antigravity".into()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "antigravity");
+        assert_eq!(config.agent_command, "agy");
     }
 
     #[test]
