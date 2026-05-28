@@ -3134,12 +3134,11 @@ fn test_worktree_layout_top_bottom_geometry() {
         .assert()
         .success();
 
-    // Read the window id meldr recorded in state.json — meldr issues `new-window`
-    // without an explicit session target, so the window may land in whichever
-    // session tmux treats as "current" for the supplied TMUX env var (not
-    // necessarily our test session). Querying by window_id avoids that ambiguity.
+    // Read the window name meldr recorded in state.json, then resolve it to a
+    // numeric window_id (@N) via tmux list-windows. Querying by @N avoids
+    // ambiguity when the window may land in any session.
     let state_content = fs::read_to_string(tmp.path().join(".meldr/state.json")).unwrap();
-    let window_id = state_content
+    let window_name = state_content
         .lines()
         .find_map(|l| {
             l.trim().strip_prefix("\"tmux_window\":").map(|rest| {
@@ -3149,6 +3148,19 @@ fn test_worktree_layout_top_bottom_geometry() {
             })
         })
         .unwrap_or_else(|| panic!("tmux_window not found in: {state_content}"));
+
+    // Resolve the stored window name to an @N id for use as a tmux target.
+    let windows_out = process::Command::new("tmux")
+        .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
+        .output()
+        .expect("tmux list-windows");
+    let window_id = String::from_utf8_lossy(&windows_out.stdout)
+        .lines()
+        .find_map(|line| {
+            let (id, name) = line.split_once(' ')?;
+            if name == window_name { Some(id.to_string()) } else { None }
+        })
+        .unwrap_or_else(|| panic!("window '{window_name}' not found; windows: {}", String::from_utf8_lossy(&windows_out.stdout)));
 
     let panes_out = process::Command::new("tmux")
         .args([
