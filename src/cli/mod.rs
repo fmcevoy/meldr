@@ -1,5 +1,6 @@
 pub mod config_cmd;
 pub mod create;
+pub mod doctor;
 pub mod exec;
 pub mod init;
 pub mod package;
@@ -152,6 +153,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: PrAction,
     },
+
+    /// Diagnose and repair drift between meldr state, Claude Code daemon state,
+    /// on-disk worktrees, and tmux windows.
+    Doctor {
+        #[command(subcommand)]
+        action: Option<DoctorAction>,
+        /// Apply changes instead of reporting them (default is dry-run).
+        #[arg(long, global = true)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -200,6 +211,10 @@ pub enum WorktreeAction {
         /// Force removal even with uncommitted changes
         #[arg(long)]
         force: bool,
+        /// Identify the worktree by its on-disk directory name when auto-detect
+        /// fails (e.g. the dir was renamed after creation).
+        #[arg(long, value_name = "DIRNAME")]
+        dir: Option<String>,
         /// Only include these packages (comma-separated)
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
@@ -304,4 +319,15 @@ pub enum PrAction {
         #[arg(long, value_delimiter = ',')]
         group: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+#[command(infer_subcommands = true)]
+pub enum DoctorAction {
+    /// Reconcile ~/.claude/jobs and ~/.claude/projects against live worktrees
+    Claude,
+    /// Reconcile on-disk worktree directories against .meldr/state.json
+    Worktrees,
+    /// Find and kill tmux windows whose worktree no longer exists
+    Tmux,
 }

@@ -1,5 +1,6 @@
 pub mod claude_prune;
 pub mod config;
+pub mod doctor;
 pub mod filter;
 pub mod hooks;
 pub mod package;

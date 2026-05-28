@@ -3944,12 +3944,6 @@ fn test_claude_prune_archives_project_dir_on_worktree_remove() {
         find_archived_entry(&archive_projects, "file-history", uuid),
         "archived file-history dir should exist"
     );
-
-    // Shim was invoked (claude project purge).
-    assert!(
-        home.path().join("claude-calls.log").exists(),
-        "claude shim should have been called"
-    );
 }
 
 #[test]
@@ -4111,12 +4105,11 @@ fn test_claude_prune_skipped_via_env_var() {
 }
 
 #[test]
-fn test_claude_prune_no_claude_state_still_calls_purge() {
+fn test_claude_prune_no_state_remove_succeeds() {
     let tmp = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     let repos_dir = TempDir::new().unwrap();
     let repo_url = create_bare_repo(repos_dir.path(), "frontend");
-    let shim = write_claude_shim(home.path(), 0);
 
     init_workspace(tmp.path());
     meldr()
@@ -4131,13 +4124,13 @@ fn test_claude_prune_no_claude_state_still_calls_purge() {
         .success();
 
     // No Claude project dir — nothing to archive.
-    meldr_with_claude_env(home.path(), &shim)
+    meldr_with_home(home.path())
         .args(["--no-tabs", "worktree", "remove", "prune-no-state"])
         .current_dir(tmp.path())
         .assert()
         .success();
 
-    // Archive dir must NOT be created.
+    // Archive dir must NOT be created when there is no claude state.
     assert!(
         !home
             .path()
@@ -4145,12 +4138,6 @@ fn test_claude_prune_no_claude_state_still_calls_purge() {
             .join("projects-archive")
             .exists(),
         "archive dir should not be created when there is no claude state"
-    );
-
-    // But purge shim should still have been called.
-    assert!(
-        home.path().join("claude-calls.log").exists(),
-        "shim should be called even when no project dir exists"
     );
 }
 
@@ -4178,8 +4165,7 @@ fn test_claude_prune_purge_failure_does_not_block_remove() {
         .args(["--no-tabs", "worktree", "remove", "prune-fail"])
         .current_dir(tmp.path())
         .assert()
-        .success() // remove must succeed despite purge failure
-        .stderr(predicate::str::contains("Warning:"));
+        .success(); // remove must succeed
 
     meldr()
         .args(["worktree", "list"])
@@ -4209,12 +4195,10 @@ fn test_claude_prune_missing_binary_does_not_block_remove() {
         .success();
 
     meldr_with_home(home.path())
-        .env("MELDR_CLAUDE_BIN", "/no/such/claude")
         .args(["--no-tabs", "worktree", "remove", "prune-nobin"])
         .current_dir(tmp.path())
         .assert()
-        .success() // remove must succeed despite missing binary
-        .stderr(predicate::str::contains("Warning:"));
+        .success(); // remove must succeed
 
     meldr()
         .args(["worktree", "list"])

@@ -148,7 +148,8 @@ fn setup_tmux_windows(
             pane_mappings.insert(i.to_string(), pkg_name.clone());
         }
 
-        tmux_windows.push(window_id);
+        // Store the window name (not the ID) so kills survive session restarts.
+        tmux_windows.push(window_name);
     } else {
         let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
         let wt_dir = workspace::worktree_branch_dir(workspace_root, branch);
@@ -181,7 +182,8 @@ fn setup_tmux_windows(
             }
         }
 
-        tmux_windows.push(dev.window_id);
+        // Store the window name (not the ID) so kills survive session restarts.
+        tmux_windows.push(window_name);
     }
 
     let tmux_window = match tmux_windows.len() {
@@ -371,18 +373,17 @@ pub fn remove_worktree(
         }
     }
 
-    // Archive and purge Claude Code project state for this worktree when the
-    // workspace agent is claude and pruning is enabled. Failures are warnings only.
+    // Archive Claude Code project state for this worktree when the workspace agent
+    // is claude and pruning is enabled. Failures are warnings only.
     if config.agent == "claude"
         && config.claude_prune
         && !partial
         && let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
     {
-        let claude_bin = std::env::var_os("MELDR_CLAUDE_BIN")
-            .unwrap_or_else(|| std::ffi::OsString::from("claude"));
+        let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
         let ts = crate::core::claude_prune::format_timestamp();
         let report =
-            crate::core::claude_prune::prune_for_removed_paths(&home, &claude_bin, &wt_paths, &ts);
+            crate::core::claude_prune::prune_for_worktree(&home, &branch_dir, &wt_paths, &ts);
         if !report.archived.is_empty() {
             println!(
                 "Archived Claude state for {} path(s) → ~/.claude/projects-archive/{ts}",
@@ -401,10 +402,19 @@ pub fn remove_worktree(
         return Ok(());
     }
 
-    // Capture tmux window ID before modifying state
-    let tmux_window_id = state
+    // Capture tmux window state before modifying state.
+    let stored_window = state
         .get_worktree(branch)
         .and_then(|wt| wt.tmux_window.clone());
+
+    // Derive the expected window name regardless of what's stored — this handles
+    // the case where the stored value is stale, missing, or a legacy @N ID.
+    let expected_window_name = expand_template(
+        &config.window_name_template,
+        &manifest.workspace.name,
+        branch,
+        "",
+    );
 
     let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
     if branch_dir.exists() {
@@ -414,12 +424,52 @@ pub fn remove_worktree(
     state.remove_worktree(branch);
     state.save(workspace_root)?;
 
+    // Prune stale git worktree admin entries from each package's bare repo.
+    for pkg in &manifest.packages {
+        let repo_path = workspace::package_path(workspace_root, &pkg.name);
+        if let Err(e) = git.worktree_prune(&repo_path) {
+            eprintln!("Warning: git worktree prune failed for '{}': {e}", pkg.name);
+        }
+    }
+
     // Kill tmux window LAST — after all worktrees are removed and state is saved.
-    // This way even if killing the window terminates this process, cleanup is complete.
-    if let Some(ref window_id) = tmux_window_id
-        && let Err(e) = tmux.kill_window(window_id)
+    // Strategy: if the stored value looks like a legacy numeric ID (@N or comma-joined
+    // @N,@M), try kill_window per ID and ignore "can't find window" errors. Otherwise
+    // treat the stored value as a name and resolve to an ID before killing.
+    // Additionally, always try to kill by the derived expected name to cover cases
+    // where the stored value is missing or stale.
+    if let Some(ref stored) = stored_window {
+        if stored.contains('@') {
+            // Legacy @N IDs or comma-joined list.
+            for id in stored.split(',') {
+                let id = id.trim();
+                if let Err(e) = tmux.kill_window(id) {
+                    let msg = e.to_string();
+                    if !msg.contains("can't find window") {
+                        eprintln!("Warning: Could not kill tmux window '{id}': {e}");
+                    }
+                }
+            }
+        } else {
+            // Stored value is a window name.
+            if let Some(id) = tmux.find_window_id_by_name(stored)
+                && let Err(e) = tmux.kill_window(&id)
+            {
+                eprintln!("Warning: Could not kill tmux window '{stored}': {e}");
+            }
+        }
+    }
+
+    // Also kill by the derived expected name if it differs from what was stored.
+    let stored_name_matches = stored_window
+        .as_deref()
+        .map(|s| s == expected_window_name)
+        .unwrap_or(false);
+    if !stored_name_matches
+        && let Some(id) = tmux.find_window_id_by_name(&expected_window_name)
+        && let Err(e) = tmux.kill_window(&id)
     {
-        eprintln!("Warning: Could not kill tmux window '{window_id}': {e}");
+        eprintln!("Warning: Could not kill tmux window '{expected_window_name}': {e}");
     }
 
     Ok(())
@@ -765,6 +815,9 @@ mod tests {
         fn select_window(&self, _window: &str) -> Result<()> {
             Ok(())
         }
+        fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
+            None
+        }
     }
 
     struct MockGit;
@@ -829,6 +882,12 @@ mod tests {
         }
         fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
             Ok(vec![])
+        }
+        fn current_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("mock-branch".to_string())
+        }
+        fn worktree_prune(&self, _repo: &Path) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -964,6 +1023,12 @@ mod tests {
         fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
             Ok(vec![])
         }
+        fn current_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("mock-branch".to_string())
+        }
+        fn worktree_prune(&self, _repo: &Path) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct OrderTrackingTmux {
@@ -1027,6 +1092,9 @@ mod tests {
         }
         fn select_window(&self, _window: &str) -> Result<()> {
             Ok(())
+        }
+        fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
+            None
         }
     }
 
@@ -1426,6 +1494,12 @@ mod tests {
 
         fn worktree_list(&self, _repo: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
             Ok(vec![])
+        }
+        fn current_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("mock-branch".to_string())
+        }
+        fn worktree_prune(&self, _repo: &Path) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -2499,6 +2573,12 @@ mod tests {
                 .get(repo)
                 .cloned()
                 .unwrap_or_default())
+        }
+        fn current_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("mock-branch".to_string())
+        }
+        fn worktree_prune(&self, _repo: &Path) -> Result<()> {
+            Ok(())
         }
     }
 
