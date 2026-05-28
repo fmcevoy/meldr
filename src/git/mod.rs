@@ -43,6 +43,11 @@ pub trait GitOps: Send + Sync {
     /// List the worktrees registered in `repo` (a bare or non-bare git dir).
     /// Bare entries are filtered out; detached-HEAD worktrees yield `branch: None`.
     fn worktree_list(&self, repo: &Path) -> Result<Vec<WorktreeEntry>>;
+    /// Return the name of the currently checked-out branch in `repo`.
+    /// Errors (detached HEAD, not a git dir) are propagated as `MeldrError::Git`.
+    fn current_branch(&self, repo: &Path) -> Result<String>;
+    /// Run `git worktree prune` in `repo` to remove stale admin entries.
+    fn worktree_prune(&self, repo: &Path) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -296,6 +301,15 @@ impl GitOps for RealGit {
     fn worktree_list(&self, repo: &Path) -> Result<Vec<WorktreeEntry>> {
         let output = Self::run(&["worktree", "list", "--porcelain"], repo)?;
         Ok(parse_worktree_list_porcelain(&output))
+    }
+
+    fn current_branch(&self, repo: &Path) -> Result<String> {
+        Self::run(&["rev-parse", "--abbrev-ref", "HEAD"], repo)
+    }
+
+    fn worktree_prune(&self, repo: &Path) -> Result<()> {
+        Self::run(&["worktree", "prune"], repo)?;
+        Ok(())
     }
 }
 

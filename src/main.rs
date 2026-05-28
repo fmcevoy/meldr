@@ -9,7 +9,7 @@ use std::path::Path;
 
 use clap::Parser;
 
-use cli::{Cli, Commands, ConfigAction, PackageAction, PrAction, WorktreeAction};
+use cli::{Cli, Commands, ConfigAction, DoctorAction, PackageAction, PrAction, WorktreeAction};
 use core::config::{self, CliOverrides, GlobalConfig};
 use core::filter::PackageFilter;
 use core::workspace::{self, Manifest};
@@ -142,6 +142,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 WorktreeAction::Remove {
                     branch,
                     force,
+                    dir,
                     only,
                     exclude,
                     group,
@@ -156,20 +157,13 @@ fn run(cli: Cli) -> error::Result<()> {
                         Some(b) => b,
                         None => {
                             let state = core::state::WorkspaceState::load(&root)?;
-                            let dir_name = workspace::detect_current_worktree_dir(&root, &cwd);
-                            dir_name
-                                .and_then(|d| {
-                                    workspace::resolve_branch_from_dir(
-                                        &d,
-                                        state.worktrees.keys().map(|s| s.as_str()),
-                                    )
-                                })
-                                .ok_or_else(|| {
-                                    error::MeldrError::Config(
-                                        "Could not detect current worktree. Specify a branch name."
-                                            .to_string(),
-                                    )
-                                })?
+                            workspace::resolve_target_branch(
+                                &state,
+                                &root,
+                                &cwd,
+                                dir.as_deref(),
+                                &git,
+                            )?
                         }
                     };
                     let filter = PackageFilter {
@@ -312,6 +306,22 @@ fn run(cli: Cli) -> error::Result<()> {
                     cli::config_cmd::list(workspace_root.as_deref(), global)
                 }
                 ConfigAction::Show => cli::config_cmd::show(workspace_root.as_deref()),
+            }
+        }
+
+        Commands::Doctor { action, apply } => {
+            let cwd = std::env::current_dir()?;
+            let root = workspace::find_workspace_root(&cwd)?;
+            match action {
+                None => {
+                    // Run all three sections.
+                    cli::doctor::claude(&git, &root, apply)?;
+                    cli::doctor::worktrees(&git, &root, apply)?;
+                    cli::doctor::tmux_windows(&root, apply)
+                }
+                Some(DoctorAction::Claude) => cli::doctor::claude(&git, &root, apply),
+                Some(DoctorAction::Worktrees) => cli::doctor::worktrees(&git, &root, apply),
+                Some(DoctorAction::Tmux) => cli::doctor::tmux_windows(&root, apply),
             }
         }
     }

@@ -13,6 +13,7 @@ pub struct TmuxLayout {
 
 /// Pane targets in the dev layout.
 pub struct DevWindowPanes {
+    #[allow(dead_code)]
     pub window_id: String,
     pub editor: Option<String>,
     pub agents: Vec<String>,
@@ -38,6 +39,9 @@ pub trait TmuxOps: Send + Sync {
     fn has_window(&self, window: &str) -> bool;
     /// Select (focus) an existing tmux window.
     fn select_window(&self, window: &str) -> Result<()>;
+    /// Find a window's numeric ID (`@N`) by its display name, searching all sessions.
+    /// Returns `None` if no window with that name exists.
+    fn find_window_id_by_name(&self, name: &str) -> Option<String>;
 }
 
 #[derive(Default)]
@@ -319,6 +323,19 @@ impl TmuxOps for RealTmux {
         Self::run(&["select-window", "-t", window])?;
         Ok(())
     }
+
+    fn find_window_id_by_name(&self, name: &str) -> Option<String> {
+        let output =
+            Self::run(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]).ok()?;
+        for line in output.lines() {
+            if let Some((id, wname)) = line.split_once(' ')
+                && wname == name
+            {
+                return Some(id.to_string());
+            }
+        }
+        None
+    }
 }
 
 #[allow(dead_code)]
@@ -357,5 +374,8 @@ impl TmuxOps for NoopTmux {
     }
     fn select_window(&self, _window: &str) -> Result<()> {
         Err(MeldrError::NotInTmux)
+    }
+    fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
+        None
     }
 }

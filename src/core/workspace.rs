@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::core::state::WorkspaceState;
 use crate::error::{MeldrError, Result};
+use crate::git::GitOps;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -297,6 +299,99 @@ pub fn resolve_branch_from_dir<'a>(
     branches
         .find(|b| sanitize_branch_for_dir(b) == dir_name)
         .map(|b| b.to_string())
+}
+
+/// Resolve which state.json entry a `meldr worktree remove` invocation targets.
+///
+/// Resolution strategy (first match wins):
+/// 1. If `dir_override` is set, find the state entry whose sanitized dir name matches it.
+/// 2. Strip `<workspace_root>/worktrees/` from `cwd` and use the first path component
+///    as the dir name; look it up via [`resolve_branch_from_dir`].
+/// 3. Fallback: ask git for the current branch name in `cwd` (or any package dir under
+///    `<workspace_root>/packages/`) and look that up directly as a state key.
+///
+/// Returns `MeldrError::AmbiguousBranch` when the git-HEAD probe matches multiple
+/// state keys (shouldn't happen in practice but is handled defensively).
+/// Returns `MeldrError::Config` when nothing matches.
+pub fn resolve_target_branch(
+    state: &WorkspaceState,
+    workspace_root: &Path,
+    cwd: &Path,
+    dir_override: Option<&str>,
+    git: &dyn GitOps,
+) -> Result<String> {
+    let branches: Vec<&str> = state.worktrees.keys().map(|s| s.as_str()).collect();
+
+    // Helper: find all state keys that sanitize to the given dir name.
+    let matches_for_dir = |dir: &str| -> Vec<String> {
+        branches
+            .iter()
+            .filter(|&&b| sanitize_branch_for_dir(b) == dir)
+            .map(|b| b.to_string())
+            .collect()
+    };
+
+    // 1. Explicit --dir override.
+    if let Some(dir) = dir_override {
+        let matches = matches_for_dir(dir);
+        return match matches.len() {
+            1 => Ok(matches.into_iter().next().unwrap()),
+            n if n > 1 => Err(MeldrError::AmbiguousBranch(matches.join(", "))),
+            _ => Err(MeldrError::Config(format!(
+                "No worktree with directory name '{dir}' found in state."
+            ))),
+        };
+    }
+
+    // 2. Directory-name lookup from cwd — detect collision before returning.
+    if let Some(dir_name) = detect_current_worktree_dir(workspace_root, cwd) {
+        let matches = matches_for_dir(&dir_name);
+        match matches.len() {
+            1 => return Ok(matches.into_iter().next().unwrap()),
+            n if n > 1 => return Err(MeldrError::AmbiguousBranch(matches.join(", "))),
+            _ => {} // no match, fall through to git HEAD probe
+        }
+    }
+
+    // 3. Git HEAD probe — try cwd first, then each package dir.
+    let probe_paths: Vec<PathBuf> = {
+        let mut paths = vec![cwd.to_path_buf()];
+        let packages_root = packages_dir(workspace_root);
+        if let Ok(rd) = std::fs::read_dir(&packages_root) {
+            for entry in rd.flatten() {
+                if entry.path().is_dir() {
+                    paths.push(entry.path());
+                }
+            }
+        }
+        paths
+    };
+
+    for probe in &probe_paths {
+        if let Ok(head_branch) = git.current_branch(probe) {
+            // Direct key match.
+            if state.worktrees.contains_key(&head_branch) {
+                return Ok(head_branch);
+            }
+            // Also try sanitized match (covers `fm/feat` → state key `fm/feat` in dir `fm-feat`).
+            let matches: Vec<String> = branches
+                .iter()
+                .filter(|&&b| sanitize_branch_for_dir(b) == sanitize_branch_for_dir(&head_branch))
+                .map(|b| b.to_string())
+                .collect();
+            match matches.len() {
+                1 => return Ok(matches.into_iter().next().unwrap()),
+                n if n > 1 => {
+                    return Err(MeldrError::AmbiguousBranch(matches.join(", ")));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Err(MeldrError::Config(
+        "Could not detect current worktree. Specify a branch name or use --dir.".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -609,5 +704,170 @@ name = "no-layout"
 "#;
         let no_layout: Manifest = toml::from_str(no_layout_input).unwrap();
         assert!(no_layout.layout.is_none());
+    }
+
+    // ── resolve_target_branch tests ──────────────────────────────────────────
+
+    use crate::core::state::{WorkspaceState, WorktreeState};
+    use crate::git::{GitOps, WorktreeEntry};
+    use std::collections::HashMap;
+
+    struct MockGit {
+        branch: std::result::Result<String, String>,
+    }
+
+    impl GitOps for MockGit {
+        fn clone_repo(&self, _: &str, _: &Path) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn worktree_add(&self, _: &Path, _: &Path, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _: &Path, _: &Path, _: bool) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn is_dirty(&self, _: &Path) -> crate::error::Result<bool> {
+            Ok(false)
+        }
+        fn fetch(&self, _: &Path, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn rebase(&self, _: &Path, _: &str, _: &str, _: bool) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn merge(&self, _: &Path, _: &str, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn status_porcelain(&self, _: &Path) -> crate::error::Result<String> {
+            Ok(String::new())
+        }
+        fn detect_default_branch(&self, _: &Path, _: &str) -> Option<String> {
+            None
+        }
+        fn ensure_remote_tracking(&self, _: &Path, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn divergence(&self, _: &Path, _: &str) -> crate::error::Result<(u32, u32)> {
+            Ok((0, 0))
+        }
+        fn check_merge_conflicts(&self, _: &Path, _: &str) -> crate::error::Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn log_oneline(&self, _: &Path, _: u32) -> crate::error::Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn current_head(&self, _: &Path) -> crate::error::Result<String> {
+            Ok("sha".to_string())
+        }
+        fn reset_hard(&self, _: &Path, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn push(&self, _: &Path, _: &str, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn fast_forward_branch(&self, _: &Path, _: &str, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn worktree_list(&self, _: &Path) -> crate::error::Result<Vec<WorktreeEntry>> {
+            Ok(vec![])
+        }
+        fn current_branch(&self, _: &Path) -> crate::error::Result<String> {
+            self.branch.clone().map_err(crate::error::MeldrError::Git)
+        }
+        fn worktree_prune(&self, _: &Path) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn make_state(branches: &[&str]) -> WorkspaceState {
+        let mut state = WorkspaceState::default();
+        for b in branches {
+            state.add_worktree(
+                b,
+                WorktreeState {
+                    branch: b.to_string(),
+                    tmux_window: None,
+                    pane_mappings: HashMap::new(),
+                },
+            );
+        }
+        state
+    }
+
+    #[test]
+    fn test_resolve_by_dir_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let state = make_state(&["fm/feat"]);
+        let cwd = root.join("worktrees").join("fm-feat").join("pkg");
+        let git = MockGit {
+            branch: Err("not a git dir".to_string()),
+        };
+        let result = resolve_target_branch(&state, root, &cwd, None, &git).unwrap();
+        assert_eq!(result, "fm/feat");
+    }
+
+    #[test]
+    fn test_resolve_by_dir_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let state = make_state(&["spdm-attestation-p3-local"]);
+        let cwd = root.join("worktrees").join("spdm-p3").join("pkg");
+        let git = MockGit {
+            branch: Err("not a git dir".to_string()),
+        };
+        // --dir override: user passes the on-disk dir name manually
+        let result =
+            resolve_target_branch(&state, root, &cwd, Some("spdm-attestation-p3-local"), &git)
+                .unwrap();
+        assert_eq!(result, "spdm-attestation-p3-local");
+    }
+
+    #[test]
+    fn test_resolve_by_git_head_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        let state = make_state(&["spdm-attestation-p3-local"]);
+        // cwd dir name "spdm-p3" doesn't sanitize to a known key.
+        let cwd = root.join("worktrees").join("spdm-p3").join("bps");
+        // But git HEAD returns the full branch name.
+        let git = MockGit {
+            branch: Ok("spdm-attestation-p3-local".to_string()),
+        };
+        let result = resolve_target_branch(&state, root, &cwd, None, &git).unwrap();
+        assert_eq!(result, "spdm-attestation-p3-local");
+    }
+
+    #[test]
+    fn test_resolve_fails_on_ambiguous() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        // Two branches that sanitize to the same dir name.
+        let state = make_state(&["feat/foo", "feat-foo"]);
+        let cwd = root.join("worktrees").join("feat-foo").join("pkg");
+        let git = MockGit {
+            branch: Ok("feat/foo".to_string()),
+        };
+        let result = resolve_target_branch(&state, root, &cwd, None, &git);
+        assert!(matches!(
+            result,
+            Err(crate::error::MeldrError::AmbiguousBranch(_))
+        ));
+    }
+
+    #[test]
+    fn test_resolve_fails_when_nothing_matches() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        let state = make_state(&["other-branch"]);
+        let cwd = root.join("worktrees").join("unknown-dir").join("pkg");
+        let git = MockGit {
+            branch: Err("not a git dir".to_string()),
+        };
+        let result = resolve_target_branch(&state, root, &cwd, None, &git);
+        assert!(matches!(result, Err(crate::error::MeldrError::Config(_))));
     }
 }
