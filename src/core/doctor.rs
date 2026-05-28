@@ -358,8 +358,7 @@ pub fn run_worktrees(
                     let dirty = is_worktree_dirty_any_package(&dir, &manifest);
                     let desc = if dirty {
                         format!(
-                            "orphan worktree dir '{}' has uncommitted changes — skipping archive",
-                            dir_name
+                            "orphan worktree dir '{dir_name}' has uncommitted changes — skipping archive"
                         )
                     } else {
                         format!("archive orphan worktree dir '{dir_name}' (no state entry)")

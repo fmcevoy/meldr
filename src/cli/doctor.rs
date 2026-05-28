@@ -63,7 +63,7 @@ pub fn worktrees(git: &dyn GitOps, workspace_root: &Path, apply: bool) -> Result
             ActionKind::PruneState { branch } => {
                 println!("  {tag} {}", style(format!("prune state: {branch}")).bold());
             }
-            ActionKind::Archive { src, dest } if dest == &std::path::PathBuf::new() => {
+            ActionKind::Archive { src: _, dest } if dest == &std::path::PathBuf::new() => {
                 // Dirty orphan dir — cannot archive.
                 println!("  {} {}", style("[skip]").red(), action.description);
             }
