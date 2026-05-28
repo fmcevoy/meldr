@@ -3158,9 +3158,18 @@ fn test_worktree_layout_top_bottom_geometry() {
         .lines()
         .find_map(|line| {
             let (id, name) = line.split_once(' ')?;
-            if name == window_name { Some(id.to_string()) } else { None }
+            if name == window_name {
+                Some(id.to_string())
+            } else {
+                None
+            }
         })
-        .unwrap_or_else(|| panic!("window '{window_name}' not found; windows: {}", String::from_utf8_lossy(&windows_out.stdout)));
+        .unwrap_or_else(|| {
+            panic!(
+                "window '{window_name}' not found; windows: {}",
+                String::from_utf8_lossy(&windows_out.stdout)
+            )
+        });
 
     let panes_out = process::Command::new("tmux")
         .args([
