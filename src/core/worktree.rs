@@ -169,12 +169,23 @@ fn setup_tmux_windows(
             format!("cd {}", leader_path.display())
         });
 
+        // Use left_agent_command for pane 0 only in the built-in default layout with
+        // multiple agent panes. Custom layouts and minimal (single agent pane) always
+        // use agent_command so the left_agent override doesn't bleed into them.
+        let use_left_agent =
+            config.layout == "default" && custom_layout.is_none() && dev.agents.len() > 1;
+
         for (i, agent_pane) in dev.agents.iter().enumerate() {
             if config.should_launch_agent() {
                 if let Some(ref cd_cmd) = leader_cd {
                     tmux.send_keys(agent_pane, cd_cmd)?;
                 }
-                tmux.send_keys(agent_pane, &config.agent_command)?;
+                let cmd = if use_left_agent && i == 0 {
+                    &config.left_agent_command
+                } else {
+                    &config.agent_command
+                };
+                tmux.send_keys(agent_pane, cmd)?;
             }
             pane_mappings.insert(format!("agent_{i}"), agent_pane.clone());
             if i == 0 {
@@ -2799,15 +2810,25 @@ mod tests {
             .position(|(target, keys)| target == "%1" && keys == &expected_cd)
             .expect("expected a cd to backend's worktree on the agent pane (%1)");
 
-        // The agent command must be sent AFTER the cd so it inherits the right cwd.
+        // Pane %1 is the first (leftmost) agent pane in the default layout, so it receives
+        // left_agent_command (cursor) rather than agent_command (claude).
         let agent_idx = calls
             .send_keys
             .iter()
-            .position(|(target, keys)| target == "%1" && keys == &config.agent_command)
-            .expect("agent command should be sent on the agent pane");
+            .position(|(target, keys)| target == "%1" && keys == &config.left_agent_command)
+            .expect("left_agent_command should be sent on the leftmost agent pane");
         assert!(
             agent_idx > cd_idx,
             "agent command must be sent after the cd (agent={agent_idx}, cd={cd_idx})"
+        );
+
+        // The other agent panes (%2, %3) receive agent_command, not left_agent_command.
+        assert!(
+            calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == "%2" && k == &config.agent_command),
+            "%2 should receive agent_command"
         );
     }
 
@@ -3242,6 +3263,164 @@ mod tests {
         let report = scan_and_import(&mock, &manifest, &mut state, tmp.path()).unwrap();
         assert_eq!(report.imported, vec!["feature-x".to_string()]);
         assert_eq!(state.worktrees.len(), 1);
+    }
+
+    // --- left_agent pane-dispatch tests ---
+
+    #[test]
+    fn test_default_layout_left_pane_gets_left_agent_command() {
+        let packages = &["frontend", "backend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            left_agent_command: "cursor agent --yolo".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(&tmux, &manifest, root, "test-left", &config, None, None).unwrap();
+
+        let calls = tmux.calls();
+        // Pane %1 (index 0) must get left_agent_command.
+        assert!(
+            calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == "%1" && k == "cursor agent --yolo"),
+            "pane %1 should get left_agent_command"
+        );
+        // Panes %2 and %3 must get agent_command.
+        assert!(
+            calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == "%2" && k == "claude agents"),
+            "pane %2 should get agent_command"
+        );
+        assert!(
+            calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == "%3" && k == "claude agents"),
+            "pane %3 should get agent_command"
+        );
+        // Pane %1 must NOT also receive agent_command.
+        assert!(
+            !calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == "%1" && k == "claude agents"),
+            "pane %1 should NOT get agent_command"
+        );
+    }
+
+    #[test]
+    fn test_left_agent_equal_to_agent_all_panes_same() {
+        // When left_agent_command == agent_command, all 3 panes get the same command.
+        let packages = &["frontend", "backend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            left_agent_command: "claude agents".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(&tmux, &manifest, root, "test-same", &config, None, None).unwrap();
+
+        let calls = tmux.calls();
+        for pane in &["%1", "%2", "%3"] {
+            assert!(
+                calls
+                    .send_keys
+                    .iter()
+                    .any(|(t, k)| t == pane && k == "claude agents"),
+                "pane {pane} should get claude agents"
+            );
+        }
+    }
+
+    #[test]
+    fn test_minimal_layout_lone_agent_uses_agent_command_not_left() {
+        // Minimal layout: dev.agents has 1 pane (on the right side).
+        // left_agent_command must NOT be used — layout != "default".
+        let packages = &["frontend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            layout: "minimal".to_string(),
+            agent_command: "claude agents".to_string(),
+            left_agent_command: "cursor agent --yolo".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(&tmux, &manifest, root, "test-minimal", &config, None, None).unwrap();
+
+        let calls = tmux.calls();
+        // The sole agent pane gets agent_command, not left_agent_command.
+        assert!(
+            !calls
+                .send_keys
+                .iter()
+                .any(|(_, k)| k == "cursor agent --yolo"),
+            "minimal layout should not use left_agent_command"
+        );
+    }
+
+    #[test]
+    fn test_no_agent_flag_skips_left_agent_too() {
+        let packages = &["frontend", "backend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            no_agent: true,
+            agent_command: "claude agents".to_string(),
+            left_agent_command: "cursor agent --yolo".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(&tmux, &manifest, root, "test-noagent", &config, None, None).unwrap();
+
+        let calls = tmux.calls();
+        assert!(
+            !calls
+                .send_keys
+                .iter()
+                .any(|(_, k)| k == "cursor agent --yolo" || k == "claude agents"),
+            "no_agent=true should suppress both agent commands"
+        );
+    }
+
+    #[test]
+    fn test_pane_mappings_unaffected_by_left_agent() {
+        let packages = &["frontend", "backend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let root = tmp.path();
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            left_agent_command: "cursor agent --yolo".to_string(),
+            ..Default::default()
+        };
+
+        let result =
+            setup_tmux_windows(&tmux, &manifest, root, "test-mappings", &config, None, None)
+                .unwrap();
+
+        // agent_0 / agent / agent_1 / agent_2 are all still present.
+        assert!(result.pane_mappings.contains_key("agent"));
+        assert!(result.pane_mappings.contains_key("agent_0"));
+        assert!(result.pane_mappings.contains_key("agent_1"));
+        assert!(result.pane_mappings.contains_key("agent_2"));
+        // agent and agent_0 must map to the same pane.
+        assert_eq!(
+            result.pane_mappings.get("agent"),
+            result.pane_mappings.get("agent_0")
+        );
     }
 }
 

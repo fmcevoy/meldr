@@ -28,6 +28,8 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_method: Option<String>,
@@ -54,6 +56,7 @@ pub struct Settings {
 impl Settings {
     pub fn is_empty(&self) -> bool {
         self.agent.is_none()
+            && self.left_agent.is_none()
             && self.mode.is_none()
             && self.sync_method.is_none()
             && self.sync_strategy.is_none()
