@@ -52,7 +52,7 @@ pub enum Commands {
         /// Create a worktree on this branch after adding packages
         #[arg(short, long)]
         branch: Option<String>,
-        /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui, devin)
+        /// Override the default AI agent (built-in: claude, cursor, gemini, codex, opencode, pi, kiro, kiro-tui, deepseek-tui, devin, antigravity)
         #[arg(short, long)]
         agent: Option<String>,
         /// Package to run the AI agent in (prompts interactively if omitted)
@@ -252,7 +252,7 @@ pub enum WorktreeAction {
 pub enum ConfigAction {
     /// Set a configuration value
     Set {
-        /// Setting key (agent, mode, sync_method, sync_strategy, editor, default_branch, remote, shell, layout, window_name)
+        /// Setting key (agent, mode, sync_method, sync_strategy, editor, default_branch, remote, shell, layout, window_name, leader_package, claude_prune)
         key: String,
         /// Setting value
         value: String,

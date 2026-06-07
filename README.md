@@ -5,6 +5,13 @@ Workspace management tool for multi-repo projects with git worktrees and tmux in
 ## Install
 
 ```bash
+# From the git repository (standard install)
+cargo install --git https://github.com/fmcevoy/meldr.git --force
+```
+
+Or from a local checkout:
+
+```bash
 cargo install --path .
 ```
 
@@ -35,15 +42,16 @@ meldr worktree add feature-auth
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `meldr init` | | Initialize workspace in current directory |
+| `meldr init [-n <name>]` | | Initialize workspace in current directory |
 | `meldr create <name>` | | One-shot: init + add packages + create worktree |
 | `meldr package add <urls...>` | `pkg` | Clone and register packages |
 | `meldr package remove <names...>` | `pkg` | Remove packages |
 | `meldr package list` | `pkg` | List registered packages |
 | `meldr worktree add <branch>` | `wt` | Create worktrees for all packages |
 | `meldr worktree remove [branch]` | `wt` | Remove worktrees (auto-detects branch from cwd; checks for dirty state) |
-| `meldr worktree open <branch>` | `wt` | Reopen tmux windows for an existing worktree (e.g. after a crash) |
+| `meldr worktree open <branch>` | `wt` | Reopen tmux windows for an existing worktree; reuses the window if still alive |
 | `meldr worktree list` | `wt` | List active worktrees |
+| `meldr worktree scan [--prune]` | `wt` | Rebuild `.meldr/state.json` from on-disk git worktrees (self-healing) |
 | `meldr status` | `st` | Show workspace dashboard |
 | `meldr sync [branch]` | | Sync worktree with upstream |
 | `meldr exec <command...>` | | Run command in every package's worktree directory |
@@ -54,9 +62,10 @@ meldr worktree add feature-auth
 | `meldr config unset <key>` | | Remove a config value |
 | `meldr config list` | | Show effective configuration |
 | `meldr config show` | | Show where each setting value comes from |
+| `meldr doctor [claude\|worktrees\|tmux] [--apply]` | | Detect and optionally fix stale tmux windows, orphaned worktrees, config issues |
 | `meldr prompt-check` | | Exit 0 if cwd's branch matches the worktree (for shell prompts) |
 
-Subcommand names can be abbreviated (e.g. `meldr wt a` for `meldr worktree add`).
+Subcommand names can be abbreviated (e.g. `meldr wt a` for `meldr worktree add`). Reversed `<action> <resource>` order is also accepted — `meldr add package <url>` is silently rewritten to `meldr package add <url>`.
 
 ### Global flags
 
@@ -74,7 +83,9 @@ Subcommand names can be abbreviated (e.g. `meldr wt a` for `meldr worktree add`)
 | `--group <name>` | same as `--only` | Filter by package group (comma-separated, repeatable) |
 | `--leader <pkg>` | `create`, `worktree add` | Package to `cd` into for the AI agent pane (prompts interactively if omitted) |
 | `--force` | `worktree remove` | Remove even with uncommitted changes |
+| `--dir <name>` | `worktree remove` | Target a specific worktree directory name instead of auto-detecting from cwd |
 | `--no-claude-prune` | `worktree remove` | Skip archiving and purging Claude Code state for the removed worktree |
+| `--apply` | `doctor` | Apply fixes automatically instead of dry-run preview |
 | `-i`, `--interactive` | `exec` | Launch an interactive shell so aliases and rc files are loaded |
 | `--global` | `config set/get/unset/list` | Apply to `~/.meldr/config.toml` instead of workspace |
 | `--merge` | `sync` | Use merge instead of rebase |
@@ -165,7 +176,7 @@ Failures in either step are printed as `Warning:` messages and never block the w
 
 | Name | Default command | Description |
 |------|-----------------|-------------|
-| `claude` | `claude --dangerously-skip-permissions` | Anthropic Claude Code |
+| `claude` | `claude agents` | Anthropic Claude Code |
 | `cursor` | `cursor agent --yolo` | Cursor AI agent |
 | `gemini` | `gemini --yolo` | Google Gemini CLI |
 | `codex` | `codex --approval-mode full-auto` | OpenAI Codex CLI |
@@ -189,21 +200,23 @@ Override any command in `~/.meldr/config.toml` under `[agents.<name>]`, or regis
 
 ## Tmux Integration
 
-When running inside tmux, `meldr worktree add` creates a development environment for each package.
+When running inside tmux, `meldr worktree add` (and `worktree open`) creates a development environment for each package.
+
+### Leader package
+
+The **leader package** is the package directory that AI agent panes `cd` into on launch — useful when you have multiple packages in a worktree but want agents focused on one. Set it via `--leader <pkg>`, the `MELDR_LEADER_PACKAGE` env var, or `leader_package` in workspace settings. If none is configured, meldr prompts interactively with a fuzzy picker.
 
 ### Layout presets
 
-**`default`** — 6 panes: editor + agent + 4 terminals
+**`default`** — 9 panes: 3 agent (top 2/3) + editor + 5 terminals (bottom 1/3)
 ```
-+-------------------+-----------+
-|                   |           |
-|    editor (0)     | agent (1) |
-|                   |           |
-+--------+----------+           |
-| t1 (2) | t3 (4)   |           |
-+--------+----------+           |
-| t2 (3) | t4 (5)   |           |
-+--------+----------+-----------+
++-----------+-----------+-----------+
+| agent  P0 | agent  P3 | agent  P4 |   all three cd into leader package + run agent
++-----------+-----------+-----------+
+| editor P1 |  term  P5 |  term  P6 |   P1 runs $EDITOR and is focused on open
++-----------+-----------+-----------+
+|  term  P2 |  term  P7 |  term  P8 |
++-----------+-----------+-----------+
 ```
 
 **`minimal`** — 2 panes: editor + agent
@@ -239,7 +252,7 @@ editor_pane = 0
 agent_pane = 1
 ```
 
-Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`.
+Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`, `{{pkg}}`, `{{branch}}`, `{{ws}}`.
 
 Select with: `meldr config set layout my-layout`
 
@@ -313,6 +326,12 @@ post_sync = ["npm install"]
 post_worktree_create = ["mise install"]
 # pre_remove = []
 # post_pr = []
+
+# Override the tmux layout for this workspace (applies a raw tmux layout string
+# and runs agent_command in each listed pane after cd-ing into the worktree)
+# [layout]
+# definition = "tiled"          # any tmux layout string
+# panes = ["frontend", "api"]   # package names — one pane per entry
 ```
 
 Per-package hook overrides (replace workspace-level hooks for that event):
