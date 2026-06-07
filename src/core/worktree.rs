@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
@@ -104,6 +105,45 @@ struct TmuxSetupResult {
     pane_mappings: HashMap<String, String>,
 }
 
+/// Generate a unique per-spawn identifier used to correlate a pane with its hook script.
+fn agent_session_id(pane_id: &str) -> String {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let pid = std::process::id();
+    // Strip the leading % from pane IDs like %42 to keep the filename safe.
+    let pane_part = pane_id.trim_start_matches('%');
+    format!("{ms}-{pid}-{pane_part}")
+}
+
+/// Export MELDR_TMUX_* env vars into a pane shell and write a sidecar file so
+/// claude-notify.sh can locate the pane even when TMUX/TMUX_PANE are stripped
+/// by a Node.js process wrapper.
+fn inject_agent_env(
+    tmux: &dyn TmuxOps,
+    pane_id: &str,
+    window_id: &str,
+    agent_name: &str,
+    session_id: &str,
+) -> Result<()> {
+    let export_cmd = format!(
+        "export MELDR_TMUX_PANE={pane_id} MELDR_TMUX_WINDOW_ID={window_id} \
+         MELDR_AGENT={agent_name} MELDR_AGENT_SESSION={session_id}"
+    );
+    tmux.send_keys(pane_id, &export_cmd)?;
+
+    // Sidecar: keyed by session_id so the hook can look up the pane ID when
+    // MELDR_TMUX_PANE is unavailable. Failures are silently ignored.
+    if let Some(home) = dirs::home_dir() {
+        let state_dir = home.join(".cache/claude-agents");
+        let _ = std::fs::create_dir_all(&state_dir);
+        let _ = std::fs::write(state_dir.join(format!("{session_id}.parent_pane")), pane_id);
+    }
+
+    Ok(())
+}
+
 /// Create tmux windows and panes for a set of packages in a worktree branch.
 ///
 /// Handles both manifest layout overrides and per-package dev window layouts.
@@ -185,6 +225,9 @@ fn setup_tmux_windows(
                 } else {
                     &config.agent_command
                 };
+                let agent_name = cmd.split_whitespace().next().unwrap_or("unknown");
+                let session_id = agent_session_id(agent_pane);
+                inject_agent_env(tmux, agent_pane, &dev.window_id, agent_name, &session_id)?;
                 tmux.send_keys(agent_pane, cmd)?;
             }
             pane_mappings.insert(format!("agent_{i}"), agent_pane.clone());
@@ -3421,6 +3464,163 @@ mod tests {
             result.pane_mappings.get("agent"),
             result.pane_mappings.get("agent_0")
         );
+    }
+
+    // --- M2: env injection tests ---
+
+    #[test]
+    fn test_agent_pane_receives_meldr_env_export_before_agent_cmd() {
+        let packages = &["api"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let tmux = MockTmux::new();
+        // Use "minimal" layout (single agent pane) to avoid the left-agent override
+        // so agent_command is always what's sent, simplifying assertions.
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            layout: "minimal".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat-env",
+            &config,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let calls = tmux.calls();
+        // MockTmux's minimal layout returns agents ["%1"]. Find send_keys calls for %1.
+        let pane_calls: Vec<&str> = calls
+            .send_keys
+            .iter()
+            .filter(|(target, _)| target == "%1")
+            .map(|(_, keys)| keys.as_str())
+            .collect();
+
+        // The export call must appear before the agent command.
+        let export_pos = pane_calls
+            .iter()
+            .position(|k| k.starts_with("export MELDR_TMUX_PANE="));
+        let agent_pos = pane_calls.iter().position(|k| k.starts_with("claude"));
+        assert!(
+            export_pos.is_some(),
+            "expected MELDR_TMUX_PANE export for agent pane"
+        );
+        assert!(agent_pos.is_some(), "expected agent command for agent pane");
+        assert!(
+            export_pos.unwrap() < agent_pos.unwrap(),
+            "export must come before agent command"
+        );
+
+        // Exported vars must include all four keys.
+        let export_line = pane_calls[export_pos.unwrap()];
+        assert!(
+            export_line.contains("MELDR_TMUX_PANE=%1"),
+            "must include pane id"
+        );
+        assert!(
+            export_line.contains("MELDR_TMUX_WINDOW_ID=@100"),
+            "must include window id"
+        );
+        assert!(
+            export_line.contains("MELDR_AGENT=claude"),
+            "must include agent name"
+        );
+        assert!(
+            export_line.contains("MELDR_AGENT_SESSION="),
+            "must include session id"
+        );
+    }
+
+    #[test]
+    fn test_env_injection_covers_all_agent_panes() {
+        let packages = &["api"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            ..Default::default()
+        };
+
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat-env",
+            &config,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let calls = tmux.calls();
+        // All three agent panes (%1 %2 %3) must have received the export.
+        for pane in &["%1", "%2", "%3"] {
+            let exported = calls
+                .send_keys
+                .iter()
+                .any(|(t, k)| t == pane && k.starts_with("export MELDR_TMUX_PANE="));
+            assert!(
+                exported,
+                "pane {pane} did not receive MELDR_TMUX_PANE export"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parent_pane_sidecar_written() {
+        let packages = &["api"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            ..Default::default()
+        };
+
+        // Point HOME at a temp dir so we can inspect the sidecar.
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: test-only; single test process, no concurrent threads touch HOME.
+        unsafe { std::env::set_var("HOME", home_tmp.path()) };
+
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat-sidecar",
+            &config,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Extract the MELDR_AGENT_SESSION value from the exported env line for %1.
+        let calls = tmux.calls();
+        let session_id = calls
+            .send_keys
+            .iter()
+            .find(|(t, k)| t == "%1" && k.starts_with("export MELDR_TMUX_PANE="))
+            .and_then(|(_, k)| {
+                k.split_whitespace()
+                    .find(|p| p.starts_with("MELDR_AGENT_SESSION="))
+                    .map(|p| p.trim_start_matches("MELDR_AGENT_SESSION=").to_string())
+            });
+
+        assert!(
+            session_id.is_some(),
+            "could not parse session id from export line"
+        );
+
+        let sidecar = home_tmp
+            .path()
+            .join(".cache/claude-agents")
+            .join(format!("{}.parent_pane", session_id.unwrap()));
+        assert!(sidecar.exists(), "sidecar file not written");
+        let content = std::fs::read_to_string(&sidecar).unwrap();
+        assert_eq!(content.trim(), "%1", "sidecar must contain the pane id");
     }
 }
 

@@ -465,6 +465,8 @@ pub struct StaleWindow {
 
 pub struct TmuxDoctorReport {
     pub stale_windows: Vec<StaleWindow>,
+    /// Window IDs whose `@cc_status` was set but no agent process was running (F12 sweep).
+    pub stale_status_windows: Vec<String>,
     pub applied: usize,
     pub warnings: Vec<String>,
 }
@@ -473,10 +475,94 @@ impl TmuxDoctorReport {
     fn new() -> Self {
         Self {
             stale_windows: Vec::new(),
+            stale_status_windows: Vec::new(),
             applied: 0,
             warnings: Vec::new(),
         }
     }
+}
+
+// ── doctor hooks ──────────────────────────────────────────────────────────────
+
+pub struct HooksDoctorReport {
+    /// Whether `claude` was found on PATH.
+    pub claude_detected: bool,
+    /// A `_meldr`-tagged hook entry is absent from settings.json (only meaningful when claude_detected).
+    pub claude_hook_missing: bool,
+    /// The installed notify script doesn't match the version bundled in this binary.
+    pub script_stale: bool,
+    /// `~/.tmux.conf` doesn't reference `@cc_status` in `window-status-format`.
+    pub tmux_conf_missing_cc_status: bool,
+    pub applied: usize,
+    pub warnings: Vec<String>,
+}
+
+/// Diagnose hook-signaling health and optionally repair auto-fixable issues.
+pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
+    use crate::core::agent_signal;
+    use crate::core::install_hooks;
+
+    let mut report = HooksDoctorReport {
+        claude_detected: false,
+        claude_hook_missing: false,
+        script_stale: false,
+        tmux_conf_missing_cc_status: false,
+        applied: 0,
+        warnings: Vec::new(),
+    };
+
+    // 1. Claude install + hook entry.
+    let claude_found = std::process::Command::new("which")
+        .arg("claude")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    report.claude_detected = claude_found;
+    if claude_found {
+        let stop_missing = !install_hooks::hooks_installed(home, "Stop");
+        let notify_missing = !install_hooks::hooks_installed(home, "Notification");
+        if stop_missing || notify_missing {
+            report.claude_hook_missing = true;
+            if apply {
+                let result = agent_signal::install_script(home)
+                    .and_then(|_| install_hooks::install_claude_hooks(home, false).map(|_| ()));
+                match result {
+                    Ok(()) => report.applied += 1,
+                    Err(e) => report.warnings.push(format!("hooks: install failed: {e}")),
+                }
+            }
+        }
+    }
+
+    // 2. Script currency.
+    if !agent_signal::is_script_current(home) {
+        report.script_stale = true;
+        if apply {
+            match agent_signal::install_script(home) {
+                Ok(_) => {
+                    if !report.claude_hook_missing {
+                        report.applied += 1;
+                    }
+                }
+                Err(e) => report
+                    .warnings
+                    .push(format!("hooks: script reinstall failed: {e}")),
+            }
+        }
+    }
+
+    // 3. tmux.conf @cc_status presence (warn only — never auto-edit user's tmux.conf).
+    let tmux_conf = home.join(".tmux.conf");
+    if tmux_conf.exists() {
+        let content = std::fs::read_to_string(&tmux_conf).unwrap_or_default();
+        if !content.contains("@cc_status") {
+            report.tmux_conf_missing_cc_status = true;
+        }
+    } else {
+        report.tmux_conf_missing_cc_status = true;
+    }
+
+    Ok(report)
 }
 
 /// Find and optionally kill tmux windows whose named worktree no longer exists.
@@ -558,10 +644,43 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
                     report.applied += 1;
                 }
             }
+        } else {
+            // F12: unset @cc_status if set but no agent process is alive in any pane.
+            let cc_set = run_tmux_cmd(&["show-options", "-wqv", "-t", window_id, "@cc_status"])
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if cc_set && !check_window_has_agent_process(window_id) {
+                report.stale_status_windows.push(window_id.to_string());
+                if apply {
+                    let _ = run_tmux_cmd(&["set-option", "-wu", "-t", window_id, "@cc_status"]);
+                    let _ = run_tmux_cmd(&["set-option", "-wu", "-t", window_id, "@cc_status_gen"]);
+                    report.applied += 1;
+                }
+            }
         }
     }
 
     Ok(report)
+}
+
+/// Returns true if any pane in `window_id` currently has an agent process running.
+/// Uses `#{pane_current_command}` as a lightweight signal.
+fn check_window_has_agent_process(window_id: &str) -> bool {
+    let output = match run_tmux_cmd(&[
+        "list-panes",
+        "-t",
+        window_id,
+        "-F",
+        "#{pane_current_command}",
+    ]) {
+        Ok(o) => o,
+        Err(_) => return true, // Can't check, assume alive.
+    };
+    output.lines().any(|cmd| {
+        let cmd = cmd.trim().to_ascii_lowercase();
+        // Claude CLI runs under Node; also match the claude binary directly.
+        cmd == "node" || cmd.starts_with("claude")
+    })
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -767,6 +886,49 @@ mod tests {
 
         let report = run_worktrees(&git, &root, false).unwrap();
         assert!(report.pruned_state.contains(&"orphan-branch".to_string()));
+    }
+
+    #[test]
+    fn test_run_hooks_detects_missing_entry() {
+        let tmp = TempDir::new().unwrap();
+        let settings_dir = tmp.path().join(".claude");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            settings_dir.join("settings.json"),
+            r#"{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"bash ~/custom.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(
+            report.claude_hook_missing,
+            "should detect missing _meldr entry"
+        );
+    }
+
+    #[test]
+    fn test_run_hooks_detects_stale_script() {
+        let tmp = TempDir::new().unwrap();
+        let script_dir = tmp.path().join(".local/share/meldr");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(script_dir.join("meldr-agent-notify.sh"), "old content").unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(report.script_stale, "should detect stale script");
+    }
+
+    #[test]
+    fn test_run_hooks_clean_when_installed() {
+        let tmp = TempDir::new().unwrap();
+        crate::core::agent_signal::install_script(tmp.path()).unwrap();
+        crate::core::install_hooks::install_claude_hooks(tmp.path(), false).unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(
+            !report.script_stale,
+            "script should be current after install"
+        );
+        assert!(
+            !report.claude_hook_missing,
+            "hook should be present after install"
+        );
     }
 
     #[test]
