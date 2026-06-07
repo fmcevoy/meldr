@@ -898,9 +898,10 @@ mod tests {
             r#"{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"bash ~/custom.sh"}]}]}}"#,
         )
         .unwrap();
-        let report = run_hooks(tmp.path(), false).unwrap();
+        // Test the detection primitive directly: claude_hook_missing in run_hooks is
+        // gated on `which claude` succeeding, which is not guaranteed on all CI runners.
         assert!(
-            report.claude_hook_missing,
+            !crate::core::install_hooks::hooks_installed(tmp.path(), "Stop"),
             "should detect missing _meldr entry"
         );
     }
