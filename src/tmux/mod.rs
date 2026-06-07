@@ -304,15 +304,34 @@ impl TmuxOps for RealTmux {
         config: &EffectiveConfig,
         custom_layout: Option<&LayoutDef>,
     ) -> Result<DevWindowPanes> {
-        if let Some(layout_def) = custom_layout {
-            return Self::create_custom_layout(name, cwd, layout_def, config);
-        }
+        let dev = if let Some(layout_def) = custom_layout {
+            Self::create_custom_layout(name, cwd, layout_def, config)?
+        } else {
+            match config.layout.as_str() {
+                "minimal" => Self::create_minimal_layout(name, cwd)?,
+                "editor-only" => Self::create_editor_only_layout(name, cwd)?,
+                _ => Self::create_default_layout(name, cwd)?,
+            }
+        };
 
-        match config.layout.as_str() {
-            "minimal" => Self::create_minimal_layout(name, cwd),
-            "editor-only" => Self::create_editor_only_layout(name, cwd),
-            _ => Self::create_default_layout(name, cwd),
-        }
+        // Disable bell and activity monitoring per window so build-script output
+        // in terminal panes doesn't false-positive flash the tab (F7b).
+        let _ = Self::run(&[
+            "set-window-option",
+            "-t",
+            &dev.window_id,
+            "monitor-bell",
+            "off",
+        ]);
+        let _ = Self::run(&[
+            "set-window-option",
+            "-t",
+            &dev.window_id,
+            "monitor-activity",
+            "off",
+        ]);
+
+        Ok(dev)
     }
 
     fn has_window(&self, window: &str) -> bool {

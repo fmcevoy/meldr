@@ -311,19 +311,25 @@ fn run(cli: Cli) -> error::Result<()> {
             }
         }
 
+        Commands::InstallHooks { dry_run, uninstall } => {
+            cli::install_hooks::run(dry_run, uninstall)
+        }
+
         Commands::Doctor { action, apply } => {
             let cwd = std::env::current_dir()?;
             let root = workspace::find_workspace_root(&cwd)?;
             match action {
                 None => {
-                    // Run all three sections.
+                    // Run all four sections.
                     cli::doctor::claude(&git, &root, apply)?;
                     cli::doctor::worktrees(&git, &root, apply)?;
-                    cli::doctor::tmux_windows(&root, apply)
+                    cli::doctor::tmux_windows(&root, apply)?;
+                    cli::doctor::hooks(apply, false)
                 }
                 Some(DoctorAction::Claude) => cli::doctor::claude(&git, &root, apply),
                 Some(DoctorAction::Worktrees) => cli::doctor::worktrees(&git, &root, apply),
                 Some(DoctorAction::Tmux) => cli::doctor::tmux_windows(&root, apply),
+                Some(DoctorAction::Hooks { env_check }) => cli::doctor::hooks(apply, env_check),
             }
         }
     }

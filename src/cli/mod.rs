@@ -3,6 +3,7 @@ pub mod create;
 pub mod doctor;
 pub mod exec;
 pub mod init;
+pub mod install_hooks;
 pub mod package;
 pub mod pr;
 pub mod prompt_check;
@@ -152,6 +153,17 @@ pub enum Commands {
     Pr {
         #[command(subcommand)]
         action: PrAction,
+    },
+
+    /// Install Claude Code hook scripts and wire them into settings.json
+    #[command(name = "install-hooks")]
+    InstallHooks {
+        /// Print what would change without writing any files
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove meldr-managed hook entries from settings.json
+        #[arg(long)]
+        uninstall: bool,
     },
 
     /// Diagnose and repair drift between meldr state, Claude Code daemon state,
@@ -332,4 +344,10 @@ pub enum DoctorAction {
     Worktrees,
     /// Find and kill tmux windows whose worktree no longer exists
     Tmux,
+    /// Check hook installation health (script currency, settings.json entry, tmux.conf)
+    Hooks {
+        /// Also check whether MELDR_TMUX_PANE is set in the current environment
+        #[arg(long)]
+        env_check: bool,
+    },
 }

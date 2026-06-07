@@ -1,0 +1,361 @@
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+
+use crate::error::{MeldrError, Result};
+
+const MELDR_MARKER: &str = "_meldr";
+
+fn hook_command(event: &str, script_path: &str) -> String {
+    match event {
+        "Stop" => format!("bash {script_path} stop"),
+        "Notification" => format!("bash {script_path} notify"),
+        _ => format!("bash {script_path} {}", event.to_lowercase()),
+    }
+}
+
+/// Install meldr-managed hook entries into `~/.claude/settings.json`.
+/// Existing user entries are preserved. An old entry pointing to `claude-notify.sh`
+/// is updated in-place rather than duplicated.
+pub fn install_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
+    let script_path = "~/.local/share/meldr/meldr-agent-notify.sh";
+    let settings_path = resolve_settings_path(home)?;
+    let mut root = read_settings(&settings_path)?;
+
+    for event in &["Stop", "Notification"] {
+        upsert_hook(&mut root, event, &hook_command(event, script_path));
+    }
+
+    if dry_run {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&root).unwrap_or_default()
+        );
+    } else {
+        write_settings_atomic(&settings_path, &root)?;
+    }
+
+    Ok(settings_path)
+}
+
+/// Remove all hook entries tagged with `_meldr: true`.
+pub fn uninstall_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
+    let settings_path = resolve_settings_path(home)?;
+    let mut root = read_settings(&settings_path)?;
+
+    for event in &["Stop", "Notification"] {
+        remove_meldr_hooks(&mut root, event);
+    }
+
+    if dry_run {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&root).unwrap_or_default()
+        );
+    } else {
+        write_settings_atomic(&settings_path, &root)?;
+    }
+
+    Ok(settings_path)
+}
+
+/// Returns true if a meldr-tagged entry exists for `event`.
+pub fn hooks_installed(home: &Path, event: &str) -> bool {
+    let Ok(settings_path) = resolve_settings_path(home) else {
+        return false;
+    };
+    let Ok(root) = read_settings(&settings_path) else {
+        return false;
+    };
+    find_meldr_hook(&root, event).is_some()
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+fn resolve_settings_path(home: &Path) -> Result<PathBuf> {
+    let candidate = home.join(".claude/settings.json");
+    if candidate.exists() {
+        std::fs::canonicalize(&candidate).map_err(MeldrError::Io)
+    } else {
+        Ok(candidate)
+    }
+}
+
+fn read_settings(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let text = std::fs::read_to_string(path)?;
+    serde_json::from_str(&text).map_err(MeldrError::Json)
+}
+
+fn write_settings_atomic(path: &Path, value: &Value) -> Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp_path = dir.join(format!(".settings-{}.tmp", std::process::id()));
+    std::fs::write(&tmp_path, serde_json::to_string_pretty(value)?)?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        MeldrError::Io(e)
+    })
+}
+
+/// Add or update the meldr hook entry for `event`. Looks for an existing entry
+/// that is either already meldr-tagged or points to the old `claude-notify.sh`
+/// path, and updates it in-place. Falls back to appending to the first matcher
+/// if none is found, creating the structure from scratch if needed.
+fn upsert_hook(root: &mut Value, event: &str, command: &str) {
+    let entry = json!({ "type": "command", "command": command, "_meldr": true });
+
+    // Try to update an existing entry.
+    if let Some(event_arr) = root
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(|v| v.as_array_mut())
+    {
+        for matcher_obj in event_arr.iter_mut() {
+            if let Some(hooks_arr) = matcher_obj
+                .pointer_mut("/hooks")
+                .and_then(|v| v.as_array_mut())
+            {
+                for hook in hooks_arr.iter_mut() {
+                    let is_meldr = hook
+                        .get(MELDR_MARKER)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let is_old = hook
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(|c| c.contains("claude-notify.sh"))
+                        .unwrap_or(false);
+                    if is_meldr || is_old {
+                        *hook = entry.clone();
+                        return;
+                    }
+                }
+                // Append to the first matcher that had no matching entry.
+                hooks_arr.push(entry.clone());
+                return;
+            }
+        }
+    }
+
+    // Build the structure from scratch.
+    let hooks_obj = root
+        .as_object_mut()
+        .expect("settings root must be an object");
+    let event_arr = hooks_obj
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .and_then(|o| {
+            o.entry(event)
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .map(|a| a as *mut Vec<Value>)
+        });
+
+    if let Some(arr) = event_arr {
+        // SAFETY: we hold a unique borrow of root through the chain above.
+        let arr = unsafe { &mut *arr };
+        if arr.is_empty() {
+            arr.push(json!({ "matcher": "*", "hooks": [] }));
+        }
+        if let Some(inner) = arr
+            .first_mut()
+            .and_then(|m| m.pointer_mut("/hooks"))
+            .and_then(|v| v.as_array_mut())
+        {
+            inner.push(entry);
+        }
+    }
+}
+
+fn remove_meldr_hooks(root: &mut Value, event: &str) {
+    let Some(event_arr) = root
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for matcher_obj in event_arr.iter_mut() {
+        if let Some(hooks_arr) = matcher_obj
+            .pointer_mut("/hooks")
+            .and_then(|v| v.as_array_mut())
+        {
+            hooks_arr.retain(|hook| {
+                !hook
+                    .get(MELDR_MARKER)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            });
+        }
+    }
+}
+
+fn find_meldr_hook<'a>(root: &'a Value, event: &str) -> Option<&'a Value> {
+    root.pointer(&format!("/hooks/{event}"))
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find_map(|matcher_obj| {
+                matcher_obj
+                    .pointer("/hooks")
+                    .and_then(|v| v.as_array())
+                    .and_then(|hooks_arr| {
+                        hooks_arr.iter().find(|hook| {
+                            hook.get(MELDR_MARKER)
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                        })
+                    })
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_with_claude_notify() -> Value {
+        json!({
+            "hooks": {
+                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.claude/claude-notify.sh stop"}]}],
+                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.claude/claude-notify.sh notify"}]}]
+            },
+            "model": "opus"
+        })
+    }
+
+    fn settings_with_meldr_hooks() -> Value {
+        json!({
+            "hooks": {
+                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh stop", "_meldr": true}]}],
+                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh notify", "_meldr": true}]}]
+            },
+            "model": "opus"
+        })
+    }
+
+    fn write_settings(dir: &Path, v: &Value) {
+        let p = dir.join(".claude");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("settings.json"),
+            serde_json::to_string_pretty(v).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn read_back(dir: &Path) -> Value {
+        let text = std::fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn test_upsert_replaces_old_claude_notify_entry() {
+        let mut root = settings_with_claude_notify();
+        upsert_hook(
+            &mut root,
+            "Stop",
+            "bash ~/.local/share/meldr/meldr-agent-notify.sh stop",
+        );
+        let hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1, "should replace, not duplicate");
+        assert_eq!(hooks[0][MELDR_MARKER], true);
+        assert!(
+            hooks[0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("meldr-agent-notify.sh")
+        );
+    }
+
+    #[test]
+    fn test_idempotent_double_install() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_claude_notify());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1, "no duplicates after double install");
+    }
+
+    #[test]
+    fn test_uninstall_removes_only_meldr_entries() {
+        let mut root = settings_with_meldr_hooks();
+        root.pointer_mut("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "command", "command": "bash ~/my-custom-hook.sh"}));
+
+        remove_meldr_hooks(&mut root, "Stop");
+        let hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1, "only user entry should remain");
+        assert_eq!(hooks[0]["command"], "bash ~/my-custom-hook.sh");
+    }
+
+    #[test]
+    fn test_install_into_missing_file_creates_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+        let root = read_back(tmp.path());
+        assert!(root.pointer("/hooks/Stop").is_some());
+    }
+
+    #[test]
+    fn test_install_into_malformed_json_errors_safely() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(settings_dir.join("settings.json"), b"not json {{{").unwrap();
+        let result = install_claude_hooks(tmp.path(), false);
+        assert!(result.is_err());
+        let on_disk = std::fs::read_to_string(settings_dir.join("settings.json")).unwrap();
+        assert_eq!(
+            on_disk, "not json {{{",
+            "malformed file must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn test_dry_run_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_claude_hooks(tmp.path(), true).unwrap();
+        assert!(!tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn test_uninstall_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_claude_notify());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+        uninstall_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let stop_hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert!(
+            stop_hooks.is_empty(),
+            "meldr entry removed, nothing else left"
+        );
+    }
+}
