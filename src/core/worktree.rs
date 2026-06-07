@@ -154,6 +154,9 @@ fn inject_agent_env(
 /// claude-session-start.sh can resolve the pane for background sessions that
 /// were started from within this worktree via `claude agents`.
 fn write_launcher_entry(state_dir: &std::path::Path, pane_id: &str, window_id: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
     let launcher_dir = state_dir.join("launchers");
     let _ = std::fs::create_dir_all(&launcher_dir);
 
@@ -162,6 +165,7 @@ fn write_launcher_entry(state_dir: &std::path::Path, pane_id: &str, window_id: &
         .unwrap_or_default()
         .as_millis();
     let pid = std::process::id();
+    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -170,8 +174,8 @@ fn write_launcher_entry(state_dir: &std::path::Path, pane_id: &str, window_id: &
     let content = format!(
         "{{\"pane\":\"{pane_id}\",\"window\":\"{window_id}\",\"cwd\":\"{cwd}\",\"ts\":{ts}}}\n"
     );
-    let filename = format!("{ts}-{pid}.json");
-    let tmp = launcher_dir.join(format!(".launcher-{pid}.tmp"));
+    let filename = format!("{ts}-{pid}-{seq}.json");
+    let tmp = launcher_dir.join(format!(".launcher-{pid}-{seq}.tmp"));
     if std::fs::write(&tmp, &content).is_ok() {
         let _ = std::fs::rename(&tmp, launcher_dir.join(&filename)).map_err(|_| {
             let _ = std::fs::remove_file(&tmp);
