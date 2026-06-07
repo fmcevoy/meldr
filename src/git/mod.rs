@@ -48,6 +48,22 @@ pub trait GitOps: Send + Sync {
     fn current_branch(&self, repo: &Path) -> Result<String>;
     /// Run `git worktree prune` in `repo` to remove stale admin entries.
     fn worktree_prune(&self, repo: &Path) -> Result<()>;
+
+    /// Return repo-relative paths of all dirty files in a worktree: modified
+    /// tracked, staged, and untracked files. Parsed from `git status --porcelain`.
+    /// Default impl delegates to `status_porcelain` — existing mocks get this
+    /// for free and return an empty vec when `status_porcelain` returns `""`.
+    fn dirty_paths(&self, path: &Path) -> Result<Vec<std::path::PathBuf>> {
+        let output = self.status_porcelain(path)?;
+        Ok(parse_dirty_paths_from_porcelain(&output))
+    }
+
+    /// Return the output of `git diff HEAD` for the given worktree path.
+    /// Captures staged and unstaged changes to tracked files.
+    /// Default impl returns an empty string — suitable for mocks that don't need patch output.
+    fn diff_head(&self, _path: &Path) -> Result<String> {
+        Ok(String::new())
+    }
 }
 
 #[derive(Default)]
@@ -311,6 +327,48 @@ impl GitOps for RealGit {
         Self::run(&["worktree", "prune"], repo)?;
         Ok(())
     }
+
+    fn dirty_paths(&self, path: &Path) -> Result<Vec<std::path::PathBuf>> {
+        let output = self.status_porcelain(path)?;
+        Ok(parse_dirty_paths_from_porcelain(&output))
+    }
+
+    fn diff_head(&self, path: &Path) -> Result<String> {
+        Self::run(&["diff", "HEAD"], path)
+    }
+}
+
+/// Parse the output of `git status --porcelain` into a list of repo-relative paths.
+///
+/// Handles renames (`old -> new` — yields the destination path) and strips
+/// double-quote wrapping that git uses for paths containing spaces or non-ASCII.
+/// Does not attempt C-octet unescaping (e.g. `\303\240`) — such paths are returned
+/// with the escape sequences intact, which is acceptable for archive purposes.
+pub fn parse_dirty_paths_from_porcelain(output: &str) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for line in output.lines() {
+        // Porcelain format: "XY filename" — need at least 4 bytes (XY + space + char)
+        if line.len() < 4 {
+            continue;
+        }
+        let rest = &line[3..];
+        // Renames: "old -> new" — take the destination path
+        let raw = if let Some(pos) = rest.find(" -> ") {
+            &rest[pos + 4..]
+        } else {
+            rest
+        };
+        // Strip double-quote wrapping used for paths with spaces or special chars
+        let file = if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
+            &raw[1..raw.len() - 1]
+        } else {
+            raw
+        };
+        if !file.is_empty() {
+            paths.push(std::path::PathBuf::from(file));
+        }
+    }
+    paths
 }
 
 /// Parse the output of `git worktree list --porcelain`.
@@ -442,5 +500,42 @@ prunable gitdir file points to non-existent location
         let entries = parse_worktree_list_porcelain(input);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].branch.as_deref(), Some("team/epic/story"));
+    }
+
+    #[test]
+    fn test_parse_dirty_paths_untracked_and_modified() {
+        let input = " M src/lib.rs\n?? new.txt\nM  staged.rs\n";
+        let paths = parse_dirty_paths_from_porcelain(input);
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&PathBuf::from("src/lib.rs")));
+        assert!(paths.contains(&PathBuf::from("new.txt")));
+        assert!(paths.contains(&PathBuf::from("staged.rs")));
+    }
+
+    #[test]
+    fn test_parse_dirty_paths_rename() {
+        let input = "R  old.txt -> new.txt\n";
+        let paths = parse_dirty_paths_from_porcelain(input);
+        assert_eq!(paths, vec![PathBuf::from("new.txt")]);
+    }
+
+    #[test]
+    fn test_parse_dirty_paths_quoted_path_with_spaces() {
+        let input = "?? \"path with spaces/file.txt\"\n";
+        let paths = parse_dirty_paths_from_porcelain(input);
+        assert_eq!(paths, vec![PathBuf::from("path with spaces/file.txt")]);
+    }
+
+    #[test]
+    fn test_parse_dirty_paths_empty_input() {
+        assert!(parse_dirty_paths_from_porcelain("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_dirty_paths_short_lines_skipped() {
+        // Lines shorter than 4 chars are skipped
+        let input = "MM\n??\nA \n?? ok.txt\n";
+        let paths = parse_dirty_paths_from_porcelain(input);
+        assert_eq!(paths, vec![PathBuf::from("ok.txt")]);
     }
 }

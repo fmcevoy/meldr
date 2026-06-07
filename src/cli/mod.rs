@@ -204,13 +204,15 @@ pub enum WorktreeAction {
         #[arg(long)]
         leader: Option<String>,
     },
-    /// Remove worktrees for a branch (checks for dirty state). Auto-detects branch when run from within a worktree directory.
+    /// Remove worktrees for a branch. Auto-detects branch when run from within a worktree directory.
+    /// Uncommitted and untracked files are automatically archived to
+    /// ~/.meldr/archive/leftover/<branch>/<timestamp>/<pkg>/ before removal.
     Remove {
         /// Branch name to remove (auto-detected from cwd if omitted)
         branch: Option<String>,
-        /// Force removal even with uncommitted changes
+        /// Discard uncommitted changes instead of archiving them
         #[arg(long)]
-        force: bool,
+        discard: bool,
         /// Identify the worktree by its on-disk directory name when auto-detect
         /// fails (e.g. the dir was renamed after creation).
         #[arg(long, value_name = "DIRNAME")]

@@ -20,9 +20,6 @@ pub enum MeldrError {
     #[error("Worktree '{0}' not found")]
     WorktreeNotFound(String),
 
-    #[error("Worktree '{0}' has uncommitted changes in {1}. Use --force to override.")]
-    DirtyWorktree(String, String),
-
     #[error(
         "Ambiguous worktree: branch matches multiple state entries: {0}. Specify a branch name explicitly."
     )]

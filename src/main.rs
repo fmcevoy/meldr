@@ -141,7 +141,7 @@ fn run(cli: Cli) -> error::Result<()> {
                 }
                 WorktreeAction::Remove {
                     branch,
-                    force,
+                    discard,
                     dir,
                     only,
                     exclude,
@@ -176,7 +176,7 @@ fn run(cli: Cli) -> error::Result<()> {
                         &tmux,
                         &root,
                         &target,
-                        force,
+                        discard,
                         &filter,
                         &remove_config,
                     )

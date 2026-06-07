@@ -446,6 +446,170 @@ fn test_worktree_remove_cleans_up_files() {
         .stdout(predicate::str::contains("temp-branch").not());
 }
 
+// ─── Leftover archive on remove ──────────────────────────────────────────────
+
+#[test]
+fn test_worktree_remove_archives_dirty_files_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let home_tmp = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "dirty-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create dirty state: a tracked-file modification and an untracked file.
+    let wt_pkg = tmp.path().join("worktrees/dirty-branch/spoon-knife");
+    fs::write(wt_pkg.join("README.md"), b"modified content").unwrap();
+    fs::write(wt_pkg.join("untracked.txt"), b"brand new file").unwrap();
+
+    meldr_with_home(home_tmp.path())
+        .args(["--no-tabs", "worktree", "remove", "dirty-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Worktree should be gone.
+    assert!(
+        !tmp.path().join("worktrees/dirty-branch").exists(),
+        "worktree dir should be removed"
+    );
+
+    // Archive should exist.
+    let branch_archive = home_tmp.path().join(".meldr/archive/leftover/dirty-branch");
+    assert!(branch_archive.exists(), "branch archive dir should exist");
+
+    // Find the timestamp subdirectory (exactly one).
+    let ts_dirs: Vec<_> = fs::read_dir(&branch_archive).unwrap().flatten().collect();
+    assert_eq!(ts_dirs.len(), 1, "should have exactly one timestamp dir");
+    let pkg_dir = ts_dirs[0].path().join("spoon-knife");
+
+    // The untracked file should be in the archive.
+    assert!(
+        pkg_dir.join("untracked.txt").exists(),
+        "untracked.txt should be archived"
+    );
+    assert_eq!(
+        fs::read(pkg_dir.join("untracked.txt")).unwrap(),
+        b"brand new file"
+    );
+
+    // CHANGES.patch should capture the tracked modification.
+    let patch_path = pkg_dir.join("CHANGES.patch");
+    assert!(patch_path.exists(), "CHANGES.patch should be written");
+    let patch = fs::read_to_string(&patch_path).unwrap();
+    assert!(
+        patch.contains("README.md") || patch.contains("modified content"),
+        "patch should reference the modified file"
+    );
+}
+
+#[test]
+fn test_worktree_remove_discard_destroys_dirty_files() {
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let home_tmp = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "discard-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let wt_pkg = tmp.path().join("worktrees/discard-branch/spoon-knife");
+    fs::write(wt_pkg.join("new.txt"), b"throwaway").unwrap();
+
+    meldr_with_home(home_tmp.path())
+        .args([
+            "--no-tabs",
+            "worktree",
+            "remove",
+            "discard-branch",
+            "--discard",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        !tmp.path().join("worktrees/discard-branch").exists(),
+        "worktree dir should be removed"
+    );
+    assert!(
+        !home_tmp.path().join(".meldr").exists(),
+        "no archive dir should exist when --discard is passed"
+    );
+}
+
+#[test]
+fn test_worktree_remove_clean_creates_no_archive() {
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let home_tmp = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["--no-tabs", "worktree", "add", "clean-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // No dirty files — remove without touching anything.
+    meldr_with_home(home_tmp.path())
+        .args(["--no-tabs", "worktree", "remove", "clean-branch"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        !tmp.path().join("worktrees/clean-branch").exists(),
+        "worktree dir should be removed"
+    );
+    assert!(
+        !home_tmp.path().join(".meldr/archive").exists(),
+        "no archive dir should exist for a clean worktree"
+    );
+}
+
+#[test]
+fn test_worktree_remove_force_flag_rejected() {
+    // The old --force flag was removed. Verify clap rejects it.
+    let tmp = TempDir::new().unwrap();
+    meldr()
+        .args(["worktree", "remove", "any-branch", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
 #[test]
 fn test_worktree_with_slash_branch_on_real_repos() {
     let tmp = TempDir::new().unwrap();
