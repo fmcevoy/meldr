@@ -322,25 +322,70 @@ pub fn remove_worktree(
     state: &mut WorkspaceState,
     workspace_root: &Path,
     branch: &str,
-    force: bool,
+    discard: bool,
     partial: bool,
     config: &EffectiveConfig,
+    home_override: Option<&std::path::Path>,
 ) -> Result<()> {
     if state.get_worktree(branch).is_none() {
         return Err(MeldrError::WorktreeNotFound(branch.to_string()));
     }
 
-    if !force {
-        for pkg in &manifest.packages {
-            let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
-            if wt_path.exists()
-                && let Ok(true) = git.is_dirty(&wt_path)
-            {
-                return Err(MeldrError::DirtyWorktree(
-                    branch.to_string(),
-                    pkg.name.clone(),
-                ));
+    // Collect packages with uncommitted or untracked changes.
+    let mut dirty_pkgs: Vec<(String, std::path::PathBuf, Vec<std::path::PathBuf>)> = Vec::new();
+    for pkg in &manifest.packages {
+        let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
+        if !wt_path.exists() {
+            continue;
+        }
+        match git.dirty_paths(&wt_path) {
+            Ok(paths) if !paths.is_empty() => {
+                dirty_pkgs.push((pkg.name.clone(), wt_path, paths));
             }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not check dirty state for '{}': {e}",
+                    pkg.name
+                );
+            }
+        }
+    }
+
+    // Archive dirty content to ~/.meldr/archive/leftover/ unless discard was requested.
+    if !dirty_pkgs.is_empty() && !discard {
+        let home = home_override
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from));
+        if let Some(home) = home {
+            let ts = crate::core::claude_prune::format_timestamp();
+            let mut diffs = HashMap::new();
+            for (pkg_name, wt_path, _) in &dirty_pkgs {
+                match git.diff_head(wt_path) {
+                    Ok(d) => {
+                        diffs.insert(pkg_name.clone(), d);
+                    }
+                    Err(e) => eprintln!("Warning: could not get diff for '{pkg_name}': {e}"),
+                }
+            }
+            let report = crate::core::leftover_archive::archive_leftover(
+                &home,
+                branch,
+                &dirty_pkgs,
+                &diffs,
+                &ts,
+            );
+            if !report.archived_packages.is_empty() {
+                println!(
+                    "Archived leftover changes for {} package(s) → ~/.meldr/archive/leftover/{branch}/{ts}",
+                    report.archived_packages.len()
+                );
+            }
+            for w in &report.warnings {
+                eprintln!("Warning: {w}");
+            }
+        } else {
+            eprintln!("Warning: $HOME is not set — skipping leftover archive for dirty packages");
         }
     }
 
@@ -360,11 +405,13 @@ pub fn remove_worktree(
     // Remove git worktrees for the requested packages BEFORE killing the tmux window.
     // If we kill the tmux window first and the user is running this command
     // from within that window, the process gets terminated before cleanup.
+    // Always pass force=true: git refuses to drop a worktree with modifications
+    // without --force, and we have already archived any content worth keeping.
     for pkg in &manifest.packages {
         let repo_path = workspace::package_path(workspace_root, &pkg.name);
         let wt_path = workspace::worktree_path(workspace_root, branch, &pkg.name);
         if wt_path.exists()
-            && let Err(e) = git.worktree_remove(&repo_path, &wt_path, force)
+            && let Err(e) = git.worktree_remove(&repo_path, &wt_path, true)
         {
             eprintln!(
                 "Warning: Failed to remove worktree for '{}': {}",
@@ -714,6 +761,7 @@ mod tests {
     use crate::core::workspace::{Manifest, PackageEntry, WorkspaceInfo};
     use crate::error::Result;
     use crate::tmux::{DevWindowPanes, TmuxLayout, TmuxOps};
+    use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -819,6 +867,129 @@ mod tests {
             None
         }
     }
+
+    // ─── DirtyAwareGit mock ───────────────────────────────────────────────────
+
+    struct DirtyAwareGit {
+        dirty_paths_by_wt: Mutex<HashMap<PathBuf, Vec<PathBuf>>>,
+        diff_by_wt: Mutex<HashMap<PathBuf, String>>,
+        remove_calls: Mutex<Vec<(PathBuf, bool)>>,
+    }
+
+    impl DirtyAwareGit {
+        fn new() -> Self {
+            Self {
+                dirty_paths_by_wt: Mutex::new(HashMap::new()),
+                diff_by_wt: Mutex::new(HashMap::new()),
+                remove_calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn set_dirty_paths(&self, wt: PathBuf, paths: Vec<PathBuf>) {
+            self.dirty_paths_by_wt.lock().unwrap().insert(wt, paths);
+        }
+
+        fn set_diff(&self, wt: PathBuf, diff: String) {
+            self.diff_by_wt.lock().unwrap().insert(wt, diff);
+        }
+
+        fn remove_calls(&self) -> Vec<(PathBuf, bool)> {
+            self.remove_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl GitOps for DirtyAwareGit {
+        fn clone_repo(&self, _url: &str, _path: &Path) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_add(&self, _repo: &Path, _dest: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_remove(&self, _repo: &Path, path: &Path, force: bool) -> Result<()> {
+            self.remove_calls
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), force));
+            Ok(())
+        }
+        fn is_dirty(&self, path: &Path) -> Result<bool> {
+            Ok(!self
+                .dirty_paths_by_wt
+                .lock()
+                .unwrap()
+                .get(path)
+                .map(|v| v.is_empty())
+                .unwrap_or(true))
+        }
+        fn fetch(&self, _: &Path, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn rebase(&self, _: &Path, _: &str, _: &str, _: bool) -> Result<()> {
+            Ok(())
+        }
+        fn merge(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn status_porcelain(&self, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn detect_default_branch(&self, _: &Path, _: &str) -> Option<String> {
+            None
+        }
+        fn ensure_remote_tracking(&self, _: &Path, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn divergence(&self, _: &Path, _: &str) -> Result<(u32, u32)> {
+            Ok((0, 0))
+        }
+        fn check_merge_conflicts(&self, _: &Path, _: &str) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn log_oneline(&self, _: &Path, _: u32) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn current_head(&self, _: &Path) -> Result<String> {
+            Ok("mock_sha".to_string())
+        }
+        fn reset_hard(&self, _: &Path, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn push(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn fast_forward_branch(&self, _: &Path, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn worktree_list(&self, _: &Path) -> Result<Vec<crate::git::WorktreeEntry>> {
+            Ok(vec![])
+        }
+        fn current_branch(&self, _: &Path) -> Result<String> {
+            Ok("mock-branch".to_string())
+        }
+        fn worktree_prune(&self, _: &Path) -> Result<()> {
+            Ok(())
+        }
+        fn dirty_paths(&self, path: &Path) -> Result<Vec<PathBuf>> {
+            Ok(self
+                .dirty_paths_by_wt
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .unwrap_or_default())
+        }
+        fn diff_head(&self, path: &Path) -> Result<String> {
+            Ok(self
+                .diff_by_wt
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
+    // ─── Minimal passthrough mock ──────────────────────────────────────────────
 
     struct MockGit;
 
@@ -1142,6 +1313,7 @@ mod tests {
                 claude_prune: false,
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
 
@@ -1202,6 +1374,7 @@ mod tests {
                 claude_prune: false,
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
 
@@ -1239,6 +1412,7 @@ mod tests {
                 claude_prune: false,
                 ..Default::default()
             },
+            None,
         );
         assert!(result.is_err(), "removing nonexistent worktree should fail");
     }
@@ -1274,6 +1448,7 @@ mod tests {
                 claude_prune: false,
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
 
@@ -1284,6 +1459,292 @@ mod tests {
             "should not call kill_window when no tmux window"
         );
         assert!(state.get_worktree("feat-notab").is_none());
+    }
+
+    // ─── Archive-on-remove tests ──────────────────────────────────────────────
+
+    fn home_archive_for(home: &std::path::Path, branch: &str) -> std::path::PathBuf {
+        home.join(".meldr")
+            .join("archive")
+            .join("leftover")
+            .join(branch)
+    }
+
+    #[test]
+    fn test_remove_worktree_archives_dirty_files() {
+        let packages = &["frontend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        let git = DirtyAwareGit::new();
+        let tmux = MockTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat-dirty", worktree_state_no_window("feat-dirty"));
+
+        // Create the worktree dir and a dirty file inside it.
+        let wt_path = tmp
+            .path()
+            .join("worktrees")
+            .join("feat-dirty")
+            .join("frontend");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("untracked.txt"), b"unfinished work").unwrap();
+
+        git.set_dirty_paths(wt_path.clone(), vec![PathBuf::from("untracked.txt")]);
+        git.set_diff(
+            wt_path.clone(),
+            "--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n+change\n".to_string(),
+        );
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-dirty",
+            false, // discard=false → archive
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            Some(home_tmp.path()),
+        )
+        .unwrap();
+
+        // git.worktree_remove must always be called with force=true.
+        let calls = git.remove_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1, "worktree_remove must pass force=true");
+
+        // Archive should exist under the branch dir.
+        let branch_archive = home_archive_for(home_tmp.path(), "feat-dirty");
+        assert!(branch_archive.exists(), "branch archive dir should exist");
+
+        // Find the single timestamp subdir.
+        let ts_dirs: Vec<_> = std::fs::read_dir(&branch_archive)
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(ts_dirs.len(), 1, "should have exactly one timestamp dir");
+        let pkg_dir = ts_dirs[0].path().join("frontend");
+
+        assert!(
+            pkg_dir.join("untracked.txt").exists(),
+            "archived file should exist"
+        );
+        assert_eq!(
+            std::fs::read(pkg_dir.join("untracked.txt")).unwrap(),
+            b"unfinished work"
+        );
+        assert!(
+            pkg_dir.join("CHANGES.patch").exists(),
+            "CHANGES.patch should be written when diff is non-empty"
+        );
+    }
+
+    #[test]
+    fn test_remove_worktree_discard_skips_archive() {
+        let packages = &["frontend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        let git = DirtyAwareGit::new();
+        let tmux = MockTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat-discard", worktree_state_no_window("feat-discard"));
+
+        let wt_path = tmp
+            .path()
+            .join("worktrees")
+            .join("feat-discard")
+            .join("frontend");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("work.txt"), b"abandoned").unwrap();
+        git.set_dirty_paths(wt_path.clone(), vec![PathBuf::from("work.txt")]);
+        git.set_diff(wt_path, "diff output".to_string());
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-discard",
+            true, // discard=true → no archive
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            Some(home_tmp.path()),
+        )
+        .unwrap();
+
+        assert!(
+            !home_archive_for(home_tmp.path(), "feat-discard").exists(),
+            "archive dir must not be created when --discard is passed"
+        );
+        // git.worktree_remove still called with force=true.
+        let calls = git.remove_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1, "worktree_remove must always pass force=true");
+    }
+
+    #[test]
+    fn test_remove_worktree_clean_no_archive_created() {
+        let packages = &["frontend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        let git = DirtyAwareGit::new(); // no dirty paths configured → all clean
+        let tmux = MockTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat-clean", worktree_state_no_window("feat-clean"));
+
+        let wt_path = tmp
+            .path()
+            .join("worktrees")
+            .join("feat-clean")
+            .join("frontend");
+        std::fs::create_dir_all(&wt_path).unwrap();
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-clean",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            Some(home_tmp.path()),
+        )
+        .unwrap();
+
+        assert!(
+            !home_tmp.path().join(".meldr").join("archive").exists(),
+            "no archive dir should be created for a clean worktree"
+        );
+        let calls = git.remove_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].1,
+            "worktree_remove must pass force=true even for clean wts"
+        );
+    }
+
+    #[test]
+    fn test_remove_worktree_archive_warnings_do_not_block_removal() {
+        let packages = &["frontend"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        let git = DirtyAwareGit::new();
+        let tmux = MockTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat-warn", worktree_state_no_window("feat-warn"));
+
+        let wt_path = tmp
+            .path()
+            .join("worktrees")
+            .join("feat-warn")
+            .join("frontend");
+        std::fs::create_dir_all(&wt_path).unwrap();
+
+        // Report a dirty path that doesn't actually exist on disk.
+        // archive_leftover silently skips it (deleted-file case).
+        git.set_dirty_paths(wt_path.clone(), vec![PathBuf::from("ghost.txt")]);
+
+        let result = remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-warn",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            Some(home_tmp.path()),
+        );
+
+        assert!(
+            result.is_ok(),
+            "removal should succeed even when archive has nothing to copy"
+        );
+        assert!(
+            state.get_worktree("feat-warn").is_none(),
+            "worktree should be removed from state"
+        );
+    }
+
+    #[test]
+    fn test_remove_worktree_mixed_dirty_and_clean_packages() {
+        let packages = &["frontend", "backend", "shared"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        let git = DirtyAwareGit::new();
+        let tmux = MockTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat-mixed", worktree_state_no_window("feat-mixed"));
+
+        for pkg in packages {
+            std::fs::create_dir_all(tmp.path().join("worktrees").join("feat-mixed").join(pkg))
+                .unwrap();
+        }
+
+        // Only backend is dirty.
+        let be_wt = tmp.path().join("worktrees/feat-mixed/backend");
+        std::fs::write(be_wt.join("notes.md"), b"wip").unwrap();
+        git.set_dirty_paths(be_wt.clone(), vec![PathBuf::from("notes.md")]);
+        git.set_diff(be_wt, "diff".to_string());
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat-mixed",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            Some(home_tmp.path()),
+        )
+        .unwrap();
+
+        let branch_archive = home_archive_for(home_tmp.path(), "feat-mixed");
+        assert!(branch_archive.exists());
+        let ts_dirs: Vec<_> = std::fs::read_dir(&branch_archive)
+            .unwrap()
+            .flatten()
+            .collect();
+        let ts_dir = ts_dirs[0].path();
+
+        // Only backend should be archived.
+        assert!(
+            ts_dir.join("backend").exists(),
+            "backend should be archived"
+        );
+        assert!(
+            !ts_dir.join("frontend").exists(),
+            "frontend (clean) must not be archived"
+        );
+        assert!(
+            !ts_dir.join("shared").exists(),
+            "shared (clean) must not be archived"
+        );
+
+        // All three packages removed.
+        assert_eq!(git.remove_calls().len(), 3);
     }
 
     #[test]

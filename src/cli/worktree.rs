@@ -52,7 +52,7 @@ pub fn remove(
     tmux: &dyn TmuxOps,
     workspace_root: &Path,
     branch: &str,
-    force: bool,
+    discard: bool,
     filter: &PackageFilter,
     config: &EffectiveConfig,
 ) -> Result<()> {
@@ -77,9 +77,10 @@ pub fn remove(
         &mut state,
         workspace_root,
         branch,
-        force,
+        discard,
         partial,
         config,
+        None,
     )?;
     if partial {
         let names: Vec<_> = filtered_manifest.packages.iter().map(|p| &p.name).collect();
