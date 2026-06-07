@@ -18,13 +18,15 @@ fn hook_command(event: &str, script_path: &str) -> String {
 /// Existing user entries are preserved. An old entry pointing to `claude-notify.sh`
 /// is updated in-place rather than duplicated.
 pub fn install_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
-    let script_path = "~/.local/share/meldr/meldr-agent-notify.sh";
+    let notify_script = "~/.local/share/meldr/meldr-agent-notify.sh";
+    let session_start_cmd = "bash ~/.claude/claude-session-start.sh";
     let settings_path = resolve_settings_path(home)?;
     let mut root = read_settings(&settings_path)?;
 
     for event in &["Stop", "Notification"] {
-        upsert_hook(&mut root, event, &hook_command(event, script_path));
+        upsert_hook(&mut root, event, &hook_command(event, notify_script));
     }
+    upsert_hook_with_matcher(&mut root, "SessionStart", "startup", session_start_cmd);
 
     if dry_run {
         println!(
@@ -43,7 +45,7 @@ pub fn uninstall_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
     let settings_path = resolve_settings_path(home)?;
     let mut root = read_settings(&settings_path)?;
 
-    for event in &["Stop", "Notification"] {
+    for event in &["Stop", "Notification", "SessionStart"] {
         remove_meldr_hooks(&mut root, event);
     }
 
@@ -159,6 +161,68 @@ fn upsert_hook(root: &mut Value, event: &str, command: &str) {
         let arr = unsafe { &mut *arr };
         if arr.is_empty() {
             arr.push(json!({ "matcher": "*", "hooks": [] }));
+        }
+        if let Some(inner) = arr
+            .first_mut()
+            .and_then(|m| m.pointer_mut("/hooks"))
+            .and_then(|v| v.as_array_mut())
+        {
+            inner.push(entry);
+        }
+    }
+}
+
+/// Like `upsert_hook` but creates the matcher object with a specific matcher string
+/// rather than `"*"`. Used for events like `SessionStart` where only `"startup"` is wanted.
+fn upsert_hook_with_matcher(root: &mut Value, event: &str, matcher: &str, command: &str) {
+    let entry = json!({ "type": "command", "command": command, "_meldr": true });
+
+    // Update existing meldr-tagged entry if one exists (regardless of matcher).
+    if let Some(event_arr) = root
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(|v| v.as_array_mut())
+    {
+        for matcher_obj in event_arr.iter_mut() {
+            if let Some(hooks_arr) = matcher_obj
+                .pointer_mut("/hooks")
+                .and_then(|v| v.as_array_mut())
+            {
+                for hook in hooks_arr.iter_mut() {
+                    if hook
+                        .get(MELDR_MARKER)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        *hook = entry.clone();
+                        return;
+                    }
+                }
+                hooks_arr.push(entry.clone());
+                return;
+            }
+        }
+    }
+
+    // Build from scratch with the specified matcher.
+    let hooks_obj = root
+        .as_object_mut()
+        .expect("settings root must be an object");
+    let event_arr = hooks_obj
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .and_then(|o| {
+            o.entry(event)
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .map(|a| a as *mut Vec<Value>)
+        });
+
+    if let Some(arr) = event_arr {
+        // SAFETY: unique borrow of root through the chain above.
+        let arr = unsafe { &mut *arr };
+        if arr.is_empty() {
+            arr.push(json!({ "matcher": matcher, "hooks": [] }));
         }
         if let Some(inner) = arr
             .first_mut()
@@ -357,5 +421,84 @@ mod tests {
             stop_hooks.is_empty(),
             "meldr entry removed, nothing else left"
         );
+    }
+
+    #[test]
+    fn test_install_adds_session_start_hook() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_claude_notify());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let hooks = root
+            .pointer("/hooks/SessionStart/0/hooks")
+            .expect("SessionStart entry must be present")
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert!(
+            hooks[0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("claude-session-start.sh"),
+            "command must reference claude-session-start.sh"
+        );
+        assert_eq!(hooks[0][MELDR_MARKER], true);
+    }
+
+    #[test]
+    fn test_session_start_matcher_is_startup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let matcher = root
+            .pointer("/hooks/SessionStart/0/matcher")
+            .and_then(|v| v.as_str())
+            .expect("SessionStart matcher must be set");
+        assert_eq!(matcher, "startup");
+    }
+
+    #[test]
+    fn test_idempotent_session_start_hook() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_claude_notify());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let hooks = root
+            .pointer("/hooks/SessionStart/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1, "no duplicates on double install");
+    }
+
+    #[test]
+    fn test_uninstall_removes_session_start_hook() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_claude_notify());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+        uninstall_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let session_hooks = root
+            .pointer("/hooks/SessionStart/0/hooks")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(session_hooks, 0, "SessionStart hook must be removed");
+    }
+
+    #[test]
+    fn test_hooks_installed_detects_session_start() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!hooks_installed(tmp.path(), "SessionStart"));
+        install_claude_hooks(tmp.path(), false).unwrap();
+        assert!(hooks_installed(tmp.path(), "SessionStart"));
     }
 }

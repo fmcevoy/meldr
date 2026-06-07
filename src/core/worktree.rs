@@ -139,9 +139,44 @@ fn inject_agent_env(
         let state_dir = home.join(".cache/claude-agents");
         let _ = std::fs::create_dir_all(&state_dir);
         let _ = std::fs::write(state_dir.join(format!("{session_id}.parent_pane")), pane_id);
+
+        // Also write a launcher-registry entry so claude-session-start.sh can
+        // resolve the pane for background sessions started via 'claude agents'
+        // that are run inside this worktree. Both meldr-spawned and agent-UI
+        // sessions then converge on the same resolver in claude-session-start.sh.
+        write_launcher_entry(&state_dir, pane_id, window_id);
     }
 
     Ok(())
+}
+
+/// Write a launcher-registry entry to `~/.cache/claude-agents/launchers/` so
+/// claude-session-start.sh can resolve the pane for background sessions that
+/// were started from within this worktree via `claude agents`.
+fn write_launcher_entry(state_dir: &std::path::Path, pane_id: &str, window_id: &str) {
+    let launcher_dir = state_dir.join("launchers");
+    let _ = std::fs::create_dir_all(&launcher_dir);
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let pid = std::process::id();
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    let content = format!(
+        "{{\"pane\":\"{pane_id}\",\"window\":\"{window_id}\",\"cwd\":\"{cwd}\",\"ts\":{ts}}}\n"
+    );
+    let filename = format!("{ts}-{pid}.json");
+    let tmp = launcher_dir.join(format!(".launcher-{pid}.tmp"));
+    if std::fs::write(&tmp, &content).is_ok() {
+        let _ = std::fs::rename(&tmp, launcher_dir.join(&filename)).map_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        });
+    }
 }
 
 /// Create tmux windows and panes for a set of packages in a worktree branch.
@@ -3621,6 +3656,60 @@ mod tests {
         assert!(sidecar.exists(), "sidecar file not written");
         let content = std::fs::read_to_string(&sidecar).unwrap();
         assert_eq!(content.trim(), "%1", "sidecar must contain the pane id");
+    }
+
+    #[test]
+    fn test_launcher_entry_written_alongside_sidecar() {
+        let packages = &["api"];
+        let (tmp, manifest) = setup_workspace(packages);
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            ..Default::default()
+        };
+
+        let home_tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: test-only.
+        unsafe { std::env::set_var("HOME", home_tmp.path()) };
+
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat-launcher",
+            &config,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let launcher_dir = home_tmp.path().join(".cache/claude-agents/launchers");
+        assert!(launcher_dir.exists(), "launcher dir must be created");
+
+        let entries: Vec<_> = std::fs::read_dir(&launcher_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "at least one launcher entry must be written"
+        );
+
+        // Every entry must be valid JSON with a non-empty pane and a numeric ts.
+        for entry in &entries {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&content).expect("launcher entry must be valid JSON");
+            assert!(
+                v["pane"]
+                    .as_str()
+                    .map(|s| s.starts_with('%'))
+                    .unwrap_or(false),
+                "pane field must be a tmux pane id"
+            );
+            assert!(v["ts"].as_u64().is_some(), "ts field must be a number");
+        }
     }
 }
 

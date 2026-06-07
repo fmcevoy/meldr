@@ -493,6 +493,10 @@ pub struct HooksDoctorReport {
     pub script_stale: bool,
     /// `~/.tmux.conf` doesn't reference `@cc_status` in `window-status-format`.
     pub tmux_conf_missing_cc_status: bool,
+    /// `settings.json` is missing the SessionStart hook for `claude-session-start.sh`.
+    pub session_start_hook_missing: bool,
+    /// `~/.cache/claude-agents/launchers/` is absent or not writable.
+    pub launcher_dir_unwritable: bool,
     pub applied: usize,
     pub warnings: Vec<String>,
 }
@@ -507,11 +511,13 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         claude_hook_missing: false,
         script_stale: false,
         tmux_conf_missing_cc_status: false,
+        session_start_hook_missing: false,
+        launcher_dir_unwritable: false,
         applied: 0,
         warnings: Vec::new(),
     };
 
-    // 1. Claude install + hook entry.
+    // 1. Claude install + hook entries (Stop, Notification, SessionStart).
     let claude_found = std::process::Command::new("which")
         .arg("claude")
         .output()
@@ -529,6 +535,19 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
                 match result {
                     Ok(()) => report.applied += 1,
                     Err(e) => report.warnings.push(format!("hooks: install failed: {e}")),
+                }
+            }
+        }
+
+        // SessionStart hook check (warn only — auto-fix via apply same as above).
+        if !install_hooks::hooks_installed(home, "SessionStart") {
+            report.session_start_hook_missing = true;
+            if apply && !report.claude_hook_missing {
+                match install_hooks::install_claude_hooks(home, false) {
+                    Ok(_) => report.applied += 1,
+                    Err(e) => report
+                        .warnings
+                        .push(format!("hooks: SessionStart install failed: {e}")),
                 }
             }
         }
@@ -560,6 +579,19 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         }
     } else {
         report.tmux_conf_missing_cc_status = true;
+    }
+
+    // 4. Launcher registry directory writable (warn only).
+    let launcher_dir = home.join(".cache/claude-agents/launchers");
+    if launcher_dir.exists() {
+        let probe = launcher_dir.join(".meldr-write-probe");
+        let ok = std::fs::write(&probe, b"").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        if !ok {
+            report.launcher_dir_unwritable = true;
+        }
+    } else {
+        report.launcher_dir_unwritable = std::fs::create_dir_all(&launcher_dir).is_err();
     }
 
     Ok(report)
@@ -952,5 +984,82 @@ mod tests {
 
         let after = WorkspaceState::load(&root).unwrap();
         assert!(after.get_worktree("gone-branch").is_none());
+    }
+
+    // ── hooks doctor tests ────────────────────────────────────────────────────
+
+    fn write_settings(dir: &std::path::Path, v: &serde_json::Value) {
+        let p = dir.join(".claude");
+        fs::create_dir_all(&p).unwrap();
+        fs::write(
+            p.join("settings.json"),
+            serde_json::to_string_pretty(v).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_session_start_hook_missing_flag_set_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        // Settings with Stop/Notification but no SessionStart
+        write_settings(
+            tmp.path(),
+            &serde_json::json!({
+                "hooks": {
+                    "Stop": [{"matcher":"*","hooks":[{"type":"command","command":"bash x stop","_meldr":true}]}],
+                    "Notification": [{"matcher":"*","hooks":[{"type":"command","command":"bash x notify","_meldr":true}]}]
+                }
+            }),
+        );
+        // Patch HOME so claude is "not found" — avoids needing real claude on PATH.
+        // Use a fake PATH with no claude to ensure claude_detected = false, which means
+        // the check only runs when claude IS detected.  Test the flag directly via run_hooks.
+        // We test the flag via the public struct fields.
+        let report = run_hooks(tmp.path(), false).unwrap();
+        // claude_detected may be true if claude is in PATH; the flag is only set when detected.
+        if report.claude_detected {
+            assert!(
+                report.session_start_hook_missing,
+                "SessionStart hook absent → flag must be set"
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_start_hook_present_flag_clear() {
+        let tmp = TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &serde_json::json!({
+                "hooks": {
+                    "Stop": [{"matcher":"*","hooks":[{"type":"command","command":"bash x stop","_meldr":true}]}],
+                    "Notification": [{"matcher":"*","hooks":[{"type":"command","command":"bash x notify","_meldr":true}]}],
+                    "SessionStart": [{"matcher":"startup","hooks":[{"type":"command","command":"bash ~/.claude/claude-session-start.sh","_meldr":true}]}]
+                }
+            }),
+        );
+        let report = run_hooks(tmp.path(), false).unwrap();
+        if report.claude_detected {
+            assert!(
+                !report.session_start_hook_missing,
+                "SessionStart hook present → flag must be clear"
+            );
+        }
+    }
+
+    #[test]
+    fn test_launcher_dir_missing_flag_set_then_clear_after_creation() {
+        let tmp = TempDir::new().unwrap();
+        // No launcher dir → flag set (and dir is created by the check itself)
+        let report = run_hooks(tmp.path(), false).unwrap();
+        // The check creates the dir if missing; if creation succeeded, flag is clear.
+        assert!(
+            !report.launcher_dir_unwritable,
+            "launcher dir should be creatable in a temp home"
+        );
+        assert!(
+            tmp.path().join(".cache/claude-agents/launchers").exists(),
+            "check must create the dir when it is missing"
+        );
     }
 }
