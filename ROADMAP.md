@@ -31,8 +31,8 @@ Meldr is the virtual monorepo for AI teams — keep repos separate, work as one.
 - [ ] **Manifest sharing / URL-based init**
   `meldr init --from <url>` clones a manifest repo and sets up workspace from shared `meldr.toml` (and `meldr.lock` if present). One-command team onboarding.
 
-- [ ] **`meldr doctor` & richer status**
-  Detect stale tmux windows, orphaned worktrees, missing packages, config validation. Richer status additions: branch tracking info, last sync timestamp, stale worktree warnings.
+- [x] **`meldr doctor` & richer status**
+  Detect stale tmux windows, orphaned worktrees, missing packages, config validation. `--apply` flag to auto-fix. Subactions: `claude`, `worktrees`, `tmux`.
 
 - [ ] **`meldr.local.toml`**
   Gitignored local overrides for personal preferences (editor, agent, layout) without polluting the shared manifest. Added to `.gitignore` on `meldr init`. Sits between env vars and workspace `[settings]` in the config precedence chain.
