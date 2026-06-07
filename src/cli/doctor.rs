@@ -170,6 +170,30 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         }
     }
 
+    if report.session_start_hook_missing && report.claude_detected {
+        any = true;
+        if apply {
+            println!(
+                "  {} SessionStart hook missing — installed entry in settings.json",
+                style("[apply]").green()
+            );
+        } else {
+            println!(
+                "  {} SessionStart hook missing (tab-flash won't work for claude agents) — run {} to fix",
+                style("[warn]").yellow(),
+                style("meldr install-hooks").bold()
+            );
+        }
+    }
+
+    if report.launcher_dir_unwritable {
+        any = true;
+        println!(
+            "  {} ~/.cache/claude-agents/launchers/ is missing or not writable — tab-flash for claude agents will silently skip",
+            style("[warn]").yellow()
+        );
+    }
+
     if report.tmux_conf_missing_cc_status {
         any = true;
         println!(
