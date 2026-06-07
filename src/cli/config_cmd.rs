@@ -49,6 +49,13 @@ pub fn list(workspace_root: Option<&Path>, global: bool) -> Result<()> {
         let gc = config::global_config_list()?;
         println!("Global configuration (~/.meldr/config.toml):");
         println!("  agent = {}", gc.defaults.agent);
+        println!(
+            "  left_agent = {}",
+            gc.defaults
+                .left_agent
+                .as_deref()
+                .unwrap_or(config::DEFAULT_LEFT_AGENT)
+        );
         println!("  mode = {}", gc.defaults.mode);
         print_opt("  editor", &gc.defaults.editor);
         print_opt("  default_branch", &gc.defaults.default_branch);
@@ -67,6 +74,7 @@ pub fn list(workspace_root: Option<&Path>, global: bool) -> Result<()> {
         println!("Effective configuration:");
         println!("  agent = {}", effective.agent);
         println!("  agent_command = {}", effective.agent_command);
+        println!("  left_agent_command = {}", effective.left_agent_command);
         println!("  mode = {}", effective.mode);
         println!("  sync_method = {}", effective.sync_method);
         println!("  sync_strategy = {}", effective.sync_strategy);
@@ -87,6 +95,7 @@ pub fn show(workspace_root: Option<&Path>) -> Result<()> {
 
     let keys = [
         "agent",
+        "left_agent",
         "mode",
         "sync_method",
         "sync_strategy",
@@ -136,6 +145,7 @@ fn print_opt(label: &str, val: &Option<String>) {
 fn ws_setting(settings: &crate::core::workspace::Settings, key: &str) -> Option<String> {
     match key {
         "agent" => settings.agent.clone(),
+        "left_agent" => settings.left_agent.clone(),
         "mode" => settings.mode.clone(),
         "sync_method" => settings.sync_method.clone(),
         "sync_strategy" => settings.sync_strategy.clone(),
@@ -152,6 +162,11 @@ fn ws_setting(settings: &crate::core::workspace::Settings, key: &str) -> Option<
 fn global_setting(defaults: &config::GlobalDefaults, key: &str) -> Option<String> {
     match key {
         "agent" if defaults.agent != config::DEFAULT_AGENT => Some(defaults.agent.clone()),
+        "left_agent" => defaults
+            .left_agent
+            .as_ref()
+            .filter(|v| v.as_str() != config::DEFAULT_LEFT_AGENT)
+            .cloned(),
         "mode" if defaults.mode != config::DEFAULT_MODE => Some(defaults.mode.clone()),
         "editor" => defaults.editor.clone(),
         "default_branch" => defaults.default_branch.clone(),
@@ -166,6 +181,7 @@ fn global_setting(defaults: &config::GlobalDefaults, key: &str) -> Option<String
 fn default_for(key: &str) -> &'static str {
     match key {
         "agent" => config::DEFAULT_AGENT,
+        "left_agent" => config::DEFAULT_LEFT_AGENT,
         "mode" => config::DEFAULT_MODE,
         "sync_method" => config::DEFAULT_SYNC_METHOD,
         "sync_strategy" => config::DEFAULT_SYNC_STRATEGY,

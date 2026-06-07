@@ -591,13 +591,15 @@ fn test_config_list() {
 
     meldr()
         .args(["config", "list"])
+        .env_remove("MELDR_LEFT_AGENT")
         .current_dir(tmp.path())
         .assert()
         .success()
         .stdout(
             predicate::str::contains("agent =")
                 .and(predicate::str::contains("mode ="))
-                .and(predicate::str::contains("sync_method =")),
+                .and(predicate::str::contains("sync_method ="))
+                .and(predicate::str::contains("left_agent_command =")),
         );
 }
 
@@ -810,6 +812,77 @@ fn test_config_set_invalid_key() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Unknown setting"));
+}
+
+#[test]
+fn test_config_set_left_agent_workspace() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "left_agent", "gemini"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set left_agent = gemini"));
+
+    meldr()
+        .args(["config", "get", "left_agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gemini"));
+
+    let toml_content = fs::read_to_string(tmp.path().join("meldr.toml")).unwrap();
+    assert!(
+        toml_content.contains("left_agent"),
+        "meldr.toml should contain 'left_agent', got: {toml_content}"
+    );
+}
+
+#[test]
+fn test_config_list_shows_left_agent_command_resolved() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "left_agent", "gemini"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_LEFT_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "left_agent_command = gemini --yolo",
+        ));
+}
+
+#[test]
+fn test_config_set_left_agent_unknown_name_falls_back_to_name() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["config", "set", "left_agent", "my-custom-agent"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Unknown agents fall back to the agent name as the command.
+    meldr()
+        .args(["config", "list"])
+        .env_remove("MELDR_LEFT_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "left_agent_command = my-custom-agent",
+        ));
 }
 
 #[test]
@@ -1818,6 +1891,7 @@ fn test_config_set_all_global_keys() {
 
     for (key, value) in &[
         ("agent", "cursor"),
+        ("left_agent", "gemini"),
         ("mode", "no-tabs"),
         ("editor", "hx ."),
         ("default_branch", "develop"),

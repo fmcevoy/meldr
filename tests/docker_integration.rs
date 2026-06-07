@@ -3875,3 +3875,336 @@ fn test_worktree_add_with_devin_agent_inside_tmux() {
 
     kill_tmux_session(&session);
 }
+
+// ---------------------------------------------------------------------------
+// left_agent pane-dispatch integration tests
+// ---------------------------------------------------------------------------
+
+/// Resolve a tmux window name (from state.json) to its numeric window_id (@N).
+fn resolve_tmux_window_id(window_name: &str) -> Option<String> {
+    let out = process::Command::new("tmux")
+        .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|line| {
+            let (id, name) = line.split_once(' ')?;
+            if name == window_name {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// List the top row of panes in a window, sorted by pane_left.
+/// Returns `(pane_id, pane_left)` for each pane in the topmost row.
+fn list_top_row_panes(window_id: &str) -> Vec<(String, u32)> {
+    let out = process::Command::new("tmux")
+        .args([
+            "list-panes",
+            "-t",
+            window_id,
+            "-F",
+            "#{pane_id} #{pane_left} #{pane_top}",
+        ])
+        .output()
+        .expect("tmux list-panes");
+
+    let all: Vec<(String, u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let id = it.next()?.to_string();
+            let left: u32 = it.next()?.parse().ok()?;
+            let top: u32 = it.next()?.parse().ok()?;
+            Some((id, left, top))
+        })
+        .collect();
+
+    let min_top = all.iter().map(|p| p.2).min().unwrap_or(0);
+    let mut row: Vec<(String, u32)> = all
+        .into_iter()
+        .filter(|p| p.2 == min_top)
+        .map(|p| (p.0, p.1))
+        .collect();
+    row.sort_by_key(|p| p.1);
+    row
+}
+
+/// Capture the current text content of a tmux pane.
+fn capture_pane(pane_id: &str) -> String {
+    let out = process::Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", pane_id])
+        .output()
+        .expect("tmux capture-pane");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// Read the tmux_window name stored in .meldr/state.json.
+fn read_tmux_window_name(workspace_root: &std::path::Path) -> String {
+    let state = fs::read_to_string(workspace_root.join(".meldr/state.json")).unwrap();
+    state
+        .lines()
+        .find_map(|l| {
+            l.trim().strip_prefix("\"tmux_window\":").map(|rest| {
+                rest.trim()
+                    .trim_matches(|c: char| c == '"' || c == ',')
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| panic!("tmux_window not found in: {state}"))
+}
+
+#[test]
+fn test_default_layout_left_pane_runs_cursor_right_panes_run_agent() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "add", "left-cursor-branch"])
+        .env("TMUX", &tmux_var)
+        .env_remove("MELDR_LEFT_AGENT")
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_name = read_tmux_window_name(tmp.path());
+    let window_id = resolve_tmux_window_id(&window_name)
+        .unwrap_or_else(|| panic!("window '{window_name}' not found in tmux"));
+
+    // Give the shell time to process the sent keys.
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let top_row = list_top_row_panes(&window_id);
+    assert_eq!(
+        top_row.len(),
+        3,
+        "default layout should have 3 top-row panes"
+    );
+
+    let left_content = capture_pane(&top_row[0].0);
+    assert!(
+        left_content.contains("cursor agent --yolo"),
+        "leftmost pane should show 'cursor agent --yolo', got:\n{left_content}"
+    );
+    for (pane_id, _) in &top_row[1..] {
+        let content = capture_pane(pane_id);
+        assert!(
+            content.contains("claude agents"),
+            "non-left pane should show 'claude agents', got:\n{content}"
+        );
+    }
+
+    kill_tmux_session(&session);
+}
+
+#[test]
+fn test_left_agent_config_collapses_all_panes_to_same_agent() {
+    // Setting left_agent = claude at workspace level collapses all panes to claude,
+    // verifying that left_agent overrides the global default (cursor).
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Override left_agent to claude → all three top-row panes should run claude agents.
+    meldr()
+        .args(["config", "set", "left_agent", "claude"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "add", "all-claude-branch"])
+        .env("TMUX", &tmux_var)
+        .env_remove("MELDR_LEFT_AGENT")
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_name = read_tmux_window_name(tmp.path());
+    let window_id = resolve_tmux_window_id(&window_name)
+        .unwrap_or_else(|| panic!("window '{window_name}' not found"));
+
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let top_row = list_top_row_panes(&window_id);
+    assert_eq!(top_row.len(), 3);
+
+    for (pane_id, _) in &top_row {
+        let content = capture_pane(pane_id);
+        assert!(
+            content.contains("claude agents"),
+            "all panes should show 'claude agents' when left_agent=claude, got:\n{content}"
+        );
+        assert!(
+            !content.contains("cursor agent"),
+            "no pane should show cursor when left_agent=claude, got:\n{content}"
+        );
+    }
+
+    kill_tmux_session(&session);
+}
+
+#[test]
+fn test_minimal_layout_left_agent_not_used() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "set", "layout", "minimal"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "add", "minimal-layout-branch"])
+        .env("TMUX", &tmux_var)
+        .env_remove("MELDR_LEFT_AGENT")
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_name = read_tmux_window_name(tmp.path());
+    let window_id = resolve_tmux_window_id(&window_name)
+        .unwrap_or_else(|| panic!("window '{window_name}' not found"));
+
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // Minimal layout: 2 panes. Rightmost pane is the agent pane.
+    let out = process::Command::new("tmux")
+        .args([
+            "list-panes",
+            "-t",
+            &window_id,
+            "-F",
+            "#{pane_id} #{pane_left}",
+        ])
+        .output()
+        .expect("tmux list-panes");
+    let panes: Vec<(String, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let id = it.next()?.to_string();
+            let left: u32 = it.next()?.parse().ok()?;
+            Some((id, left))
+        })
+        .collect();
+
+    let agent_pane = panes.iter().max_by_key(|p| p.1).unwrap();
+    let content = capture_pane(&agent_pane.0);
+    assert!(
+        !content.contains("cursor agent"),
+        "minimal layout agent pane should NOT use cursor, got:\n{content}"
+    );
+    assert!(
+        content.contains("claude agents"),
+        "minimal layout agent pane should use claude agents, got:\n{content}"
+    );
+
+    kill_tmux_session(&session);
+}
+
+#[test]
+fn test_workspace_left_agent_setting_applies_to_left_pane() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+
+    init_workspace(tmp.path());
+
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["config", "set", "left_agent", "gemini"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    meldr()
+        .args(["worktree", "add", "workspace-left-agent-branch"])
+        .env("TMUX", &tmux_var)
+        .env_remove("MELDR_LEFT_AGENT")
+        .env_remove("MELDR_AGENT")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_name = read_tmux_window_name(tmp.path());
+    let window_id = resolve_tmux_window_id(&window_name)
+        .unwrap_or_else(|| panic!("window '{window_name}' not found"));
+
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let top_row = list_top_row_panes(&window_id);
+    assert_eq!(top_row.len(), 3);
+
+    let left_content = capture_pane(&top_row[0].0);
+    assert!(
+        left_content.contains("gemini --yolo"),
+        "leftmost pane should show 'gemini --yolo' (workspace left_agent=gemini), got:\n{left_content}"
+    );
+
+    let mid_content = capture_pane(&top_row[1].0);
+    assert!(
+        mid_content.contains("claude agents"),
+        "middle pane should still show 'claude agents', got:\n{mid_content}"
+    );
+
+    kill_tmux_session(&session);
+}

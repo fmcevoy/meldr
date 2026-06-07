@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{MeldrError, Result};
 
 pub const DEFAULT_AGENT: &str = "claude";
+pub const DEFAULT_LEFT_AGENT: &str = "cursor";
 pub const DEFAULT_MODE: &str = "full";
 pub const DEFAULT_SYNC_METHOD: &str = "rebase";
 pub const DEFAULT_SYNC_STRATEGY: &str = "safe";
@@ -55,6 +56,13 @@ pub struct GlobalDefaults {
     pub window_name: Option<String>,
     #[serde(default)]
     pub claude_prune: Option<bool>,
+    /// Agent for the leftmost pane in the default 9-pane layout. Defaults to "cursor".
+    #[serde(default = "default_left_agent")]
+    pub left_agent: Option<String>,
+}
+
+pub(crate) fn default_left_agent() -> Option<String> {
+    Some(DEFAULT_LEFT_AGENT.to_string())
 }
 
 impl Default for GlobalDefaults {
@@ -70,6 +78,7 @@ impl Default for GlobalDefaults {
             layout: None,
             window_name: None,
             claude_prune: None,
+            left_agent: default_left_agent(),
         }
     }
 }
@@ -100,6 +109,9 @@ pub struct EffectiveConfig {
     pub agent: String,
     pub mode: String,
     pub agent_command: String,
+    /// Resolved command for the leftmost agent pane in the default layout.
+    /// Falls back to `agent_command` when no left-agent override is set.
+    pub left_agent_command: String,
     pub sync_method: String,
     pub sync_strategy: String,
     pub no_agent: bool,
@@ -120,6 +132,7 @@ impl Default for EffectiveConfig {
             agent: DEFAULT_AGENT.to_string(),
             mode: DEFAULT_MODE.to_string(),
             agent_command: DEFAULT_AGENT.to_string(),
+            left_agent_command: default_agent_command(DEFAULT_LEFT_AGENT),
             sync_method: DEFAULT_SYNC_METHOD.to_string(),
             sync_strategy: DEFAULT_SYNC_STRATEGY.to_string(),
             no_agent: false,
@@ -177,6 +190,7 @@ pub fn ensure_global_config() -> Result<()> {
             "#\n",
             "# [defaults]\n",
             "# agent = \"claude\"\n",
+            "# left_agent = \"cursor\"  # leftmost pane in the default layout only\n",
             "# mode = \"full\"\n",
             "# editor = \"nvim .\"\n",
             "# default_branch = \"main\"\n",
@@ -356,6 +370,24 @@ pub fn resolve_config(
         .map(|a| a.command.clone())
         .unwrap_or_else(|| default_agent_command(&config.agent));
 
+    // Resolve left_agent_command using the same layering as agent_command.
+    // Falls back to agent_command when no left-agent-specific override is set.
+    let mut left_agent_name: Option<String> = global.defaults.left_agent.clone();
+    if let Some(ref v) = workspace_settings.left_agent {
+        left_agent_name = Some(v.clone());
+    }
+    if let Some(v) = env_overrides.get("MELDR_LEFT_AGENT") {
+        left_agent_name = Some(v.clone());
+    }
+    config.left_agent_command = match left_agent_name {
+        Some(ref name) => global
+            .agents
+            .get(name)
+            .map(|a| a.command.clone())
+            .unwrap_or_else(|| default_agent_command(name)),
+        None => config.agent_command.clone(),
+    };
+
     config
 }
 
@@ -441,6 +473,7 @@ pub fn default_agent_command(agent: &str) -> String {
 
 const VALID_SETTINGS_KEYS: &[&str] = &[
     "agent",
+    "left_agent",
     "mode",
     "sync_method",
     "sync_strategy",
@@ -538,6 +571,7 @@ pub fn config_unset(workspace_root: &Path, key: &str) -> Result<()> {
 /// Valid keys for the `[defaults]` section in global config.
 const VALID_GLOBAL_KEYS: &[&str] = &[
     "agent",
+    "left_agent",
     "mode",
     "editor",
     "default_branch",
@@ -637,6 +671,7 @@ pub fn collect_env_overrides() -> HashMap<String, String> {
     let mut env = HashMap::new();
     for key in &[
         "MELDR_AGENT",
+        "MELDR_LEFT_AGENT",
         "MELDR_MODE",
         "MELDR_EDITOR",
         "MELDR_DEFAULT_BRANCH",
@@ -1095,12 +1130,13 @@ mod tests {
         assert!(VALID_SETTINGS_KEYS.contains(&"sync_strategy"));
 
         assert!(VALID_SETTINGS_KEYS.contains(&"claude_prune"));
+        assert!(VALID_SETTINGS_KEYS.contains(&"left_agent"));
 
         // Verify the total count matches expectations (no accidental duplicates or missing keys)
         assert_eq!(
             VALID_SETTINGS_KEYS.len(),
-            12,
-            "Expected exactly 12 valid settings keys"
+            13,
+            "Expected exactly 13 valid settings keys"
         );
 
         // Verify that invalid keys are not accepted by config_set
@@ -1267,5 +1303,138 @@ leader_package = "api"
 
         let result = config_unset(tmp.path(), "bogus");
         assert!(result.is_err());
+    }
+
+    // --- left_agent resolution tests ---
+
+    #[test]
+    fn test_default_left_agent_is_cursor() {
+        let global = GlobalConfig::default();
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.agent, "claude");
+        assert_eq!(config.agent_command, "claude agents");
+        assert_eq!(config.left_agent_command, "cursor agent --yolo");
+    }
+
+    #[test]
+    fn test_left_agent_inherits_agent_when_unset() {
+        let global = GlobalConfig {
+            defaults: GlobalDefaults {
+                left_agent: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.left_agent_command, config.agent_command);
+    }
+
+    #[test]
+    fn test_global_left_agent_override() {
+        let global = GlobalConfig {
+            defaults: GlobalDefaults {
+                left_agent: Some("gemini".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.left_agent_command, "gemini --yolo");
+    }
+
+    #[test]
+    fn test_workspace_left_agent_override() {
+        let global = GlobalConfig::default(); // left_agent = Some("cursor")
+        let workspace = Settings {
+            left_agent: Some("kiro-tui".to_string()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.left_agent_command, "kiro-cli --tui");
+    }
+
+    #[test]
+    fn test_env_left_agent_override() {
+        let global = GlobalConfig::default();
+        let workspace = Settings {
+            left_agent: Some("kiro-tui".to_string()),
+            ..Default::default()
+        };
+        let cli = CliOverrides::default();
+        let mut env = HashMap::new();
+        env.insert("MELDR_LEFT_AGENT".to_string(), "gemini".to_string());
+        env.insert("MELDR_AGENT".to_string(), "claude".to_string());
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        // env beats workspace
+        assert_eq!(config.left_agent_command, "gemini --yolo");
+        // agent is independently set by MELDR_AGENT
+        assert_eq!(config.agent_command, "claude agents");
+    }
+
+    #[test]
+    fn test_left_agent_resolves_custom_global_agent_entry() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "cursor".to_string(),
+            AgentConfig {
+                command: "cursor agent --custom".to_string(),
+            },
+        );
+        let global = GlobalConfig {
+            defaults: GlobalDefaults::default(), // left_agent = Some("cursor")
+            agents,
+            ..Default::default()
+        };
+        let workspace = Settings::default();
+        let cli = CliOverrides::default();
+        let env = HashMap::new();
+
+        let config = resolve_config(&global, &workspace, &cli, &env);
+        assert_eq!(config.left_agent_command, "cursor agent --custom");
+    }
+
+    #[test]
+    fn test_left_agent_set_and_get_in_workspace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = "[workspace]\nname = \"test\"\n";
+        std::fs::write(tmp.path().join("meldr.toml"), manifest).unwrap();
+
+        config_set(tmp.path(), "left_agent", "gemini").unwrap();
+        assert_eq!(
+            config_get(tmp.path(), "left_agent").unwrap(),
+            Some("gemini".to_string())
+        );
+
+        config_unset(tmp.path(), "left_agent").unwrap();
+        assert_eq!(config_get(tmp.path(), "left_agent").unwrap(), None);
+    }
+
+    #[test]
+    fn test_settings_round_trip_left_agent() {
+        let input = r#"
+[workspace]
+name = "ws"
+
+[settings]
+left_agent = "gemini"
+"#;
+        let manifest: crate::core::workspace::Manifest = toml::from_str(input).unwrap();
+        assert_eq!(manifest.settings.left_agent.as_deref(), Some("gemini"));
     }
 }

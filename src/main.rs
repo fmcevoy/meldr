@@ -82,6 +82,8 @@ fn run(cli: Cli) -> error::Result<()> {
                     .get(a)
                     .map(|ac| ac.command.clone())
                     .unwrap_or_else(|| config::default_agent_command(a));
+                // Explicit --agent collapses the left-pane override: all panes get the same agent.
+                config.left_agent_command = config.agent_command.clone();
             }
             cli::create::run(
                 &git,
