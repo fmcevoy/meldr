@@ -209,6 +209,21 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         );
     }
 
+    if report.tmux_conf_missing_pane_focus_clear {
+        any = true;
+        println!(
+            "  {} ~/.tmux.conf does not clear @cc_pane_status on focus — pane border will stay coloured until timer expires",
+            style("[warn]").yellow()
+        );
+        println!("  Add to ~/.tmux.conf (replace existing after-select-* hooks if present):");
+        println!(
+            "    set-hook -g after-select-window 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'"
+        );
+        println!(
+            "    set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_pane_status'"
+        );
+    }
+
     if !any && report.claude_detected {
         println!("  {}", style("no issues found").dim());
     }

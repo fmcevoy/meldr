@@ -493,6 +493,8 @@ pub struct HooksDoctorReport {
     pub script_stale: bool,
     /// `~/.tmux.conf` doesn't reference `@cc_status` in `window-status-format`.
     pub tmux_conf_missing_cc_status: bool,
+    /// `~/.tmux.conf` doesn't clear `@cc_pane_status` in an `after-select-*` hook.
+    pub tmux_conf_missing_pane_focus_clear: bool,
     /// `settings.json` is missing the SessionStart hook for `claude-session-start.sh`.
     pub session_start_hook_missing: bool,
     /// `~/.cache/claude-agents/launchers/` is absent or not writable.
@@ -511,6 +513,7 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         claude_hook_missing: false,
         script_stale: false,
         tmux_conf_missing_cc_status: false,
+        tmux_conf_missing_pane_focus_clear: false,
         session_start_hook_missing: false,
         launcher_dir_unwritable: false,
         applied: 0,
@@ -570,15 +573,25 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         }
     }
 
-    // 3. tmux.conf @cc_status presence (warn only — never auto-edit user's tmux.conf).
+    // 3. tmux.conf checks (warn only — never auto-edit user's tmux.conf).
     let tmux_conf = home.join(".tmux.conf");
     if tmux_conf.exists() {
         let content = std::fs::read_to_string(&tmux_conf).unwrap_or_default();
         if !content.contains("@cc_status") {
             report.tmux_conf_missing_cc_status = true;
         }
+        // Check that @cc_pane_status is cleared inside an after-select-* hook so
+        // the pane border indicator clears when the user focuses the pane.
+        let has_pane_clear = content.lines().any(|line| {
+            (line.contains("after-select-window") || line.contains("after-select-pane"))
+                && line.contains("@cc_pane_status")
+        });
+        if !has_pane_clear {
+            report.tmux_conf_missing_pane_focus_clear = true;
+        }
     } else {
         report.tmux_conf_missing_cc_status = true;
+        report.tmux_conf_missing_pane_focus_clear = true;
     }
 
     // 4. Launcher registry directory writable (warn only).
@@ -1060,6 +1073,47 @@ mod tests {
         assert!(
             tmp.path().join(".cache/claude-agents/launchers").exists(),
             "check must create the dir when it is missing"
+        );
+    }
+
+    // ── pane focus-clear doctor tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_pane_focus_clear_flag_set_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        // tmux.conf with @cc_status but no @cc_pane_status focus-clear
+        let content = "set-hook -g after-select-window 'set-option -wu @cc_status'\n\
+                       set -g window-status-format \"#{@cc_status}\"\n";
+        fs::write(tmp.path().join(".tmux.conf"), content).unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(
+            report.tmux_conf_missing_pane_focus_clear,
+            "flag must be set when after-select hook doesn't clear @cc_pane_status"
+        );
+    }
+
+    #[test]
+    fn test_pane_focus_clear_flag_clear_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let content = "set-hook -g after-select-window 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'\n\
+                       set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_pane_status'\n\
+                       set -g window-status-format \"#{@cc_status}\"\n";
+        fs::write(tmp.path().join(".tmux.conf"), content).unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(
+            !report.tmux_conf_missing_pane_focus_clear,
+            "flag must be clear when @cc_pane_status is cleared in after-select hook"
+        );
+    }
+
+    #[test]
+    fn test_pane_focus_clear_flag_set_when_tmux_conf_missing() {
+        let tmp = TempDir::new().unwrap();
+        // No .tmux.conf at all
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(
+            report.tmux_conf_missing_pane_focus_clear,
+            "flag must be set when .tmux.conf is absent"
         );
     }
 }

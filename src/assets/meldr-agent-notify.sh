@@ -29,11 +29,15 @@ fi
 
 SESSION_ID=$(printf '%s' "$HOOK_DATA" | jq -r '.session_id // ""' 2>/dev/null)
 CWD=$(printf '%s' "$HOOK_DATA" | jq -r '.cwd // ""' 2>/dev/null)
+TRANSCRIPT=$(printf '%s' "$HOOK_DATA" | jq -r '.transcript_path // ""' 2>/dev/null)
+# Expand leading ~ in transcript path
+TRANSCRIPT="${TRANSCRIPT/#\~/$HOME}"
 
 # Resolve pane context. Priority:
 #   1. MELDR_TMUX_PANE — injected by meldr at agent spawn time (most reliable)
 #   2. TMUX_PANE       — inherited from shell when env propagation works
-#   3. Sidecar file    — written by meldr at spawn, keyed by MELDR_AGENT_SESSION
+#   3. MELDR_AGENT_SESSION sidecar — written by meldr at spawn
+#   4. SESSION_ID sidecar — written at SessionStart by claude-session-start.sh
 PANE_ID=""
 WINDOW_ID=""
 WINDOW_NAME=""
@@ -50,18 +54,64 @@ elif [ -n "${MELDR_AGENT_SESSION:-}" ]; then
   PANE_ID=$(cat "$SIDECAR" 2>/dev/null || true)
   [ -n "$PANE_ID" ] && WINDOW_ID=$(tmux display-message -t "$PANE_ID" -p '#{window_id}' 2>/dev/null || true)
   [ -n "$PANE_ID" ] && WINDOW_NAME=$(tmux display-message -t "$PANE_ID" -p '#{window_name}' 2>/dev/null || true)
+elif [ -n "$SESSION_ID" ] && [ -f "$STATE_DIR/${SESSION_ID}.parent_pane" ]; then
+  PANE_ID=$(cat "$STATE_DIR/${SESSION_ID}.parent_pane" 2>/dev/null || true)
+  [ -n "$PANE_ID" ] && WINDOW_ID=$(tmux display-message -t "$PANE_ID" -p '#{window_id}' 2>/dev/null || true)
+  [ -n "$PANE_ID" ] && WINDOW_NAME=$(tmux display-message -t "$PANE_ID" -p '#{window_name}' 2>/dev/null || true)
 fi
 
+# Inspect the last assistant turn in the transcript to classify Stop events.
+# Returns "waiting" when the turn ends with a question, contains "needs input:",
+# or used the AskUserQuestion tool; "done" otherwise. Best-effort: falls back to
+# "done" on any parse failure so the flash always fires.
+classify_stop_status() {
+  local transcript="$1"
+  [ -z "$transcript" ] || [ ! -f "$transcript" ] && { echo "done"; return; }
+
+  local last_asst
+  last_asst=$(grep -a '"role"[[:space:]]*:[[:space:]]*"assistant"' "$transcript" 2>/dev/null | tail -1)
+  [ -z "$last_asst" ] && { echo "done"; return; }
+
+  # AskUserQuestion tool_use in content array → always waiting
+  if printf '%s' "$last_asst" | \
+      jq -e '(.content // [])[] | select(.type=="tool_use" and .name=="AskUserQuestion")' \
+      >/dev/null 2>&1; then
+    echo "waiting"; return
+  fi
+
+  local text
+  text=$(printf '%s' "$last_asst" | \
+    jq -r '[(.content // [])[] | select(.type=="text") | .text] | join("")' \
+    2>/dev/null) || true
+  [ -z "$text" ] && { echo "done"; return; }
+
+  local trimmed
+  trimmed=$(printf '%s' "$text" | sed 's/[[:space:]]*$//')
+
+  if printf '%s' "$trimmed" | grep -qE '[?]$' || \
+     printf '%s' "$text"    | grep -qi 'needs input:'; then
+    echo "waiting"
+  else
+    echo "done"
+  fi
+}
+
 # Map event to status and sound
-STATUS="$EVENT"
 case "$EVENT" in
   stop|Stop)
-    STATUS="done"
-    afplay /System/Library/Sounds/Glass.aiff 2>/dev/null &
+    STATUS=$(classify_stop_status "$TRANSCRIPT")
+    if [ "$STATUS" = "waiting" ]; then
+      afplay /System/Library/Sounds/Funk.aiff 2>/dev/null &
+    else
+      afplay /System/Library/Sounds/Glass.aiff 2>/dev/null &
+    fi
     ;;
   notify)
     STATUS="waiting"
     afplay /System/Library/Sounds/Funk.aiff 2>/dev/null &
+    ;;
+  *)
+    STATUS="$EVENT"
     ;;
 esac
 
@@ -75,10 +125,10 @@ fi
 
 # Flash the window tab and pane border.
 # Generation guard: each flash stores a unique token in @cc_status_gen so that
-# one pane's 120s clear-timer doesn't wipe a later flash from another pane.
+# one pane's clear-timer doesn't wipe a later flash from another pane.
 if [ -n "$WINDOW_ID" ]; then
   GEN="$(date +%s%N)-$$"
-  TIMEOUT="${MELDR_CC_TIMEOUT:-120}"
+  TIMEOUT="${MELDR_CC_TIMEOUT:-5}"
 
   if [ "$DRY_RUN" = "1" ]; then
     echo "tmux set-option -w -t $WINDOW_ID @cc_status $STATUS"

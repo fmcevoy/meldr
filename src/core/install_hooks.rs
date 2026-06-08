@@ -15,8 +15,7 @@ fn hook_command(event: &str, script_path: &str) -> String {
 }
 
 /// Install meldr-managed hook entries into `~/.claude/settings.json`.
-/// Existing user entries are preserved. An old entry pointing to `claude-notify.sh`
-/// is updated in-place rather than duplicated.
+/// Existing user entries are preserved; meldr-tagged entries are updated in-place.
 pub fn install_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
     let notify_script = "~/.local/share/meldr/meldr-agent-notify.sh";
     let session_start_cmd = "bash ~/.claude/claude-session-start.sh";
@@ -102,10 +101,9 @@ fn write_settings_atomic(path: &Path, value: &Value) -> Result<()> {
     })
 }
 
-/// Add or update the meldr hook entry for `event`. Looks for an existing entry
-/// that is either already meldr-tagged or points to the old `claude-notify.sh`
-/// path, and updates it in-place. Falls back to appending to the first matcher
-/// if none is found, creating the structure from scratch if needed.
+/// Add or update the meldr hook entry for `event`. Updates an existing meldr-tagged
+/// entry in-place, falling back to appending to the first matcher or building the
+/// structure from scratch if needed.
 fn upsert_hook(root: &mut Value, event: &str, command: &str) {
     let entry = json!({ "type": "command", "command": command, "_meldr": true });
 
@@ -120,16 +118,11 @@ fn upsert_hook(root: &mut Value, event: &str, command: &str) {
                 .and_then(|v| v.as_array_mut())
             {
                 for hook in hooks_arr.iter_mut() {
-                    let is_meldr = hook
+                    if hook
                         .get(MELDR_MARKER)
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let is_old = hook
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .map(|c| c.contains("claude-notify.sh"))
-                        .unwrap_or(false);
-                    if is_meldr || is_old {
+                        .unwrap_or(false)
+                    {
                         *hook = entry.clone();
                         return;
                     }
@@ -279,16 +272,6 @@ fn find_meldr_hook<'a>(root: &'a Value, event: &str) -> Option<&'a Value> {
 mod tests {
     use super::*;
 
-    fn settings_with_claude_notify() -> Value {
-        json!({
-            "hooks": {
-                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.claude/claude-notify.sh stop"}]}],
-                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.claude/claude-notify.sh notify"}]}]
-            },
-            "model": "opus"
-        })
-    }
-
     fn settings_with_meldr_hooks() -> Value {
         json!({
             "hooks": {
@@ -315,33 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_replaces_old_claude_notify_entry() {
-        let mut root = settings_with_claude_notify();
-        upsert_hook(
-            &mut root,
-            "Stop",
-            "bash ~/.local/share/meldr/meldr-agent-notify.sh stop",
-        );
-        let hooks = root
-            .pointer("/hooks/Stop/0/hooks")
-            .unwrap()
-            .as_array()
-            .unwrap();
-        assert_eq!(hooks.len(), 1, "should replace, not duplicate");
-        assert_eq!(hooks[0][MELDR_MARKER], true);
-        assert!(
-            hooks[0]["command"]
-                .as_str()
-                .unwrap()
-                .contains("meldr-agent-notify.sh")
-        );
-    }
-
-    #[test]
     fn test_idempotent_double_install() {
         let tmp = tempfile::TempDir::new().unwrap();
-        write_settings(tmp.path(), &settings_with_claude_notify());
-
         install_claude_hooks(tmp.path(), false).unwrap();
         install_claude_hooks(tmp.path(), false).unwrap();
 
@@ -352,6 +310,27 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(hooks.len(), 1, "no duplicates after double install");
+    }
+
+    #[test]
+    fn test_idempotent_from_existing_meldr_settings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(tmp.path(), &settings_with_meldr_hooks());
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            hooks.len(),
+            1,
+            "no duplicates after double install from existing"
+        );
     }
 
     #[test]
@@ -406,7 +385,7 @@ mod tests {
     #[test]
     fn test_uninstall_round_trip() {
         let tmp = tempfile::TempDir::new().unwrap();
-        write_settings(tmp.path(), &settings_with_claude_notify());
+        write_settings(tmp.path(), &settings_with_meldr_hooks());
 
         install_claude_hooks(tmp.path(), false).unwrap();
         uninstall_claude_hooks(tmp.path(), false).unwrap();
@@ -426,8 +405,6 @@ mod tests {
     #[test]
     fn test_install_adds_session_start_hook() {
         let tmp = tempfile::TempDir::new().unwrap();
-        write_settings(tmp.path(), &settings_with_claude_notify());
-
         install_claude_hooks(tmp.path(), false).unwrap();
 
         let root = read_back(tmp.path());
@@ -463,8 +440,6 @@ mod tests {
     #[test]
     fn test_idempotent_session_start_hook() {
         let tmp = tempfile::TempDir::new().unwrap();
-        write_settings(tmp.path(), &settings_with_claude_notify());
-
         install_claude_hooks(tmp.path(), false).unwrap();
         install_claude_hooks(tmp.path(), false).unwrap();
 
@@ -480,8 +455,6 @@ mod tests {
     #[test]
     fn test_uninstall_removes_session_start_hook() {
         let tmp = tempfile::TempDir::new().unwrap();
-        write_settings(tmp.path(), &settings_with_claude_notify());
-
         install_claude_hooks(tmp.path(), false).unwrap();
         uninstall_claude_hooks(tmp.path(), false).unwrap();
 
