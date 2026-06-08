@@ -73,8 +73,7 @@ mod notify_script_tests {
     fn make_transcript(dir: &tempfile::TempDir, last_text: &str) -> String {
         let path = dir.path().join("transcript.jsonl");
         let line = format!(
-            "{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}]}}\n",
-            last_text
+            "{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{last_text}\"}}]}}\n"
         );
         fs::write(&path, line).unwrap();
         path.to_string_lossy().into_owned()
@@ -85,8 +84,7 @@ mod notify_script_tests {
         let dir = tempfile::TempDir::new().unwrap();
         let tf = make_transcript(&dir, "Which option do you prefer?");
         let hook = format!(
-            r#"{{"session_id":"s1","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{}"}}"#,
-            tf
+            r#"{{"session_id":"s1","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{tf}"}}"#
         );
         let out = run_notify("stop", &hook);
         assert!(
@@ -100,8 +98,7 @@ mod notify_script_tests {
         let dir = tempfile::TempDir::new().unwrap();
         let tf = make_transcript(&dir, "needs input: should I add tests here");
         let hook = format!(
-            r#"{{"session_id":"s2","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{}"}}"#,
-            tf
+            r#"{{"session_id":"s2","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{tf}"}}"#
         );
         let out = run_notify("stop", &hook);
         assert!(
@@ -115,8 +112,7 @@ mod notify_script_tests {
         let dir = tempfile::TempDir::new().unwrap();
         let tf = make_transcript(&dir, "All checks pass.");
         let hook = format!(
-            r#"{{"session_id":"s3","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{}"}}"#,
-            tf
+            r#"{{"session_id":"s3","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{tf}"}}"#
         );
         let out = run_notify("stop", &hook);
         assert!(out.contains("@cc_status done"), "expected 'done' in: {out}");
@@ -138,9 +134,9 @@ mod notify_script_tests {
         let path = dir.path().join("transcript.jsonl");
         let line = r#"{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","id":"t1","input":{"questions":[]}}]}"#;
         fs::write(&path, format!("{line}\n")).unwrap();
+        let path_str = path.display().to_string();
         let hook = format!(
-            r#"{{"session_id":"s5","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{}"}}"#,
-            path.display()
+            r#"{{"session_id":"s5","cwd":"/tmp","hook_event_name":"Stop","transcript_path":"{path_str}"}}"#
         );
         let out = run_notify("stop", &hook);
         assert!(
