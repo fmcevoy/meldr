@@ -74,14 +74,14 @@ classify_stop_status() {
 
   # AskUserQuestion tool_use in content array → always waiting
   if printf '%s' "$last_asst" | \
-      jq -e '(.content // [])[] | select(.type=="tool_use" and .name=="AskUserQuestion")' \
+      jq -e '(.message.content // .content // [])[] | select(.type=="tool_use" and .name=="AskUserQuestion")' \
       >/dev/null 2>&1; then
     echo "waiting"; return
   fi
 
   local text
   text=$(printf '%s' "$last_asst" | \
-    jq -r '[(.content // [])[] | select(.type=="text") | .text] | join("")' \
+    jq -r '[(.message.content // .content // [])[] | select(.type=="text") | .text] | join("")' \
     2>/dev/null) || true
   [ -z "$text" ] && { echo "done"; return; }
 
