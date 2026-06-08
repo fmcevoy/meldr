@@ -118,7 +118,7 @@ fn agent_session_id(pane_id: &str) -> String {
 }
 
 /// Export MELDR_TMUX_* env vars into a pane shell and write a sidecar file so
-/// claude-notify.sh can locate the pane even when TMUX/TMUX_PANE are stripped
+/// meldr-agent-notify.sh can locate the pane even when TMUX/TMUX_PANE are stripped
 /// by a Node.js process wrapper.
 fn inject_agent_env(
     tmux: &dyn TmuxOps,
