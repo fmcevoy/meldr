@@ -114,6 +114,7 @@ fn inject_agent_env(
     window_id: &str,
     agent_name: &str,
     session_id: &str,
+    state_dir_override: Option<&Path>,
 ) -> Result<()> {
     let export_cmd = format!(
         "export MELDR_TMUX_PANE={pane_id} MELDR_TMUX_WINDOW_ID={window_id} \
@@ -121,8 +122,11 @@ fn inject_agent_env(
     );
     tmux.send_keys(pane_id, &export_cmd)?;
 
-    if let Some(home) = dirs::home_dir() {
-        let state_dir = home.join(".cache/claude-agents");
+    let state_dir = state_dir_override
+        .map(Path::to_path_buf)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache/claude-agents")));
+
+    if let Some(state_dir) = state_dir {
         // Sidecar keyed by session_id for Tier 3 / Tier 4 resolver lookups.
         let _ = sidecar::write_parent_pane(&state_dir, session_id, pane_id);
         // Launcher registry entry for Tier 5 (background sessions via `claude agents`).
@@ -138,6 +142,7 @@ fn inject_agent_env(
 ///
 /// Handles both manifest layout overrides and per-package dev window layouts.
 /// Skips packages whose worktree path does not exist on disk.
+#[allow(clippy::too_many_arguments)]
 fn setup_tmux_windows(
     tmux: &dyn TmuxOps,
     manifest: &Manifest,
@@ -146,6 +151,7 @@ fn setup_tmux_windows(
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
     leader: Option<&str>,
+    state_dir_override: Option<&Path>,
 ) -> Result<TmuxSetupResult> {
     let ws_name = &manifest.workspace.name;
     let mut tmux_windows = Vec::new();
@@ -217,7 +223,14 @@ fn setup_tmux_windows(
                 };
                 let agent_name = cmd.split_whitespace().next().unwrap_or("unknown");
                 let session_id = sidecar::session_id(agent_pane);
-                inject_agent_env(tmux, agent_pane, &dev.window_id, agent_name, &session_id)?;
+                inject_agent_env(
+                    tmux,
+                    agent_pane,
+                    &dev.window_id,
+                    agent_name,
+                    &session_id,
+                    state_dir_override,
+                )?;
                 tmux.send_keys(agent_pane, cmd)?;
             }
             pane_mappings.insert(format!("agent_{i}"), agent_pane.clone());
@@ -331,6 +344,7 @@ pub fn add_worktree(
             config,
             global_config,
             leader.as_deref(),
+            None,
         )?
     } else {
         TmuxSetupResult {
@@ -617,6 +631,7 @@ pub fn open_worktree(
         config,
         global_config,
         leader,
+        None,
     )?;
 
     state.add_worktree(
@@ -808,34 +823,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    // Serialize tests that mutate the HOME env var to prevent races.
-    static HOME_MUTEX: Mutex<()> = Mutex::new(());
-
-    // RAII guard that restores HOME on drop.
-    struct HomeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        original: Option<String>,
-    }
-    impl HomeGuard {
-        fn set(path: &std::path::Path) -> Self {
-            let lock = HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            let original = std::env::var("HOME").ok();
-            unsafe { std::env::set_var("HOME", path) };
-            Self {
-                _lock: lock,
-                original,
-            }
-        }
-    }
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(v) => unsafe { std::env::set_var("HOME", v) },
-                None => unsafe { std::env::remove_var("HOME") },
-            }
-        }
-    }
 
     /// Tracks all tmux calls for assertions
     #[derive(Debug, Default)]
@@ -2892,6 +2879,7 @@ mod tests {
             &config,
             None,
             Some("backend"),
+            None,
         )
         .unwrap();
 
@@ -2937,7 +2925,17 @@ mod tests {
         let tmux = MockTmux::new();
         let config = EffectiveConfig::default();
 
-        setup_tmux_windows(&tmux, &manifest, root, "feat-noleader", &config, None, None).unwrap();
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "feat-noleader",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let calls = tmux.calls();
         // Without a leader, no cd should be sent to the agent pane (%1).
@@ -3376,7 +3374,17 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(&tmux, &manifest, root, "test-left", &config, None, None).unwrap();
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "test-left",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let calls = tmux.calls();
         // Pane %1 (index 0) must get left_agent_command.
@@ -3425,7 +3433,17 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(&tmux, &manifest, root, "test-same", &config, None, None).unwrap();
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "test-same",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let calls = tmux.calls();
         for pane in &["%1", "%2", "%3"] {
@@ -3454,7 +3472,17 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(&tmux, &manifest, root, "test-minimal", &config, None, None).unwrap();
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "test-minimal",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let calls = tmux.calls();
         // The sole agent pane gets agent_command, not left_agent_command.
@@ -3480,7 +3508,17 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(&tmux, &manifest, root, "test-noagent", &config, None, None).unwrap();
+        setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "test-noagent",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let calls = tmux.calls();
         assert!(
@@ -3504,9 +3542,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result =
-            setup_tmux_windows(&tmux, &manifest, root, "test-mappings", &config, None, None)
-                .unwrap();
+        let result = setup_tmux_windows(
+            &tmux,
+            &manifest,
+            root,
+            "test-mappings",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // agent_0 / agent / agent_1 / agent_2 are all still present.
         assert!(result.pane_mappings.contains_key("agent"));
@@ -3541,6 +3587,7 @@ mod tests {
             tmp.path(),
             "feat-env",
             &config,
+            None,
             None,
             None,
         )
@@ -3608,6 +3655,7 @@ mod tests {
             &config,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3635,9 +3683,8 @@ mod tests {
             ..Default::default()
         };
 
-        // Point HOME at a temp dir so we can inspect the sidecar.
-        let home_tmp = tempfile::TempDir::new().unwrap();
-        let _home = HomeGuard::set(home_tmp.path());
+        let state_tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = state_tmp.path().join(".cache/claude-agents");
 
         setup_tmux_windows(
             &tmux,
@@ -3647,6 +3694,7 @@ mod tests {
             &config,
             None,
             None,
+            Some(&state_dir),
         )
         .unwrap();
 
@@ -3667,10 +3715,7 @@ mod tests {
             "could not parse session id from export line"
         );
 
-        let sidecar = home_tmp
-            .path()
-            .join(".cache/claude-agents")
-            .join(format!("{}.parent_pane", session_id.unwrap()));
+        let sidecar = state_dir.join(format!("{}.parent_pane", session_id.unwrap()));
         assert!(sidecar.exists(), "sidecar file not written");
         let content = std::fs::read_to_string(&sidecar).unwrap();
         assert_eq!(content.trim(), "%1", "sidecar must contain the pane id");
@@ -3686,8 +3731,8 @@ mod tests {
             ..Default::default()
         };
 
-        let home_tmp = tempfile::TempDir::new().unwrap();
-        let _home = HomeGuard::set(home_tmp.path());
+        let state_tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = state_tmp.path().join(".cache/claude-agents");
 
         setup_tmux_windows(
             &tmux,
@@ -3697,10 +3742,11 @@ mod tests {
             &config,
             None,
             None,
+            Some(&state_dir),
         )
         .unwrap();
 
-        let launcher_dir = home_tmp.path().join(".cache/claude-agents/launchers");
+        let launcher_dir = state_dir.join("launchers");
         assert!(launcher_dir.exists(), "launcher dir must be created");
 
         let entries: Vec<_> = std::fs::read_dir(&launcher_dir)
