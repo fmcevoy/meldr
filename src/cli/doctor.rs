@@ -154,22 +154,6 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         );
     }
 
-    if report.script_stale {
-        any = true;
-        if apply {
-            println!(
-                "  {} notify script stale — reinstalled ~/.local/share/meldr/meldr-agent-notify.sh",
-                style("[apply]").green()
-            );
-        } else {
-            println!(
-                "  {} notify script is outdated — run {} to update",
-                style("[warn]").yellow(),
-                style("meldr install-hooks").bold()
-            );
-        }
-    }
-
     if report.session_start_hook_missing && report.claude_detected {
         any = true;
         if apply {
@@ -192,6 +176,65 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
             "  {} ~/.cache/claude-agents/launchers/ is missing or not writable — tab-flash for claude agents will silently skip",
             style("[warn]").yellow()
         );
+    }
+
+    if report.legacy_notify_script_present {
+        any = true;
+        println!(
+            "  {} ~/.local/share/meldr/meldr-agent-notify.sh still present from an old meldr version — safe to delete",
+            style("[warn]").yellow()
+        );
+    }
+
+    if report.legacy_session_start_symlink_present {
+        any = true;
+        println!(
+            "  {} ~/.claude/claude-session-start.sh still present from a previous setup (fmcevoy_tools) — meldr now owns the SessionStart hook via 'meldr claude-hook session-start'; delete that file",
+            style("[warn]").yellow()
+        );
+    }
+
+    if let Some(st) = &report.resolver_selftest {
+        if st.skipped {
+            println!(
+                "  {} resolver self-test skipped (not in tmux)",
+                style("[info]").dim()
+            );
+        } else if let Some(err) = &st.error {
+            any = true;
+            println!(
+                "  {} resolver self-test error: {err}",
+                style("[warn]").yellow()
+            );
+        } else {
+            let all_pass = st.env_tier_pass && st.registry_tier_pass && st.sibling_nonmatch_pass;
+            if all_pass {
+                println!(
+                    "  {} resolver self-test passed (env-tier, registry-tier, sibling-nonmatch)",
+                    style("[ok]").green()
+                );
+            } else {
+                any = true;
+                if !st.env_tier_pass {
+                    println!(
+                        "  {} resolver self-test: env tier FAILED — TMUX_PANE not resolving to a live pane",
+                        style("[warn]").yellow()
+                    );
+                }
+                if !st.registry_tier_pass {
+                    println!(
+                        "  {} resolver self-test: registry tier FAILED — cwd match not working",
+                        style("[warn]").yellow()
+                    );
+                }
+                if !st.sibling_nonmatch_pass {
+                    println!(
+                        "  {} resolver self-test: sibling-nonmatch FAILED — sibling-prefix bug may be active",
+                        style("[warn]").yellow()
+                    );
+                }
+            }
+        }
     }
 
     if report.tmux_conf_missing_cc_status {

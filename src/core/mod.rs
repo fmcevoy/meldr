@@ -1,8 +1,9 @@
-pub mod agent_signal;
+pub mod claude_hooks;
 pub mod claude_prune;
 pub mod config;
 pub mod doctor;
 pub mod filter;
+pub mod fs_util;
 pub mod hooks;
 pub mod install_hooks;
 pub mod leftover_archive;

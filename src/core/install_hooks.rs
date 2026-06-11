@@ -6,26 +6,46 @@ use crate::error::{MeldrError, Result};
 
 const MELDR_MARKER: &str = "_meldr";
 
-fn hook_command(event: &str, script_path: &str) -> String {
+fn hook_command(event: &str) -> String {
     match event {
-        "Stop" => format!("bash {script_path} stop"),
-        "Notification" => format!("bash {script_path} notify"),
-        _ => format!("bash {script_path} {}", event.to_lowercase()),
+        "Stop" => "meldr claude-hook stop".to_string(),
+        "Notification" => "meldr claude-hook notify".to_string(),
+        "SessionStart" => "meldr claude-hook session-start".to_string(),
+        other => format!("meldr claude-hook {}", other.to_lowercase()),
     }
+}
+
+/// Remove the stale `meldr-agent-notify.sh` script from previous versions.
+/// Silent: errors are ignored since the file may not exist.
+pub fn remove_legacy_notify_script(home: &Path) {
+    let path = home.join(".local/share/meldr/meldr-agent-notify.sh");
+    let _ = std::fs::remove_file(path);
+}
+
+/// Returns true if `~/.claude/claude-session-start.sh` exists and is a symlink
+/// (likely pointing into fmcevoy_tools). Used to warn the user during install.
+pub fn legacy_session_start_symlink_present(home: &Path) -> bool {
+    let path = home.join(".claude/claude-session-start.sh");
+    path.symlink_metadata()
+        .map(|m| m.file_type().is_symlink() || m.file_type().is_file())
+        .unwrap_or(false)
 }
 
 /// Install meldr-managed hook entries into `~/.claude/settings.json`.
 /// Existing user entries are preserved; meldr-tagged entries are updated in-place.
 pub fn install_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
-    let notify_script = "~/.local/share/meldr/meldr-agent-notify.sh";
-    let session_start_cmd = "bash ~/.claude/claude-session-start.sh";
     let settings_path = resolve_settings_path(home)?;
     let mut root = read_settings(&settings_path)?;
 
     for event in &["Stop", "Notification"] {
-        upsert_hook(&mut root, event, &hook_command(event, notify_script));
+        upsert_hook(&mut root, event, &hook_command(event));
     }
-    upsert_hook_with_matcher(&mut root, "SessionStart", "startup", session_start_cmd);
+    upsert_hook_with_matcher(
+        &mut root,
+        "SessionStart",
+        "startup",
+        &hook_command("SessionStart"),
+    );
 
     if dry_run {
         println!(
@@ -91,14 +111,7 @@ fn read_settings(path: &Path) -> Result<Value> {
 }
 
 fn write_settings_atomic(path: &Path, value: &Value) -> Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp_path = dir.join(format!(".settings-{}.tmp", std::process::id()));
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(value)?)?;
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        MeldrError::Io(e)
-    })
+    crate::core::fs_util::write_json_atomic(path, value)
 }
 
 /// Add or update the meldr hook entry for `event`. Updates an existing meldr-tagged
@@ -275,8 +288,8 @@ mod tests {
     fn settings_with_meldr_hooks() -> Value {
         json!({
             "hooks": {
-                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh stop", "_meldr": true}]}],
-                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh notify", "_meldr": true}]}]
+                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "meldr claude-hook stop", "_meldr": true}]}],
+                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "meldr claude-hook notify", "_meldr": true}]}]
             },
             "model": "opus"
         })
@@ -418,8 +431,8 @@ mod tests {
             hooks[0]["command"]
                 .as_str()
                 .unwrap()
-                .contains("claude-session-start.sh"),
-            "command must reference claude-session-start.sh"
+                .contains("meldr claude-hook session-start"),
+            "command must use meldr claude-hook session-start"
         );
         assert_eq!(hooks[0][MELDR_MARKER], true);
     }
@@ -473,5 +486,56 @@ mod tests {
         assert!(!hooks_installed(tmp.path(), "SessionStart"));
         install_claude_hooks(tmp.path(), false).unwrap();
         assert!(hooks_installed(tmp.path(), "SessionStart"));
+    }
+
+    #[test]
+    fn test_migration_from_old_bash_script_commands() {
+        // Settings with the legacy bash-script commands from a previous meldr version.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let legacy = json!({
+            "hooks": {
+                "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh stop", "_meldr": true}]}],
+                "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "bash ~/.local/share/meldr/meldr-agent-notify.sh notify", "_meldr": true}]}],
+                "SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "bash ~/.claude/claude-session-start.sh", "_meldr": true}]}]
+            }
+        });
+        write_settings(tmp.path(), &legacy);
+
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let stop_cmd = root
+            .pointer("/hooks/Stop/0/hooks/0/command")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert_eq!(stop_cmd, "meldr claude-hook stop", "Stop must be migrated");
+
+        let ss_cmd = root
+            .pointer("/hooks/SessionStart/0/hooks/0/command")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            ss_cmd.contains("meldr claude-hook session-start"),
+            "SessionStart must be migrated: got {ss_cmd}"
+        );
+
+        // Ensure no duplicates were introduced.
+        let stop_hooks = root
+            .pointer("/hooks/Stop/0/hooks")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(stop_hooks.len(), 1, "no duplicates after migration");
+    }
+
+    #[test]
+    fn test_legacy_session_start_symlink_detection() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!legacy_session_start_symlink_present(tmp.path()));
+        // Create the file (simulates the fmcevoy_tools-managed copy).
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("claude-session-start.sh"), "#!/bin/bash").unwrap();
+        assert!(legacy_session_start_symlink_present(tmp.path()));
     }
 }

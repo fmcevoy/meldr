@@ -1,3 +1,4 @@
+pub mod claude_hook;
 pub mod config_cmd;
 pub mod create;
 pub mod doctor;
@@ -164,6 +165,17 @@ pub enum Commands {
         /// Remove meldr-managed hook entries from settings.json
         #[arg(long)]
         uninstall: bool,
+        /// Print a zsh claude() wrapper snippet to stdout instead of installing
+        #[arg(long)]
+        print_shell_snippet: bool,
+    },
+
+    /// Handle a Claude Code hook event (session-start, stop, notify, register-launcher).
+    /// Hook JSON is read from stdin for all events except register-launcher.
+    #[command(name = "claude-hook")]
+    ClaudeHook {
+        /// The hook event name
+        event: String,
     },
 
     /// Diagnose and repair drift between meldr state, Claude Code daemon state,

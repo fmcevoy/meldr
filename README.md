@@ -256,6 +256,67 @@ Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`, `{{pkg}}
 
 Select with: `meldr config set layout my-layout`
 
+### Claude Code tab-flash notifications
+
+When the `agent` is `claude`, meldr can flash the tmux tab when a Claude session
+finishes — showing `done` (green) or `waiting` (orange for `AskUserQuestion` /
+`needs input:` prompts).
+
+**1. Wire Claude Code hooks (one-time setup)**
+
+```bash
+meldr install-hooks
+```
+
+This writes `meldr claude-hook stop|notify|session-start` entries into
+`~/.claude/settings.json`. On first install it also removes the legacy
+`meldr-agent-notify.sh` bash script if present.
+
+**2. Register the launcher wrapper in `~/.zshrc`**
+
+```bash
+# Print the snippet, then paste it into ~/.zshrc
+meldr install-hooks --print-shell-snippet
+```
+
+The snippet wraps the `claude` command so meldr records the current tmux pane
+before each `claude agents` invocation. This lets the resolver map new sessions
+to the pane that launched them even when `TMUX_PANE` is ambiguous.
+
+**3. Add tab-flash indicators to `~/.tmux.conf`**
+
+```tmux
+set -g window-status-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,}} "
+set -g window-status-current-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,}} "
+
+# Clear the indicator when you switch to the window/pane.
+set-hook -g after-select-window 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'
+set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_pane_status'
+```
+
+**Verify setup**
+
+```bash
+meldr doctor hooks        # checks hooks + runs resolver self-test inside tmux
+meldr doctor hooks --apply # auto-fixes missing hook entries
+```
+
+The resolver self-test covers:
+
+- Tier 2 (env): `TMUX_PANE` resolves to a live pane
+- Tier 5 (registry): launcher-entry cwd match works correctly
+- Sibling non-match: `/tmp/foo` launcher does **not** match a session under `/tmp/foobar`
+  (regression test for the path-component boundary bug)
+
+**`meldr claude-hook` subcommands** (called automatically by Claude Code — not normally invoked by hand)
+
+| Subcommand | Called by |
+|---|---|
+| `meldr claude-hook session-start` | Claude `SessionStart` hook |
+| `meldr claude-hook stop` | Claude `Stop` hook |
+| `meldr claude-hook notify` | Claude `Notification` hook |
+| `meldr claude-hook register-launcher` | `claude()` shell wrapper before `claude agents` |
+
 ---
 
 ## Development

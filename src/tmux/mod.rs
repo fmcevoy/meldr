@@ -1,4 +1,6 @@
 use std::process::Command;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use crate::core::config::{EffectiveConfig, LayoutDef};
 use crate::error::{MeldrError, Result};
@@ -19,6 +21,15 @@ pub struct DevWindowPanes {
     pub agents: Vec<String>,
     #[allow(dead_code)]
     pub terms: Vec<String>,
+}
+
+/// Scope for `set-option` / `set-option -u` (unset) calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionScope {
+    /// `-w` — window-scoped user option.
+    Window,
+    /// `-p` — pane-scoped user option.
+    Pane,
 }
 
 pub trait TmuxOps: Send + Sync {
@@ -42,6 +53,27 @@ pub trait TmuxOps: Send + Sync {
     /// Find a window's numeric ID (`@N`) by its display name, searching all sessions.
     /// Returns `None` if no window with that name exists.
     fn find_window_id_by_name(&self, name: &str) -> Option<String>;
+
+    // ── notification / hook helpers ──────────────────────────────────────────
+
+    /// Return true if the pane identified by `pane_id` (e.g. `%42`) currently exists.
+    fn pane_exists(&self, pane_id: &str) -> bool;
+
+    /// Run `tmux display-message -p -t <target> <format>` and return the output.
+    /// Returns an error if the target does not exist or tmux is not running.
+    fn display_message(&self, target: &str, format: &str) -> Result<String>;
+
+    /// Set a window- or pane-scoped user option via `tmux set-option`.
+    fn set_user_option(
+        &self,
+        scope: OptionScope,
+        target: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()>;
+
+    /// Run `tmux run-shell -b <cmd>` — fire-and-forget background shell.
+    fn run_shell_bg(&self, cmd: &str) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -355,6 +387,35 @@ impl TmuxOps for RealTmux {
         }
         None
     }
+
+    fn pane_exists(&self, pane_id: &str) -> bool {
+        // `display-message -p` on a non-existent target exits non-zero.
+        Self::run(&["display-message", "-p", "-t", pane_id, "1"]).is_ok()
+    }
+
+    fn display_message(&self, target: &str, format: &str) -> Result<String> {
+        Self::run(&["display-message", "-p", "-t", target, format])
+    }
+
+    fn set_user_option(
+        &self,
+        scope: OptionScope,
+        target: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let flag = match scope {
+            OptionScope::Window => "-w",
+            OptionScope::Pane => "-p",
+        };
+        Self::run(&["set-option", flag, "-t", target, key, value])?;
+        Ok(())
+    }
+
+    fn run_shell_bg(&self, cmd: &str) -> Result<()> {
+        Self::run(&["run-shell", "-b", cmd])?;
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
@@ -396,5 +457,128 @@ impl TmuxOps for NoopTmux {
     }
     fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
         None
+    }
+    fn pane_exists(&self, _pane_id: &str) -> bool {
+        false
+    }
+    fn display_message(&self, _target: &str, _format: &str) -> Result<String> {
+        Err(MeldrError::NotInTmux)
+    }
+    fn set_user_option(
+        &self,
+        _scope: OptionScope,
+        _target: &str,
+        _key: &str,
+        _value: &str,
+    ) -> Result<()> {
+        Err(MeldrError::NotInTmux)
+    }
+    fn run_shell_bg(&self, _cmd: &str) -> Result<()> {
+        Err(MeldrError::NotInTmux)
+    }
+}
+
+/// A `TmuxOps` implementation that records calls for use in unit tests,
+/// and allows stubbing `pane_exists` and `display_message`.
+#[cfg(test)]
+pub struct RecordingTmux {
+    /// Pane IDs that exist. All others return false from `pane_exists`.
+    pub live_panes: Vec<String>,
+    /// Stubbed `display_message` responses keyed by `"target\x00format"`.
+    pub display_stubs: std::collections::HashMap<String, String>,
+    /// Recorded `set_user_option` calls: `(scope, target, key, value)`.
+    pub set_calls: Mutex<Vec<(OptionScope, String, String, String)>>,
+    /// Recorded `run_shell_bg` calls.
+    pub bg_calls: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+impl RecordingTmux {
+    pub fn new(live_panes: Vec<String>) -> Self {
+        Self {
+            live_panes,
+            display_stubs: std::collections::HashMap::new(),
+            set_calls: Mutex::new(Vec::new()),
+            bg_calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn with_display(mut self, target: &str, format: &str, response: &str) -> Self {
+        self.display_stubs
+            .insert(format!("{target}\x00{format}"), response.to_string());
+        self
+    }
+}
+
+#[cfg(test)]
+impl TmuxOps for RecordingTmux {
+    fn is_inside_tmux(&self) -> bool {
+        true
+    }
+    fn create_window(&self, _name: &str) -> Result<String> {
+        Ok("@1".to_string())
+    }
+    fn split_window(&self, _window: &str) -> Result<()> {
+        Ok(())
+    }
+    fn apply_layout(&self, _window: &str, _layout: &TmuxLayout) -> Result<()> {
+        Ok(())
+    }
+    fn send_keys(&self, _target: &str, _keys: &str) -> Result<()> {
+        Ok(())
+    }
+    fn kill_window(&self, _window: &str) -> Result<()> {
+        Ok(())
+    }
+    fn create_dev_window(
+        &self,
+        _name: &str,
+        _cwd: &str,
+        _config: &EffectiveConfig,
+        _custom_layout: Option<&LayoutDef>,
+    ) -> Result<DevWindowPanes> {
+        Ok(DevWindowPanes {
+            window_id: "@1".to_string(),
+            editor: None,
+            agents: vec!["%1".to_string()],
+            terms: vec![],
+        })
+    }
+    fn has_window(&self, _window: &str) -> bool {
+        true
+    }
+    fn select_window(&self, _window: &str) -> Result<()> {
+        Ok(())
+    }
+    fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
+        None
+    }
+    fn pane_exists(&self, pane_id: &str) -> bool {
+        self.live_panes.iter().any(|p| p == pane_id)
+    }
+    fn display_message(&self, target: &str, format: &str) -> Result<String> {
+        let key = format!("{target}\x00{format}");
+        self.display_stubs.get(&key).cloned().ok_or_else(|| {
+            MeldrError::Tmux(format!("no stub for display_message({target}, {format})"))
+        })
+    }
+    fn set_user_option(
+        &self,
+        scope: OptionScope,
+        target: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        self.set_calls.lock().unwrap().push((
+            scope,
+            target.to_string(),
+            key.to_string(),
+            value.to_string(),
+        ));
+        Ok(())
+    }
+    fn run_shell_bg(&self, cmd: &str) -> Result<()> {
+        self.bg_calls.lock().unwrap().push(cmd.to_string());
+        Ok(())
     }
 }

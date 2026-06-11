@@ -6,6 +6,7 @@ use crate::core::state::WorkspaceState;
 use crate::core::workspace::{Manifest, sanitize_branch_for_dir, worktrees_dir};
 use crate::error::Result;
 use crate::git::GitOps;
+use crate::tmux::TmuxOps as _;
 
 // ── Shared types ─────────────────────────────────────────────────────────────
 
@@ -484,38 +485,57 @@ impl TmuxDoctorReport {
 
 // ── doctor hooks ──────────────────────────────────────────────────────────────
 
+/// Result of the live resolver self-test run during `meldr doctor hooks`.
+pub struct ResolverSelftestResult {
+    /// True when doctor was not invoked from inside a tmux session — self-test skipped.
+    pub skipped: bool,
+    /// Tier 2 (TMUX_PANE env) resolved to a live pane.
+    pub env_tier_pass: bool,
+    /// Tier 5 (registry cwd match) found a temp entry for a child cwd.
+    pub registry_tier_pass: bool,
+    /// Sibling-prefix cwd correctly produced no match (regression test for the fmcevoy/fmcevoy_tools bug).
+    pub sibling_nonmatch_pass: bool,
+    /// Non-None when the self-test machinery itself failed (e.g. tmux not on PATH).
+    pub error: Option<String>,
+}
+
 pub struct HooksDoctorReport {
     /// Whether `claude` was found on PATH.
     pub claude_detected: bool,
     /// A `_meldr`-tagged hook entry is absent from settings.json (only meaningful when claude_detected).
     pub claude_hook_missing: bool,
-    /// The installed notify script doesn't match the version bundled in this binary.
-    pub script_stale: bool,
     /// `~/.tmux.conf` doesn't reference `@cc_status` in `window-status-format`.
     pub tmux_conf_missing_cc_status: bool,
     /// `~/.tmux.conf` doesn't clear `@cc_pane_status` in an `after-select-*` hook.
     pub tmux_conf_missing_pane_focus_clear: bool,
-    /// `settings.json` is missing the SessionStart hook for `claude-session-start.sh`.
+    /// `settings.json` is missing a meldr-tagged SessionStart hook.
     pub session_start_hook_missing: bool,
     /// `~/.cache/claude-agents/launchers/` is absent or not writable.
     pub launcher_dir_unwritable: bool,
+    /// Legacy `~/.local/share/meldr/meldr-agent-notify.sh` still present from an old meldr version.
+    pub legacy_notify_script_present: bool,
+    /// Legacy `~/.claude/claude-session-start.sh` symlink still present from fmcevoy_tools.
+    pub legacy_session_start_symlink_present: bool,
+    /// Result of the live resolver self-test (None only when run_hooks skips it).
+    pub resolver_selftest: Option<ResolverSelftestResult>,
     pub applied: usize,
     pub warnings: Vec<String>,
 }
 
 /// Diagnose hook-signaling health and optionally repair auto-fixable issues.
 pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
-    use crate::core::agent_signal;
     use crate::core::install_hooks;
 
     let mut report = HooksDoctorReport {
         claude_detected: false,
         claude_hook_missing: false,
-        script_stale: false,
         tmux_conf_missing_cc_status: false,
         tmux_conf_missing_pane_focus_clear: false,
         session_start_hook_missing: false,
         launcher_dir_unwritable: false,
+        legacy_notify_script_present: false,
+        legacy_session_start_symlink_present: false,
+        resolver_selftest: None,
         applied: 0,
         warnings: Vec::new(),
     };
@@ -533,16 +553,14 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         if stop_missing || notify_missing {
             report.claude_hook_missing = true;
             if apply {
-                let result = agent_signal::install_script(home)
-                    .and_then(|_| install_hooks::install_claude_hooks(home, false).map(|_| ()));
-                match result {
+                match install_hooks::install_claude_hooks(home, false).map(|_| ()) {
                     Ok(()) => report.applied += 1,
                     Err(e) => report.warnings.push(format!("hooks: install failed: {e}")),
                 }
             }
         }
 
-        // SessionStart hook check (warn only — auto-fix via apply same as above).
+        // SessionStart hook check — auto-fix via apply same as above.
         if !install_hooks::hooks_installed(home, "SessionStart") {
             report.session_start_hook_missing = true;
             if apply && !report.claude_hook_missing {
@@ -556,24 +574,7 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         }
     }
 
-    // 2. Script currency.
-    if !agent_signal::is_script_current(home) {
-        report.script_stale = true;
-        if apply {
-            match agent_signal::install_script(home) {
-                Ok(_) => {
-                    if !report.claude_hook_missing {
-                        report.applied += 1;
-                    }
-                }
-                Err(e) => report
-                    .warnings
-                    .push(format!("hooks: script reinstall failed: {e}")),
-            }
-        }
-    }
-
-    // 3. tmux.conf checks (warn only — never auto-edit user's tmux.conf).
+    // 2. tmux.conf checks (warn only — never auto-edit user's tmux.conf).
     let tmux_conf = home.join(".tmux.conf");
     if tmux_conf.exists() {
         let content = std::fs::read_to_string(&tmux_conf).unwrap_or_default();
@@ -594,7 +595,7 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         report.tmux_conf_missing_pane_focus_clear = true;
     }
 
-    // 4. Launcher registry directory writable (warn only).
+    // 3. Launcher registry directory writable (warn only).
     let launcher_dir = home.join(".cache/claude-agents/launchers");
     if launcher_dir.exists() {
         let probe = launcher_dir.join(".meldr-write-probe");
@@ -607,7 +608,105 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         report.launcher_dir_unwritable = std::fs::create_dir_all(&launcher_dir).is_err();
     }
 
+    // 4. Legacy artifact checks.
+    report.legacy_notify_script_present = home
+        .join(".local/share/meldr/meldr-agent-notify.sh")
+        .exists();
+    report.legacy_session_start_symlink_present =
+        install_hooks::legacy_session_start_symlink_present(home);
+
+    // 5. Resolver self-test (only when running inside tmux; purely read-only against tmux options).
+    report.resolver_selftest = Some(if std::env::var("TMUX").is_err() {
+        ResolverSelftestResult {
+            skipped: true,
+            env_tier_pass: false,
+            registry_tier_pass: false,
+            sibling_nonmatch_pass: false,
+            error: None,
+        }
+    } else {
+        run_resolver_selftest()
+    });
+
     Ok(report)
+}
+
+fn run_resolver_selftest() -> ResolverSelftestResult {
+    use crate::core::claude_hooks::registry;
+    use crate::tmux::RealTmux;
+
+    let tmux = RealTmux::new();
+
+    // Capture current pane id — we know it exists since we're running inside tmux.
+    let current_pane = match run_tmux_cmd(&["display-message", "-p", "#{pane_id}"]) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => {
+            return ResolverSelftestResult {
+                skipped: false,
+                env_tier_pass: false,
+                registry_tier_pass: false,
+                sibling_nonmatch_pass: false,
+                error: Some(format!("tmux display-message failed: {e}")),
+            };
+        }
+    };
+
+    // T2 — env tier: the pane we're running in must be alive.
+    let env_tier_pass = tmux.pane_exists(&current_pane);
+
+    // Use an isolated temp dir so the test never touches real launcher entries.
+    let selftest_dir = std::env::temp_dir().join("meldr-selftest-launchers");
+    if let Err(e) = std::fs::create_dir_all(&selftest_dir) {
+        return ResolverSelftestResult {
+            skipped: false,
+            env_tier_pass,
+            registry_tier_pass: false,
+            sibling_nonmatch_pass: false,
+            error: Some(format!("selftest dir create failed: {e}")),
+        };
+    }
+    // Remove any leftover entries from a prior run.
+    if let Ok(rd) = std::fs::read_dir(&selftest_dir) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+
+    let base_cwd = std::path::PathBuf::from("/tmp/meldr-selftest-base");
+    let sub_cwd = base_cwd.join("sub");
+    // A sibling path that shares a byte-prefix with base_cwd but is NOT a child of it.
+    let sibling_cwd = std::path::PathBuf::from("/tmp/meldr-selftest-baseplus");
+
+    // T5 — registry tier: write a temp entry and verify find_best_match resolves it.
+    let registry_tier_pass =
+        match registry::write_entry(&selftest_dir, &current_pane, "selftest-win", &base_cwd) {
+            Ok(()) => registry::find_best_match(&selftest_dir, &sub_cwd, &tmux)
+                .map(|e| e.pane == current_pane)
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+
+    // Sibling non-match — same entry in dir, but query with a sibling cwd.
+    // Path::starts_with is component-aware so /tmp/meldr-selftest-baseplus does NOT
+    // start_with /tmp/meldr-selftest-base. This is the regression test for the
+    // ~/fmcevoy vs ~/fmcevoy_tools bug.
+    let sibling_nonmatch_pass =
+        registry::find_best_match(&selftest_dir, &sibling_cwd, &tmux).is_none();
+
+    // Clean up.
+    if let Ok(rd) = std::fs::read_dir(&selftest_dir) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+
+    ResolverSelftestResult {
+        skipped: false,
+        env_tier_pass,
+        registry_tier_pass,
+        sibling_nonmatch_pass,
+        error: None,
+    }
 }
 
 /// Find and optionally kill tmux windows whose named worktree no longer exists.
@@ -952,24 +1051,26 @@ mod tests {
     }
 
     #[test]
-    fn test_run_hooks_detects_stale_script() {
+    fn test_run_hooks_detects_legacy_notify_script() {
         let tmp = TempDir::new().unwrap();
         let script_dir = tmp.path().join(".local/share/meldr");
         fs::create_dir_all(&script_dir).unwrap();
         fs::write(script_dir.join("meldr-agent-notify.sh"), "old content").unwrap();
         let report = run_hooks(tmp.path(), false).unwrap();
-        assert!(report.script_stale, "should detect stale script");
+        assert!(
+            report.legacy_notify_script_present,
+            "should detect legacy notify script"
+        );
     }
 
     #[test]
     fn test_run_hooks_clean_when_installed() {
         let tmp = TempDir::new().unwrap();
-        crate::core::agent_signal::install_script(tmp.path()).unwrap();
         crate::core::install_hooks::install_claude_hooks(tmp.path(), false).unwrap();
         let report = run_hooks(tmp.path(), false).unwrap();
         assert!(
-            !report.script_stale,
-            "script should be current after install"
+            !report.legacy_notify_script_present,
+            "no legacy script after fresh install"
         );
         assert!(
             !report.claude_hook_missing,

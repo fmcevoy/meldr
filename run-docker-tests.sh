@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build and run ALL meldr integration tests in Docker.
-# Runs both integration.rs and docker_integration.rs.
+# Runs integration.rs, docker_integration.rs, and claude_hooks_docker.rs.
 #
 # Usage:
 #   ./run-docker-tests.sh              # run all integration tests
@@ -29,12 +29,16 @@ if [[ -n "$TEST_FILTER" ]]; then
     docker run --rm \
         -e MELDR_TEST_REPOS=/test-repos \
         "$IMAGE_NAME" \
-        cargo test --features docker-tests --test docker_integration --test integration -- --test-threads=8 "$TEST_FILTER"
+        cargo test --features docker-tests \
+            --test docker_integration --test integration --test claude_hooks_docker \
+            -- --test-threads=8 "$TEST_FILTER"
 else
     docker run --rm \
         -e MELDR_TEST_REPOS=/test-repos \
         "$IMAGE_NAME" \
-        cargo test --features docker-tests --test docker_integration --test integration -- --test-threads=8
+        cargo test --features docker-tests \
+            --test docker_integration --test integration --test claude_hooks_docker \
+            -- --test-threads=8
 fi
 
 echo "==> All tests passed."
