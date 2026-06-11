@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
+use crate::core::claude_hooks::{registry, sidecar};
 use crate::core::config::{EffectiveConfig, GlobalConfig};
 use crate::core::hooks;
 use crate::core::state::{WorkspaceState, WorktreeState};
@@ -105,20 +105,8 @@ struct TmuxSetupResult {
     pane_mappings: HashMap<String, String>,
 }
 
-/// Generate a unique per-spawn identifier used to correlate a pane with its hook script.
-fn agent_session_id(pane_id: &str) -> String {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let pid = std::process::id();
-    // Strip the leading % from pane IDs like %42 to keep the filename safe.
-    let pane_part = pane_id.trim_start_matches('%');
-    format!("{ms}-{pid}-{pane_part}")
-}
-
-/// Export MELDR_TMUX_* env vars into a pane shell and write a sidecar file so
-/// meldr-agent-notify.sh can locate the pane even when TMUX/TMUX_PANE are stripped
+/// Export MELDR_TMUX_* env vars into a pane shell and write sidecar files so
+/// `meldr claude-hook` can locate the pane even when TMUX/TMUX_PANE are stripped
 /// by a Node.js process wrapper.
 fn inject_agent_env(
     tmux: &dyn TmuxOps,
@@ -133,54 +121,17 @@ fn inject_agent_env(
     );
     tmux.send_keys(pane_id, &export_cmd)?;
 
-    // Sidecar: keyed by session_id so the hook can look up the pane ID when
-    // MELDR_TMUX_PANE is unavailable. Failures are silently ignored.
     if let Some(home) = dirs::home_dir() {
         let state_dir = home.join(".cache/claude-agents");
-        let _ = std::fs::create_dir_all(&state_dir);
-        let _ = std::fs::write(state_dir.join(format!("{session_id}.parent_pane")), pane_id);
-
-        // Also write a launcher-registry entry so claude-session-start.sh can
-        // resolve the pane for background sessions started via 'claude agents'
-        // that are run inside this worktree. Both meldr-spawned and agent-UI
-        // sessions then converge on the same resolver in claude-session-start.sh.
-        write_launcher_entry(&state_dir, pane_id, window_id);
+        // Sidecar keyed by session_id for Tier 3 / Tier 4 resolver lookups.
+        let _ = sidecar::write_parent_pane(&state_dir, session_id, pane_id);
+        // Launcher registry entry for Tier 5 (background sessions via `claude agents`).
+        let launcher_dir = state_dir.join("launchers");
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let _ = registry::write_entry(&launcher_dir, pane_id, window_id, &cwd);
     }
 
     Ok(())
-}
-
-/// Write a launcher-registry entry to `~/.cache/claude-agents/launchers/` so
-/// claude-session-start.sh can resolve the pane for background sessions that
-/// were started from within this worktree via `claude agents`.
-fn write_launcher_entry(state_dir: &std::path::Path, pane_id: &str, window_id: &str) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    let launcher_dir = state_dir.join("launchers");
-    let _ = std::fs::create_dir_all(&launcher_dir);
-
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let pid = std::process::id();
-    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
-    let cwd = std::env::current_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-
-    let content = format!(
-        "{{\"pane\":\"{pane_id}\",\"window\":\"{window_id}\",\"cwd\":\"{cwd}\",\"ts\":{ts}}}\n"
-    );
-    let filename = format!("{ts}-{pid}-{seq}.json");
-    let tmp = launcher_dir.join(format!(".launcher-{pid}-{seq}.tmp"));
-    if std::fs::write(&tmp, &content).is_ok() {
-        let _ = std::fs::rename(&tmp, launcher_dir.join(&filename)).map_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        });
-    }
 }
 
 /// Create tmux windows and panes for a set of packages in a worktree branch.
@@ -265,7 +216,7 @@ fn setup_tmux_windows(
                     &config.agent_command
                 };
                 let agent_name = cmd.split_whitespace().next().unwrap_or("unknown");
-                let session_id = agent_session_id(agent_pane);
+                let session_id = sidecar::session_id(agent_pane);
                 inject_agent_env(tmux, agent_pane, &dev.window_id, agent_name, &session_id)?;
                 tmux.send_keys(agent_pane, cmd)?;
             }
@@ -858,6 +809,34 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // Serialize tests that mutate the HOME env var to prevent races.
+    static HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+    // RAII guard that restores HOME on drop.
+    struct HomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        original: Option<String>,
+    }
+    impl HomeGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let lock = HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let original = std::env::var("HOME").ok();
+            unsafe { std::env::set_var("HOME", path) };
+            Self {
+                _lock: lock,
+                original,
+            }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
     /// Tracks all tmux calls for assertions
     #[derive(Debug, Default)]
     struct TmuxCall {
@@ -958,6 +937,24 @@ mod tests {
         }
         fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
             None
+        }
+        fn pane_exists(&self, _pane_id: &str) -> bool {
+            true
+        }
+        fn display_message(&self, _target: &str, _format: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_user_option(
+            &self,
+            _scope: crate::tmux::OptionScope,
+            _target: &str,
+            _key: &str,
+            _value: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn run_shell_bg(&self, _cmd: &str) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -1359,6 +1356,24 @@ mod tests {
         }
         fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
             None
+        }
+        fn pane_exists(&self, _pane_id: &str) -> bool {
+            false
+        }
+        fn display_message(&self, _target: &str, _format: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn set_user_option(
+            &self,
+            _scope: crate::tmux::OptionScope,
+            _target: &str,
+            _key: &str,
+            _value: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn run_shell_bg(&self, _cmd: &str) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -3622,8 +3637,7 @@ mod tests {
 
         // Point HOME at a temp dir so we can inspect the sidecar.
         let home_tmp = tempfile::TempDir::new().unwrap();
-        // SAFETY: test-only; single test process, no concurrent threads touch HOME.
-        unsafe { std::env::set_var("HOME", home_tmp.path()) };
+        let _home = HomeGuard::set(home_tmp.path());
 
         setup_tmux_windows(
             &tmux,
@@ -3673,8 +3687,7 @@ mod tests {
         };
 
         let home_tmp = tempfile::TempDir::new().unwrap();
-        // SAFETY: test-only.
-        unsafe { std::env::set_var("HOME", home_tmp.path()) };
+        let _home = HomeGuard::set(home_tmp.path());
 
         setup_tmux_windows(
             &tmux,
