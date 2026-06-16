@@ -4143,8 +4143,15 @@ fn test_worktree_add_with_devin_agent_inside_tmux() {
 // left_agent pane-dispatch integration tests
 // ---------------------------------------------------------------------------
 
-/// Resolve a tmux window name (from state.json) to its numeric window_id (@N).
-fn resolve_tmux_window_id(window_name: &str) -> Option<String> {
+/// Resolve a stored `tmux_window` value to its numeric window_id (@N).
+///
+/// meldr now stores the `@window_id` directly, so a value starting with `@` is
+/// already the target. Legacy state held a window *name*; resolve that via
+/// list-windows for backward compatibility.
+fn resolve_tmux_window_id(stored: &str) -> Option<String> {
+    if stored.starts_with('@') {
+        return Some(stored.to_string());
+    }
     let out = process::Command::new("tmux")
         .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
         .output()
@@ -4153,11 +4160,7 @@ fn resolve_tmux_window_id(window_name: &str) -> Option<String> {
         .lines()
         .find_map(|line| {
             let (id, name) = line.split_once(' ')?;
-            if name == window_name {
-                Some(id.to_string())
-            } else {
-                None
-            }
+            (name == stored).then(|| id.to_string())
         })
 }
 
