@@ -468,6 +468,9 @@ pub struct TmuxDoctorReport {
     pub stale_windows: Vec<StaleWindow>,
     /// Window IDs whose `@cc_status` was set but no agent process was running (F12 sweep).
     pub stale_status_windows: Vec<String>,
+    /// Branches whose stored `tmux_window` was rewritten to the live `@window_id`
+    /// (self-heal of legacy name / `:`-broken state).
+    pub healed_state: Vec<String>,
     pub applied: usize,
     pub warnings: Vec<String>,
 }
@@ -477,6 +480,7 @@ impl TmuxDoctorReport {
         Self {
             stale_windows: Vec::new(),
             stale_status_windows: Vec::new(),
+            healed_state: Vec::new(),
             applied: 0,
             warnings: Vec::new(),
         }
@@ -717,6 +721,11 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
     let workspace_name = &manifest.workspace.name;
     let worktrees_root = worktrees_dir(workspace_root);
 
+    // Loaded so we can self-heal a stale `tmux_window` (legacy name or `:`-broken
+    // target) to the live `@window_id`. Only persisted when `apply`.
+    let mut state = WorkspaceState::load(workspace_root).unwrap_or_default();
+    let mut state_changed = false;
+
     // List all tmux windows: session name, window index, window id, window name.
     let output = match run_tmux_cmd(&[
         "list-windows",
@@ -739,13 +748,15 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
         }
         let (session, index, window_id, window_name) = (parts[0], parts[1], parts[2], parts[3]);
 
-        // Only consider windows whose name matches `<workspace-name>/<something>:`.
+        // Only consider windows meldr names: `<workspace-name>/<branch>`. Legacy
+        // names carried a trailing `:` (now sanitized away on creation), so the
+        // trailing-`:` strip below stays for backward compatibility.
         let expected_prefix = format!("{workspace_name}/");
         if !window_name.starts_with(&expected_prefix) {
             continue;
         }
 
-        // Extract the branch portion: strip prefix and trailing `:`.
+        // Extract the branch portion: strip prefix and any legacy trailing `:`.
         let branch_part = window_name
             .strip_prefix(&expected_prefix)
             .unwrap_or("")
@@ -779,8 +790,8 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
             });
 
             if apply {
-                let target = format!("{session}:{index}");
-                if let Err(e) = run_tmux_cmd(&["kill-window", "-t", &target]) {
+                // Kill by `@window_id` — unambiguous and immune to index shifts.
+                if let Err(e) = run_tmux_cmd(&["kill-window", "-t", window_id]) {
                     report.warnings.push(format!(
                         "doctor tmux: could not kill window '{window_name}': {e}"
                     ));
@@ -789,6 +800,19 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
                 }
             }
         } else {
+            // Window is live and its worktree exists. Self-heal the stored target to
+            // the live `@window_id` when it differs (legacy name / `:`-broken value).
+            if let Some(wt) = state.get_worktree_mut(branch_part)
+                && wt.tmux_window.as_deref() != Some(window_id)
+            {
+                report.healed_state.push(branch_part.to_string());
+                if apply {
+                    wt.tmux_window = Some(window_id.to_string());
+                    state_changed = true;
+                    report.applied += 1;
+                }
+            }
+
             // F12: unset @cc_status if set but no agent process is alive in any pane.
             let cc_set = run_tmux_cmd(&["show-options", "-wqv", "-t", window_id, "@cc_status"])
                 .map(|s| !s.trim().is_empty())
@@ -802,6 +826,10 @@ pub fn run_tmux(workspace_root: &Path, apply: bool) -> Result<TmuxDoctorReport> 
                 }
             }
         }
+    }
+
+    if state_changed {
+        state.save(workspace_root)?;
     }
 
     Ok(report)
@@ -917,6 +945,31 @@ fn build_pane_paths() -> std::collections::HashMap<String, Vec<String>> {
         }
     }
     map
+}
+
+/// Return the `@window_id`s of tmux windows that have at least one pane whose
+/// current path is at or under `dir`.
+///
+/// Used as a self-heal fallback by the worktree remove path: when the stored
+/// window target is missing, stale, or a legacy `:`-broken name, we can still
+/// identify the window(s) belonging to a worktree by their panes' cwd. The match
+/// is lexical (`Path::starts_with`), so it still works after `dir` is deleted —
+/// call it *before* removing the directory for the most reliable pane paths.
+/// Returns an empty vec when tmux is unavailable.
+pub fn window_ids_with_pane_under(dir: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = build_pane_paths()
+        .into_iter()
+        .filter_map(|(wid, paths)| {
+            let hit = paths.iter().any(|p| {
+                let p = Path::new(p);
+                p == dir || p.starts_with(dir)
+            });
+            hit.then_some(wid)
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 #[cfg(test)]

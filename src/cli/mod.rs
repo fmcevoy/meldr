@@ -180,6 +180,10 @@ pub enum Commands {
 
     /// Diagnose and repair drift between meldr state, Claude Code daemon state,
     /// on-disk worktrees, and tmux windows.
+    ///
+    /// With no subcommand this runs ALL reconcilers (claude + worktrees + tmux +
+    /// hooks) — the one-shot fix when stale tabs or state linger after removals.
+    /// Pass a subcommand to run just one reconciler.
     Doctor {
         #[command(subcommand)]
         action: Option<DoctorAction>,
@@ -350,7 +354,8 @@ pub enum PrAction {
 #[derive(Subcommand)]
 #[command(infer_subcommands = true)]
 pub enum DoctorAction {
-    /// Reconcile ~/.claude/jobs and ~/.claude/projects against live worktrees
+    /// Reconcile ~/.claude/jobs and ~/.claude/projects against live worktrees.
+    /// Does NOT touch tmux — run `meldr doctor` or `doctor tmux` to sweep stale tabs.
     Claude,
     /// Reconcile on-disk worktree directories against .meldr/state.json
     Worktrees,

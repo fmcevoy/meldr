@@ -161,7 +161,7 @@ impl Manifest {
             "# remote = \"origin\"         # default git remote\n",
             "# shell = \"sh\"              # shell for exec (or uses $SHELL)\n",
             "# layout = \"default\"        # \"default\" | \"minimal\" | \"editor-only\"\n",
-            "# window_name = \"{ws}/{branch}:{pkg}\"  # tmux window name template\n",
+            "# window_name = \"{ws}/{branch}\"  # tmux window name template\n",
         );
 
         // Insert defaults comment right after [settings] block (or after [workspace] if no settings)

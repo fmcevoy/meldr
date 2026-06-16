@@ -157,7 +157,7 @@ Auto-detects default branch from remote, falling back to configured `default_bra
 | `remote` | `origin` | `MELDR_REMOTE` | Default git remote |
 | `shell` | `sh` | `MELDR_SHELL`, `$SHELL` | Shell for `meldr exec` |
 | `layout` | `default` | `MELDR_LAYOUT` | Tmux layout preset |
-| `window_name` | `{ws}/{branch}:{pkg}` | | Tmux window name template |
+| `window_name` | `{ws}/{branch}` | | Tmux window name template (`:` is stripped — it breaks tmux `-t` targets) |
 | `leader_package` | (none) | `MELDR_LEADER_PACKAGE` | Package the AI agent `cd`s into on launch |
 | `claude_prune` | `true` | `MELDR_CLAUDE_PRUNE` | Archive and purge Claude Code state on `worktree remove` (claude agent only) |
 
@@ -297,6 +297,10 @@ set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_
 **Verify setup**
 
 ```bash
+meldr doctor              # run ALL reconcilers (claude + worktrees + tmux + hooks)
+meldr doctor --apply      # one-shot fix for stale tabs/state left after removals
+meldr doctor tmux --apply # sweep only orphaned tmux windows
+meldr doctor claude       # reconcile Claude jobs/projects only — does NOT touch tmux
 meldr doctor hooks        # checks hooks + runs resolver self-test inside tmux
 meldr doctor hooks --apply # auto-fixes missing hook entries
 ```
@@ -366,7 +370,7 @@ name = "my-project"
 # remote = "origin"         # default git remote
 # shell = "sh"              # shell for exec (or uses $SHELL)
 # layout = "default"        # "default" | "minimal" | "editor-only" | custom layout name
-# window_name = "{ws}/{branch}:{pkg}"  # tmux window name template
+# window_name = "{ws}/{branch}"        # tmux window name template ({pkg} also available)
 # leader_package = "frontend"          # package the AI agent cd's into on launch
 
 [[package]]

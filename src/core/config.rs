@@ -14,7 +14,11 @@ pub const DEFAULT_BRANCH: &str = "main";
 pub const DEFAULT_REMOTE: &str = "origin";
 pub const DEFAULT_SHELL: &str = "sh";
 pub const DEFAULT_LAYOUT: &str = "default";
-pub const DEFAULT_WINDOW_NAME: &str = "{ws}/{branch}:{pkg}";
+// No `:` separator: tmux uses `:` to split `session:window` in `-t` targets, so a
+// `:` (or a trailing separator from an empty `{pkg}`) makes the rendered name
+// unusable as a kill/select target. `{pkg}` stays available for custom templates;
+// it is always empty at meldr's own naming sites (one window per branch, not pkg).
+pub const DEFAULT_WINDOW_NAME: &str = "{ws}/{branch}";
 
 pub(crate) fn default_agent() -> String {
     DEFAULT_AGENT.to_string()
@@ -197,7 +201,7 @@ pub fn ensure_global_config() -> Result<()> {
             "# remote = \"origin\"\n",
             "# shell = \"sh\"\n",
             "# layout = \"default\"\n",
-            "# window_name = \"{ws}/{branch}:{pkg}\"\n",
+            "# window_name = \"{ws}/{branch}\"\n",
             "#\n",
             "# Built-in agents and their default commands (override to customise):\n",
             "#\n",
@@ -1049,7 +1053,7 @@ mod tests {
         assert_eq!(config.remote, "origin");
         assert_eq!(config.shell, "sh");
         assert_eq!(config.layout, "default");
-        assert_eq!(config.window_name_template, "{ws}/{branch}:{pkg}");
+        assert_eq!(config.window_name_template, "{ws}/{branch}");
     }
 
     #[test]

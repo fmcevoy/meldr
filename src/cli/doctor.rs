@@ -301,7 +301,10 @@ pub fn tmux_windows(workspace_root: &Path, apply: bool) -> Result<()> {
     println!("{}", style("== tmux ==").bold());
     let report = run_tmux(workspace_root, apply)?;
 
-    if report.stale_windows.is_empty() && report.stale_status_windows.is_empty() {
+    if report.stale_windows.is_empty()
+        && report.stale_status_windows.is_empty()
+        && report.healed_state.is_empty()
+    {
         println!("  {}", style("no stale windows found").dim());
     } else {
         let tag = if apply {
@@ -323,7 +326,15 @@ pub fn tmux_windows(workspace_root: &Path, apply: bool) -> Result<()> {
                 style(wid).bold()
             );
         }
-        let total = report.stale_windows.len() + report.stale_status_windows.len();
+        for branch in &report.healed_state {
+            println!(
+                "  {tag} heal state tmux_window for '{}' → @id",
+                style(branch).bold()
+            );
+        }
+        let total = report.stale_windows.len()
+            + report.stale_status_windows.len()
+            + report.healed_state.len();
         let applied = report.applied;
         if apply {
             println!(

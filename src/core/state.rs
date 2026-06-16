@@ -52,6 +52,10 @@ impl WorkspaceState {
     pub fn get_worktree(&self, branch: &str) -> Option<&WorktreeState> {
         self.worktrees.get(branch)
     }
+
+    pub fn get_worktree_mut(&mut self, branch: &str) -> Option<&mut WorktreeState> {
+        self.worktrees.get_mut(branch)
+    }
 }
 
 #[cfg(test)]
