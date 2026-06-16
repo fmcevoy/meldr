@@ -3298,11 +3298,11 @@ fn test_worktree_layout_top_bottom_geometry() {
         .assert()
         .success();
 
-    // Read the window name meldr recorded in state.json, then resolve it to a
-    // numeric window_id (@N) via tmux list-windows. Querying by @N avoids
-    // ambiguity when the window may land in any session.
+    // meldr now records the stable `@window_id` in state.json, so use it directly
+    // as the tmux target. (Legacy state held a window *name*; resolve that via
+    // list-windows for backward compatibility.)
     let state_content = fs::read_to_string(tmp.path().join(".meldr/state.json")).unwrap();
-    let window_name = state_content
+    let stored = state_content
         .lines()
         .find_map(|l| {
             l.trim().strip_prefix("\"tmux_window\":").map(|rest| {
@@ -3313,27 +3313,26 @@ fn test_worktree_layout_top_bottom_geometry() {
         })
         .unwrap_or_else(|| panic!("tmux_window not found in: {state_content}"));
 
-    // Resolve the stored window name to an @N id for use as a tmux target.
-    let windows_out = process::Command::new("tmux")
-        .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
-        .output()
-        .expect("tmux list-windows");
-    let window_id = String::from_utf8_lossy(&windows_out.stdout)
-        .lines()
-        .find_map(|line| {
-            let (id, name) = line.split_once(' ')?;
-            if name == window_name {
-                Some(id.to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "window '{window_name}' not found; windows: {}",
-                String::from_utf8_lossy(&windows_out.stdout)
-            )
-        });
+    let window_id = if stored.starts_with('@') {
+        stored
+    } else {
+        let windows_out = process::Command::new("tmux")
+            .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
+            .output()
+            .expect("tmux list-windows");
+        String::from_utf8_lossy(&windows_out.stdout)
+            .lines()
+            .find_map(|line| {
+                let (id, name) = line.split_once(' ')?;
+                (name == stored).then(|| id.to_string())
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "window '{stored}' not found; windows: {}",
+                    String::from_utf8_lossy(&windows_out.stdout)
+                )
+            })
+    };
 
     let panes_out = process::Command::new("tmux")
         .args([
@@ -3441,6 +3440,17 @@ fn test_worktree_remove_inside_tmux_kills_window() {
         .assert()
         .success();
 
+    // meldr stores the stable `@window_id`, not a `:`-bearing name.
+    let stored = read_tmux_window(tmp.path());
+    assert!(
+        stored.starts_with('@') && stored[1..].chars().all(|c| c.is_ascii_digit()),
+        "tmux_window should be an @N id, got: {stored}"
+    );
+    assert!(
+        list_window_ids().contains(&stored),
+        "window {stored} should be alive after add"
+    );
+
     // Remove with tmux — should kill window
     meldr()
         .args(["worktree", "remove", "tmux-rm"])
@@ -3453,11 +3463,264 @@ fn test_worktree_remove_inside_tmux_kills_window() {
     // Worktree directory should be gone
     assert!(!tmp.path().join("worktrees/tmux-rm").exists());
 
+    // The tmux window itself must be gone — this is the orphan bug regression.
+    assert!(
+        !list_window_ids().contains(&stored),
+        "window {stored} should be killed after remove, live windows: {:?}",
+        list_window_ids()
+    );
+
     // State should no longer have this worktree
     let state_after = fs::read_to_string(tmp.path().join(".meldr/state.json")).unwrap();
     assert!(
         !state_after.contains("tmux-rm"),
         "State should not contain removed worktree"
+    );
+
+    kill_tmux_session(&session);
+}
+
+/// Read the `tmux_window` value meldr recorded in `.meldr/state.json`.
+fn read_tmux_window(workspace_root: &std::path::Path) -> String {
+    let state = fs::read_to_string(workspace_root.join(".meldr/state.json")).unwrap();
+    state
+        .lines()
+        .find_map(|l| {
+            l.trim().strip_prefix("\"tmux_window\":").map(|rest| {
+                rest.trim()
+                    .trim_matches(|c: char| c == '"' || c == ',')
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| panic!("tmux_window not found in: {state}"))
+}
+
+/// Return all live tmux `@window_id`s across every session.
+fn list_window_ids() -> Vec<String> {
+    let out = process::Command::new("tmux")
+        .args(["list-windows", "-a", "-F", "#{window_id}"])
+        .output()
+        .expect("tmux list-windows");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Re-light a tmux window's name to a legacy `:`-bearing value, then point
+/// state.json's `tmux_window` at that name — simulating pre-fix persisted state.
+fn set_legacy_window_name(workspace_root: &std::path::Path, window_id: &str, legacy_name: &str) {
+    // Pin the name so tmux's automatic-rename can't revert it mid-test.
+    process::Command::new("tmux")
+        .args([
+            "set-option",
+            "-w",
+            "-t",
+            window_id,
+            "automatic-rename",
+            "off",
+        ])
+        .status()
+        .expect("tmux set automatic-rename off");
+    process::Command::new("tmux")
+        .args(["rename-window", "-t", window_id, legacy_name])
+        .status()
+        .expect("tmux rename-window");
+    let path = workspace_root.join(".meldr/state.json");
+    let state = fs::read_to_string(&path).unwrap();
+    let rewritten = state.replace(
+        &format!("\"tmux_window\": \"{window_id}\""),
+        &format!("\"tmux_window\": \"{legacy_name}\""),
+    );
+    fs::write(&path, rewritten).unwrap();
+}
+
+/// Regression: legacy persisted state holding a `:`-bearing window *name* must
+/// still get its window killed on remove (resolved name → @id, or pane-cwd
+/// self-heal). Pre-fix this orphaned the tab because the `:` broke `-t` targeting.
+#[test]
+fn test_worktree_remove_kills_legacy_named_window() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["worktree", "add", "legacy-rm"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_id = read_tmux_window(tmp.path());
+    set_legacy_window_name(tmp.path(), &window_id, "test-ws/legacy-rm:");
+    assert!(list_window_ids().contains(&window_id));
+
+    meldr()
+        .args(["worktree", "remove", "legacy-rm"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        !list_window_ids().contains(&window_id),
+        "legacy `:`-named window {window_id} should be killed, live: {:?}",
+        list_window_ids()
+    );
+
+    kill_tmux_session(&session);
+}
+
+/// `doctor tmux --apply` kills a window whose worktree directory is gone (an
+/// orphan that `worktree remove` never cleaned up).
+#[test]
+fn test_doctor_tmux_kills_orphan_window() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["worktree", "add", "orphan"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_id = read_tmux_window(tmp.path());
+    // Orphan the window: drop the worktree dir without going through `remove`.
+    fs::remove_dir_all(tmp.path().join("worktrees/orphan")).unwrap();
+    assert!(list_window_ids().contains(&window_id));
+
+    meldr()
+        .args(["doctor", "tmux", "--apply"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(
+        !list_window_ids().contains(&window_id),
+        "doctor should kill orphan window {window_id}, live: {:?}",
+        list_window_ids()
+    );
+
+    kill_tmux_session(&session);
+}
+
+/// `doctor tmux --apply` rewrites legacy/`:`-broken `tmux_window` state to the
+/// live `@window_id` for a still-present worktree (state self-heal).
+#[test]
+fn test_doctor_tmux_self_heals_legacy_state() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["worktree", "add", "heal"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_id = read_tmux_window(tmp.path());
+    set_legacy_window_name(tmp.path(), &window_id, "test-ws/heal:");
+    // Sanity: state now holds the legacy name, not the id.
+    assert_eq!(read_tmux_window(tmp.path()), "test-ws/heal:");
+
+    meldr()
+        .args(["doctor", "tmux", "--apply"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        read_tmux_window(tmp.path()),
+        window_id,
+        "doctor should self-heal tmux_window back to the @id"
+    );
+    assert!(
+        list_window_ids().contains(&window_id),
+        "self-healed window must stay alive"
+    );
+
+    kill_tmux_session(&session);
+}
+
+/// Reopening a worktree whose window is still alive selects the existing window
+/// rather than creating a duplicate.
+#[test]
+fn test_worktree_open_does_not_duplicate_window() {
+    let Some((tmux_var, session)) = start_tmux_server() else {
+        eprintln!("Skipping: tmux not available");
+        return;
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let repo = copy_repo(repos.path(), "spoon-knife");
+    init_workspace(tmp.path());
+    meldr()
+        .args(["package", "add", &repo])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    meldr()
+        .args(["worktree", "add", "reopen"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let window_id = read_tmux_window(tmp.path());
+    let before = list_window_ids().len();
+
+    meldr()
+        .args(["worktree", "open", "reopen"])
+        .env("TMUX", &tmux_var)
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        list_window_ids().len(),
+        before,
+        "open must not create a duplicate window"
+    );
+    assert!(
+        list_window_ids().contains(&window_id),
+        "the original window {window_id} should still be the live one"
     );
 
     kill_tmux_session(&session);
@@ -3880,8 +4143,15 @@ fn test_worktree_add_with_devin_agent_inside_tmux() {
 // left_agent pane-dispatch integration tests
 // ---------------------------------------------------------------------------
 
-/// Resolve a tmux window name (from state.json) to its numeric window_id (@N).
-fn resolve_tmux_window_id(window_name: &str) -> Option<String> {
+/// Resolve a stored `tmux_window` value to its numeric window_id (@N).
+///
+/// meldr now stores the `@window_id` directly, so a value starting with `@` is
+/// already the target. Legacy state held a window *name*; resolve that via
+/// list-windows for backward compatibility.
+fn resolve_tmux_window_id(stored: &str) -> Option<String> {
+    if stored.starts_with('@') {
+        return Some(stored.to_string());
+    }
     let out = process::Command::new("tmux")
         .args(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
         .output()
@@ -3890,11 +4160,7 @@ fn resolve_tmux_window_id(window_name: &str) -> Option<String> {
         .lines()
         .find_map(|line| {
             let (id, name) = line.split_once(' ')?;
-            if name == window_name {
-                Some(id.to_string())
-            } else {
-                None
-            }
+            (name == stored).then(|| id.to_string())
         })
 }
 

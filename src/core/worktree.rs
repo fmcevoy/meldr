@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -99,6 +99,25 @@ pub fn expand_template(template: &str, ws: &str, branch: &str, pkg: &str) -> Str
         .replace("{pkg}", pkg)
 }
 
+/// Make a rendered template safe to use as a tmux window name.
+///
+/// tmux's `-t` target syntax is `session:window.pane`, so a `:` (or a trailing
+/// separator left by an empty `{pkg}` slot) would corrupt any kill/select target
+/// derived from the name. Rule: replace every `:` with `-` (the `:` is tmux's
+/// session/window separator), then strip trailing separator chars left by empty
+/// template slots (`/`, `:`, `-`, whitespace). Applied to every rendered window
+/// name so a custom template can't produce a tmux-breaking identifier.
+pub fn sanitize_window_name(name: &str) -> String {
+    name.replace(':', "-")
+        .trim_end_matches(['/', ':', '-', ' ', '\t'])
+        .to_string()
+}
+
+/// Render the configured window-name template into a tmux-safe window name.
+fn render_window_name(template: &str, ws: &str, branch: &str, pkg: &str) -> String {
+    sanitize_window_name(&expand_template(template, ws, branch, pkg))
+}
+
 /// Result of setting up tmux windows for a worktree.
 struct TmuxSetupResult {
     tmux_window: Option<String>,
@@ -158,7 +177,7 @@ fn setup_tmux_windows(
     let mut pane_mappings = HashMap::new();
 
     if let Some(ref lo) = manifest.layout {
-        let window_name = expand_template(&config.window_name_template, ws_name, branch, "");
+        let window_name = render_window_name(&config.window_name_template, ws_name, branch, "");
         let window_id = tmux.create_window(&window_name)?;
 
         for _ in 1..lo.panes.len() {
@@ -184,14 +203,17 @@ fn setup_tmux_windows(
             pane_mappings.insert(i.to_string(), pkg_name.clone());
         }
 
-        // Store the window name (not the ID) so kills survive session restarts.
-        tmux_windows.push(window_name);
+        // Store the stable `@window_id`, not the name: `@N` is an unambiguous tmux
+        // `-t` target immune to `:`/`/` in names. Legacy-name and pane-cwd fallbacks
+        // (remove/open/doctor) cover the case where `@N` goes stale after a tmux
+        // server restart.
+        tmux_windows.push(window_id);
     } else {
         let custom_layout = global_config.and_then(|gc| gc.layouts.get(&config.layout));
         let wt_dir = workspace::worktree_branch_dir(workspace_root, branch);
         let wt_dir_str = wt_dir.to_string_lossy().to_string();
 
-        let window_name = expand_template(&config.window_name_template, ws_name, branch, "");
+        let window_name = render_window_name(&config.window_name_template, ws_name, branch, "");
 
         let dev = tmux.create_dev_window(&window_name, &wt_dir_str, config, custom_layout)?;
 
@@ -239,8 +261,10 @@ fn setup_tmux_windows(
             }
         }
 
-        // Store the window name (not the ID) so kills survive session restarts.
-        tmux_windows.push(window_name);
+        // Store the stable `@window_id`, not the name (see the manifest-layout
+        // branch above for the rationale). `window_name` was only needed for the
+        // `create_dev_window` call.
+        tmux_windows.push(dev.window_id);
     }
 
     let tmux_window = match tmux_windows.len() {
@@ -513,8 +537,9 @@ pub fn remove_worktree(
         .and_then(|wt| wt.tmux_window.clone());
 
     // Derive the expected window name regardless of what's stored — this handles
-    // the case where the stored value is stale, missing, or a legacy @N ID.
-    let expected_window_name = expand_template(
+    // the case where the stored value is stale, missing, or a legacy ID/name.
+    // Use the same sanitization as creation so it matches a live window.
+    let expected_window_name = render_window_name(
         &config.window_name_template,
         &manifest.workspace.name,
         branch,
@@ -522,6 +547,11 @@ pub fn remove_worktree(
     );
 
     let branch_dir = workspace::worktree_branch_dir(workspace_root, branch);
+    // Capture windows whose panes live under this worktree BEFORE removing it, so
+    // the self-heal fallback can kill them by `@id` even when the stored target is
+    // null, stale, or a legacy `:`-broken name. The match is lexical, so it still
+    // holds after the directory is gone.
+    let self_heal_ids = crate::core::doctor::window_ids_with_pane_under(&branch_dir);
     if branch_dir.exists() {
         let _ = std::fs::remove_dir_all(&branch_dir);
     }
@@ -538,43 +568,43 @@ pub fn remove_worktree(
     }
 
     // Kill tmux window LAST — after all worktrees are removed and state is saved.
-    // Strategy: if the stored value looks like a legacy numeric ID (@N or comma-joined
-    // @N,@M), try kill_window per ID and ignore "can't find window" errors. Otherwise
-    // treat the stored value as a name and resolve to an ID before killing.
-    // Additionally, always try to kill by the derived expected name to cover cases
-    // where the stored value is missing or stale.
+    // Resolve the stored target to `@id`(s) and kill, deduping so each window is
+    // only hit once:
+    //   1. stored `@N` (or comma-joined list) — the modern, unambiguous target;
+    //   2. stored window *name* (legacy state) → resolve via find_window_id_by_name;
+    //   3. the derived expected name — covers a missing/stale stored value;
+    //   4. self-heal — windows whose panes lived under the removed worktree path,
+    //      covering null/stale/`:`-broken state that the above can't resolve.
+    let mut killed: HashSet<String> = HashSet::new();
+    let mut kill_id = |id: &str, label: &str| {
+        let id = id.trim();
+        if id.is_empty() || !killed.insert(id.to_string()) {
+            return;
+        }
+        if let Err(e) = tmux.kill_window(id) {
+            let msg = e.to_string();
+            if !msg.contains("can't find window") {
+                eprintln!("Warning: Could not kill tmux window '{label}': {e}");
+            }
+        }
+    };
+
     if let Some(ref stored) = stored_window {
         if stored.contains('@') {
-            // Legacy @N IDs or comma-joined list.
             for id in stored.split(',') {
-                let id = id.trim();
-                if let Err(e) = tmux.kill_window(id) {
-                    let msg = e.to_string();
-                    if !msg.contains("can't find window") {
-                        eprintln!("Warning: Could not kill tmux window '{id}': {e}");
-                    }
-                }
+                kill_id(id, id);
             }
-        } else {
-            // Stored value is a window name.
-            if let Some(id) = tmux.find_window_id_by_name(stored)
-                && let Err(e) = tmux.kill_window(&id)
-            {
-                eprintln!("Warning: Could not kill tmux window '{stored}': {e}");
-            }
+        } else if let Some(id) = tmux.find_window_id_by_name(stored) {
+            kill_id(&id, stored);
         }
     }
 
-    // Also kill by the derived expected name if it differs from what was stored.
-    let stored_name_matches = stored_window
-        .as_deref()
-        .map(|s| s == expected_window_name)
-        .unwrap_or(false);
-    if !stored_name_matches
-        && let Some(id) = tmux.find_window_id_by_name(&expected_window_name)
-        && let Err(e) = tmux.kill_window(&id)
-    {
-        eprintln!("Warning: Could not kill tmux window '{expected_window_name}': {e}");
+    if let Some(id) = tmux.find_window_id_by_name(&expected_window_name) {
+        kill_id(&id, &expected_window_name);
+    }
+
+    for id in &self_heal_ids {
+        kill_id(id, id);
     }
 
     Ok(())
@@ -593,12 +623,24 @@ pub fn open_worktree(
         .get_worktree(branch)
         .ok_or_else(|| MeldrError::WorktreeNotFound(branch.to_string()))?;
 
-    // If tmux windows are still alive, just select the first one
+    // If tmux windows are still alive, just select the first one. Resolve the
+    // stored value to a stable `@id` target first: new state holds `@N` already,
+    // but legacy state may hold a window *name* (possibly with a `:` that breaks
+    // `-t` targeting), so map name → `@id` before has_window/select_window.
     if let Some(ref window_ids) = wt_state.tmux_window {
         let first = window_ids.split(',').next().unwrap_or("");
-        if !first.is_empty() && tmux.has_window(first) {
-            tmux.select_window(first)?;
-            return Ok(());
+        if !first.is_empty() {
+            let target = if first.starts_with('@') {
+                Some(first.to_string())
+            } else {
+                tmux.find_window_id_by_name(first)
+            };
+            if let Some(target) = target
+                && tmux.has_window(&target)
+            {
+                tmux.select_window(&target)?;
+                return Ok(());
+            }
         }
     }
 
@@ -1281,17 +1323,47 @@ mod tests {
 
     struct OrderTrackingTmux {
         kill_order: Mutex<Option<usize>>,
+        /// Every `-t` target passed to `kill_window`, in call order.
+        kill_targets: Mutex<Vec<String>>,
+        /// Every `-t` target passed to `select_window`, in call order.
+        select_targets: Mutex<Vec<String>>,
+        /// name → `@id` resolution returned by `find_window_id_by_name`.
+        name_to_id: HashMap<String, String>,
+        /// Targets `has_window` reports as alive.
+        live_windows: Vec<String>,
     }
 
     impl OrderTrackingTmux {
         fn new() -> Self {
             Self {
                 kill_order: Mutex::new(None),
+                kill_targets: Mutex::new(Vec::new()),
+                select_targets: Mutex::new(Vec::new()),
+                name_to_id: HashMap::new(),
+                live_windows: Vec::new(),
             }
+        }
+
+        fn with_name_id(mut self, name: &str, id: &str) -> Self {
+            self.name_to_id.insert(name.to_string(), id.to_string());
+            self
+        }
+
+        fn with_live(mut self, target: &str) -> Self {
+            self.live_windows.push(target.to_string());
+            self
         }
 
         fn kill_order(&self) -> Option<usize> {
             *self.kill_order.lock().unwrap()
+        }
+
+        fn kill_targets(&self) -> Vec<String> {
+            self.kill_targets.lock().unwrap().clone()
+        }
+
+        fn select_targets(&self) -> Vec<String> {
+            self.select_targets.lock().unwrap().clone()
         }
     }
 
@@ -1311,8 +1383,9 @@ mod tests {
         fn send_keys(&self, _target: &str, _keys: &str) -> Result<()> {
             Ok(())
         }
-        fn kill_window(&self, _window: &str) -> Result<()> {
+        fn kill_window(&self, window: &str) -> Result<()> {
             *self.kill_order.lock().unwrap() = Some(next_order());
+            self.kill_targets.lock().unwrap().push(window.to_string());
             Ok(())
         }
         fn create_dev_window(
@@ -1335,14 +1408,15 @@ mod tests {
                 ],
             })
         }
-        fn has_window(&self, _window: &str) -> bool {
-            false
+        fn has_window(&self, window: &str) -> bool {
+            self.live_windows.iter().any(|w| w == window)
         }
-        fn select_window(&self, _window: &str) -> Result<()> {
+        fn select_window(&self, window: &str) -> Result<()> {
+            self.select_targets.lock().unwrap().push(window.to_string());
             Ok(())
         }
-        fn find_window_id_by_name(&self, _name: &str) -> Option<String> {
-            None
+        fn find_window_id_by_name(&self, name: &str) -> Option<String> {
+            self.name_to_id.get(name).cloned()
         }
         fn pane_exists(&self, _pane_id: &str) -> bool {
             false
@@ -1484,6 +1558,220 @@ mod tests {
         assert!(
             kill_order > max_git_order,
             "tmux kill_window (order={kill_order}) must happen AFTER all git worktree removals (last git order={max_git_order})",
+        );
+    }
+
+    // --- Window-identity (tmux target) tests ---
+
+    #[test]
+    fn test_sanitize_window_name_strips_colon_and_trailing_separators() {
+        // `:` is tmux's session/window target separator — must never survive.
+        assert_eq!(sanitize_window_name("test-ws/feat:"), "test-ws/feat");
+        assert_eq!(sanitize_window_name("a:b"), "a-b");
+        assert_eq!(sanitize_window_name("test-ws/feat/"), "test-ws/feat");
+        assert_eq!(sanitize_window_name("test-ws/feat:-/ "), "test-ws/feat");
+        assert_eq!(sanitize_window_name("test-ws/feat"), "test-ws/feat");
+    }
+
+    #[test]
+    fn test_render_window_name_never_contains_colon() {
+        // Default template with an empty {pkg} slot must not yield a trailing `:`.
+        let name = render_window_name(
+            crate::core::config::DEFAULT_WINDOW_NAME,
+            "test-ws",
+            "feat",
+            "",
+        );
+        assert_eq!(name, "test-ws/feat");
+        assert!(!name.contains(':'), "rendered name must not contain ':'");
+
+        // Even a custom template that injects a `:` is sanitized.
+        let custom = render_window_name("{ws}:{branch}:{pkg}", "test-ws", "feat", "");
+        assert!(
+            !custom.contains(':'),
+            "sanitized custom name had ':': {custom}"
+        );
+    }
+
+    #[test]
+    fn test_setup_tmux_windows_stores_window_id_not_name() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let tmux = OrderTrackingTmux::new();
+        let config = EffectiveConfig {
+            no_agent: true,
+            claude_prune: false,
+            ..Default::default()
+        };
+
+        let setup = setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat",
+            &config,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // The dev window returns @100; that @id (not the "test-ws/feat" name) is stored.
+        assert_eq!(setup.tmux_window.as_deref(), Some("@100"));
+    }
+
+    #[test]
+    fn test_remove_kills_by_stored_id() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let git = MockGit;
+        let tmux = OrderTrackingTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat", worktree_state_with_window("feat", "@60"));
+        std::fs::create_dir_all(tmp.path().join("worktrees/feat/frontend")).unwrap();
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tmux.kill_targets(),
+            vec!["@60".to_string()],
+            "kill must target the stored @id"
+        );
+    }
+
+    #[test]
+    fn test_remove_resolves_legacy_name_to_id_before_kill() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let git = MockGit;
+        // Legacy state: a window *name* with the tmux-breaking trailing ':'.
+        let legacy = "test-ws/feat:";
+        let tmux = OrderTrackingTmux::new().with_name_id(legacy, "@70");
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat", worktree_state_with_window("feat", legacy));
+        std::fs::create_dir_all(tmp.path().join("worktrees/feat/frontend")).unwrap();
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let killed = tmux.kill_targets();
+        assert!(
+            killed.contains(&"@70".to_string()),
+            "must kill resolved @id"
+        );
+        assert!(
+            !killed.iter().any(|t| t.contains(':')),
+            "must never pass a ':'-name as a kill target, got: {killed:?}"
+        );
+    }
+
+    #[test]
+    fn test_remove_with_null_window_does_not_panic() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let git = MockGit;
+        let tmux = OrderTrackingTmux::new();
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat", worktree_state_no_window("feat"));
+        std::fs::create_dir_all(tmp.path().join("worktrees/feat/frontend")).unwrap();
+
+        remove_worktree(
+            &git,
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat",
+            false,
+            false,
+            &EffectiveConfig {
+                claude_prune: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        // No stored target and no tmux server in tests → nothing to kill, no panic.
+        assert!(tmux.kill_targets().is_empty());
+        assert!(state.get_worktree("feat").is_none());
+    }
+
+    #[test]
+    fn test_open_selects_stored_id_target() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let tmux = OrderTrackingTmux::new().with_live("@5");
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat", worktree_state_with_window("feat", "@5"));
+
+        open_worktree(
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat",
+            &EffectiveConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tmux.select_targets(),
+            vec!["@5".to_string()],
+            "open must select by the stored @id"
+        );
+    }
+
+    #[test]
+    fn test_open_resolves_legacy_name_to_id_before_select() {
+        let (tmp, manifest) = setup_workspace(&["frontend"]);
+        let legacy = "test-ws/feat:";
+        let tmux = OrderTrackingTmux::new()
+            .with_name_id(legacy, "@8")
+            .with_live("@8");
+        let mut state = WorkspaceState::default();
+        state.add_worktree("feat", worktree_state_with_window("feat", legacy));
+
+        open_worktree(
+            &tmux,
+            &manifest,
+            &mut state,
+            tmp.path(),
+            "feat",
+            &EffectiveConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tmux.select_targets(),
+            vec!["@8".to_string()],
+            "open must resolve a legacy name to its @id before selecting"
         );
     }
 
