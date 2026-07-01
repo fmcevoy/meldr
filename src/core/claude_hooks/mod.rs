@@ -257,7 +257,8 @@ fn flash(tmux: &dyn TmuxOps, pr: &PaneRef, status: &str) {
          CUR=$(tmux show-options -wqv -t '{wid}' @cc_status_gen 2>/dev/null); \
          [ \"$CUR\" = '{flash_token}' ] && tmux set-option -wu -t '{wid}' @cc_status 2>/dev/null; \
          tmux set-option -wu -t '{wid}' @cc_status_gen 2>/dev/null; \
-         tmux set-option -pu -t '{pane}' @cc_pane_status 2>/dev/null"
+         tmux set-option -pu -t '{pane}' @cc_pane_status 2>/dev/null; \
+         true"
     );
     let _ = tmux.run_shell_bg(&clear_cmd);
 }
