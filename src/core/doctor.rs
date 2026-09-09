@@ -520,14 +520,12 @@ pub struct ResolverSelftestResult {
 pub struct HooksDoctorReport {
     /// Whether `claude` was found on PATH.
     pub claude_detected: bool,
-    /// A `_meldr`-tagged hook entry is absent from settings.json (only meaningful when claude_detected).
-    pub claude_hook_missing: bool,
+    /// Per-event registration state: missing, duplicated, wrong matcher, or Ok.
+    pub hook_states: Vec<(String, crate::core::install_hooks::HookState)>,
     /// `~/.tmux.conf` doesn't reference `@cc_status` in `window-status-format`.
     pub tmux_conf_missing_cc_status: bool,
     /// `~/.tmux.conf` doesn't clear `@cc_pane_status` in an `after-select-*` hook.
     pub tmux_conf_missing_pane_focus_clear: bool,
-    /// `settings.json` is missing a meldr-tagged SessionStart hook.
-    pub session_start_hook_missing: bool,
     /// Legacy `~/.local/share/meldr/meldr-agent-notify.sh` still present from an old meldr version.
     pub legacy_notify_script_present: bool,
     /// Legacy `~/.claude/claude-session-start.sh` symlink still present from fmcevoy_tools.
@@ -544,10 +542,9 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
 
     let mut report = HooksDoctorReport {
         claude_detected: false,
-        claude_hook_missing: false,
+        hook_states: Vec::new(),
         tmux_conf_missing_cc_status: false,
         tmux_conf_missing_pane_focus_clear: false,
-        session_start_hook_missing: false,
         legacy_notify_script_present: false,
         legacy_session_start_symlink_present: false,
         resolver_selftest: None,
@@ -563,28 +560,29 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         .unwrap_or(false);
     report.claude_detected = claude_found;
     if claude_found {
-        let stop_missing = !install_hooks::hooks_installed(home, "Stop");
-        let notify_missing = !install_hooks::hooks_installed(home, "Notification");
-        if stop_missing || notify_missing {
-            report.claude_hook_missing = true;
-            if apply {
-                match install_hooks::install_claude_hooks(home, false).map(|_| ()) {
-                    Ok(()) => report.applied += 1,
-                    Err(e) => report.warnings.push(format!("hooks: install failed: {e}")),
-                }
-            }
-        }
+        report.hook_states = install_hooks::MELDR_HOOKS
+            .iter()
+            .map(|(event, _, _)| (event.to_string(), install_hooks::hook_state(home, event)))
+            .collect();
 
-        // SessionStart hook check — auto-fix via apply same as above.
-        if !install_hooks::hooks_installed(home, "SessionStart") {
-            report.session_start_hook_missing = true;
-            if apply && !report.claude_hook_missing {
-                match install_hooks::install_claude_hooks(home, false) {
-                    Ok(_) => report.applied += 1,
-                    Err(e) => report
-                        .warnings
-                        .push(format!("hooks: SessionStart install failed: {e}")),
+        // A single reinstall fixes every one of these: it strips meldr's entries
+        // and writes exactly one per event under the canonical matcher.
+        let needs_fix = report
+            .hook_states
+            .iter()
+            .any(|(_, s)| *s != install_hooks::HookState::Ok);
+        if needs_fix && apply {
+            match install_hooks::install_claude_hooks(home, false) {
+                Ok(_) => {
+                    report.applied += 1;
+                    report.hook_states = install_hooks::MELDR_HOOKS
+                        .iter()
+                        .map(|(event, _, _)| {
+                            (event.to_string(), install_hooks::hook_state(home, event))
+                        })
+                        .collect();
                 }
+                Err(e) => report.warnings.push(format!("hooks: install failed: {e}")),
             }
         }
     }
@@ -1106,7 +1104,8 @@ mod tests {
         // Test the detection primitive directly: claude_hook_missing in run_hooks is
         // gated on `which claude` succeeding, which is not guaranteed on all CI runners.
         assert!(
-            !crate::core::install_hooks::hooks_installed(tmp.path(), "Stop"),
+            crate::core::install_hooks::hook_state(tmp.path(), "Stop")
+                != crate::core::install_hooks::HookState::Ok,
             "should detect missing _meldr entry"
         );
     }
@@ -1134,8 +1133,13 @@ mod tests {
             "no legacy script after fresh install"
         );
         assert!(
-            !report.claude_hook_missing,
-            "hook should be present after install"
+            report
+                .hook_states
+                .iter()
+                .all(|(_, st)| *st == crate::core::install_hooks::HookState::Ok)
+                || !report.claude_detected,
+            "every hook should read Ok after a fresh install: {:?}",
+            report.hook_states
         );
     }
 
@@ -1193,9 +1197,15 @@ mod tests {
         let report = run_hooks(tmp.path(), false).unwrap();
         // claude_detected may be true if claude is in PATH; the flag is only set when detected.
         if report.claude_detected {
-            assert!(
-                report.session_start_hook_missing,
-                "SessionStart hook absent → flag must be set"
+            let state = report
+                .hook_states
+                .iter()
+                .find(|(e, _)| e == "SessionStart")
+                .map(|(_, st)| st.clone());
+            assert_eq!(
+                state,
+                Some(crate::core::install_hooks::HookState::Missing),
+                "SessionStart hook absent → state must be Missing"
             );
         }
     }
@@ -1207,17 +1217,78 @@ mod tests {
             tmp.path(),
             &serde_json::json!({
                 "hooks": {
-                    "Stop": [{"matcher":"*","hooks":[{"type":"command","command":"bash x stop","_meldr":true}]}],
-                    "Notification": [{"matcher":"*","hooks":[{"type":"command","command":"bash x notify","_meldr":true}]}],
-                    "SessionStart": [{"matcher":"startup","hooks":[{"type":"command","command":"bash ~/.claude/claude-session-start.sh","_meldr":true}]}]
+                    "Stop": [{"matcher":"*","hooks":[{"type":"command","command":"meldr claude-hook stop","_meldr":true}]}],
+                    "Notification": [{"matcher":"permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input","hooks":[{"type":"command","command":"meldr claude-hook notify","_meldr":true}]}],
+                    "SessionStart": [{"matcher":"startup|resume|clear|fork","hooks":[{"type":"command","command":"meldr claude-hook session-start","_meldr":true}]}]
                 }
             }),
         );
         let report = run_hooks(tmp.path(), false).unwrap();
         if report.claude_detected {
-            assert!(
-                !report.session_start_hook_missing,
-                "SessionStart hook present → flag must be clear"
+            let state = report
+                .hook_states
+                .iter()
+                .find(|(e, _)| e == "SessionStart")
+                .map(|(_, st)| st.clone());
+            assert_eq!(
+                state,
+                Some(crate::core::install_hooks::HookState::Ok),
+                "correctly-registered SessionStart hook must read Ok"
+            );
+        }
+    }
+
+    #[test]
+    fn test_doctor_reports_duplicated_hooks() {
+        // The live settings file had two identical entries per event, so each Stop
+        // fired twice — and the old check, which only looked for one tagged entry,
+        // called that healthy.
+        let tmp = TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &serde_json::json!({
+                "hooks": {
+                    "Stop": [{"matcher":"*","hooks":[
+                        {"type":"command","command":"meldr claude-hook stop"},
+                        {"type":"command","command":"meldr claude-hook stop"}
+                    ]}]
+                }
+            }),
+        );
+        let report = run_hooks(tmp.path(), false).unwrap();
+        if report.claude_detected {
+            let state = report
+                .hook_states
+                .iter()
+                .find(|(e, _)| e == "Stop")
+                .map(|(_, st)| st.clone());
+            assert_eq!(
+                state,
+                Some(crate::core::install_hooks::HookState::Duplicated(2))
+            );
+        }
+    }
+
+    #[test]
+    fn test_doctor_apply_repairs_duplicated_hooks() {
+        let tmp = TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &serde_json::json!({
+                "hooks": {
+                    "Stop": [{"matcher":"*","hooks":[
+                        {"type":"command","command":"meldr claude-hook stop"},
+                        {"type":"command","command":"meldr claude-hook stop"}
+                    ]}]
+                }
+            }),
+        );
+        let report = run_hooks(tmp.path(), true).unwrap();
+        if report.claude_detected {
+            assert_eq!(
+                crate::core::install_hooks::hook_state(tmp.path(), "Stop"),
+                crate::core::install_hooks::HookState::Ok,
+                "--apply must collapse the duplicates"
             );
         }
     }

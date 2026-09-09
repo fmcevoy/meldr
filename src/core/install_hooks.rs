@@ -6,12 +6,120 @@ use crate::error::{MeldrError, Result};
 
 const MELDR_MARKER: &str = "_meldr";
 
-fn hook_command(event: &str) -> String {
-    match event {
-        "Stop" => "meldr claude-hook stop".to_string(),
-        "Notification" => "meldr claude-hook notify".to_string(),
-        "SessionStart" => "meldr claude-hook session-start".to_string(),
-        other => format!("meldr claude-hook {}", other.to_lowercase()),
+/// The events meldr owns, with the matcher and command each should carry.
+///
+/// Matchers matter as much as the commands. `Notification` used to be registered
+/// with `*`, so routine events — `auth_success`, `agent_completed`, the
+/// `quota_auto_resume_*` family — lit the tab as though the agent were blocked on
+/// you. `SessionStart` used to be `startup` only, so resuming a session in a new
+/// pane never re-recorded where that pane was.
+pub const MELDR_HOOKS: &[(&str, &str, &str)] = &[
+    ("Stop", "*", "meldr claude-hook stop"),
+    (
+        "Notification",
+        "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
+        "meldr claude-hook notify",
+    ),
+    (
+        "SessionStart",
+        "startup|resume|clear|fork",
+        "meldr claude-hook session-start",
+    ),
+];
+
+fn canonical(event: &str) -> Option<(&'static str, &'static str)> {
+    MELDR_HOOKS
+        .iter()
+        .find(|(e, _, _)| *e == event)
+        .map(|(_, matcher, cmd)| (*matcher, *cmd))
+}
+
+/// Is this hook entry one of ours?
+///
+/// Recognises three shapes, because all three exist in the wild:
+/// the `_meldr` marker; the marker placed on the *matcher* object instead of the
+/// entry; and an untagged entry whose command is plainly a meldr hook. Without the
+/// last two, a settings file that had lost its markers looked hook-free — so
+/// `doctor` reported the hooks missing while they fired twice, and a reinstall
+/// appended a third copy.
+fn is_meldr_hook(hook: &Value) -> bool {
+    if hook.get(MELDR_MARKER).and_then(|v| v.as_bool()) == Some(true) {
+        return true;
+    }
+    let Some(cmd) = hook.get("command").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let cmd = cmd.trim();
+    cmd.starts_with("meldr claude-hook")
+        || cmd.contains("meldr-agent-notify.sh")
+        || cmd.contains("claude-session-start.sh")
+}
+
+/// How an event's registration currently stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookState {
+    /// No meldr entry at all.
+    Missing,
+    /// More than one meldr entry — every event fires that many times.
+    Duplicated(usize),
+    /// Exactly one entry, but under the wrong matcher.
+    WrongMatcher {
+        found: String,
+        want: String,
+    },
+    Ok,
+}
+
+/// Inspect one event's registration without changing anything.
+pub fn hook_state(home: &Path, event: &str) -> HookState {
+    let Ok(path) = resolve_settings_path(home) else {
+        return HookState::Missing;
+    };
+    let Ok(root) = read_settings(&path) else {
+        return HookState::Missing;
+    };
+    hook_state_in(&root, event)
+}
+
+fn hook_state_in(root: &Value, event: &str) -> HookState {
+    let groups = root
+        .pointer(&format!("/hooks/{event}"))
+        .and_then(|v| v.as_array());
+    let Some(groups) = groups else {
+        return HookState::Missing;
+    };
+
+    let mut found: Vec<String> = Vec::new();
+    for group in groups {
+        let matcher = group
+            .get("matcher")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
+        let n = group
+            .pointer("/hooks")
+            .and_then(|v| v.as_array())
+            .map(|hs| hs.iter().filter(|h| is_meldr_hook(h)).count())
+            .unwrap_or(0);
+        for _ in 0..n {
+            found.push(matcher.clone());
+        }
+    }
+
+    match found.len() {
+        0 => HookState::Missing,
+        1 => {
+            let want = canonical(event).map(|(m, _)| m).unwrap_or("*");
+            if found[0] == want {
+                HookState::Ok
+            } else {
+                HookState::WrongMatcher {
+                    found: found.remove(0),
+                    want: want.to_string(),
+                }
+            }
+        }
+        n => HookState::Duplicated(n),
     }
 }
 
@@ -37,15 +145,9 @@ pub fn install_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
     let settings_path = resolve_settings_path(home)?;
     let mut root = read_settings(&settings_path)?;
 
-    for event in &["Stop", "Notification"] {
-        upsert_hook(&mut root, event, &hook_command(event));
+    for (event, matcher, command) in MELDR_HOOKS {
+        set_sole_hook(&mut root, event, matcher, command);
     }
-    upsert_hook_with_matcher(
-        &mut root,
-        "SessionStart",
-        "startup",
-        &hook_command("SessionStart"),
-    );
 
     if dry_run {
         println!(
@@ -64,7 +166,7 @@ pub fn uninstall_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
     let settings_path = resolve_settings_path(home)?;
     let mut root = read_settings(&settings_path)?;
 
-    for event in &["Stop", "Notification", "SessionStart"] {
+    for (event, _, _) in MELDR_HOOKS {
         remove_meldr_hooks(&mut root, event);
     }
 
@@ -78,17 +180,6 @@ pub fn uninstall_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
     }
 
     Ok(settings_path)
-}
-
-/// Returns true if a meldr-tagged entry exists for `event`.
-pub fn hooks_installed(home: &Path, event: &str) -> bool {
-    let Ok(settings_path) = resolve_settings_path(home) else {
-        return false;
-    };
-    let Ok(root) = read_settings(&settings_path) else {
-        return false;
-    };
-    find_meldr_hook(&root, event).is_some()
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -114,171 +205,79 @@ fn write_settings_atomic(path: &Path, value: &Value) -> Result<()> {
     crate::core::fs_util::write_json_atomic(path, value)
 }
 
-/// Add or update the meldr hook entry for `event`. Updates an existing meldr-tagged
-/// entry in-place, falling back to appending to the first matcher or building the
-/// structure from scratch if needed.
-fn upsert_hook(root: &mut Value, event: &str, command: &str) {
-    let entry = json!({ "type": "command", "command": command, "_meldr": true });
+/// Make `event` carry exactly one meldr hook, under `matcher`.
+///
+/// Every meldr-owned entry is stripped from every matcher group first, then a
+/// single tagged entry is inserted. That is what makes the operation idempotent
+/// against the states this file is actually found in: duplicated entries, entries
+/// whose `_meldr` marker was dropped by another tool, and entries left under an
+/// obsolete matcher. The previous implementation updated the first tagged entry it
+/// found and appended when it found none, so an untagged duplicate survived every
+/// reinstall and quietly doubled every sound and flash.
+///
+/// User-authored hooks are untouched.
+fn set_sole_hook(root: &mut Value, event: &str, matcher: &str, command: &str) {
+    remove_meldr_hooks(root, event);
 
-    // Try to update an existing entry.
-    if let Some(event_arr) = root
-        .pointer_mut(&format!("/hooks/{event}"))
-        .and_then(|v| v.as_array_mut())
-    {
-        for matcher_obj in event_arr.iter_mut() {
-            if let Some(hooks_arr) = matcher_obj
-                .pointer_mut("/hooks")
-                .and_then(|v| v.as_array_mut())
-            {
-                for hook in hooks_arr.iter_mut() {
-                    if hook
-                        .get(MELDR_MARKER)
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                    {
-                        *hook = entry.clone();
-                        return;
-                    }
-                }
-                // Append to the first matcher that had no matching entry.
-                hooks_arr.push(entry.clone());
-                return;
-            }
-        }
-    }
+    let entry = json!({ "type": "command", "command": command, MELDR_MARKER: true });
+    let group = json!({ "matcher": matcher, "hooks": [entry] });
 
-    // Build the structure from scratch.
-    let hooks_obj = root
-        .as_object_mut()
-        .expect("settings root must be an object");
-    let event_arr = hooks_obj
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let hooks = obj
         .entry("hooks")
         .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .and_then(|o| {
-            o.entry(event)
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .map(|a| a as *mut Vec<Value>)
-        });
-
-    if let Some(arr) = event_arr {
-        // SAFETY: we hold a unique borrow of root through the chain above.
-        let arr = unsafe { &mut *arr };
-        if arr.is_empty() {
-            arr.push(json!({ "matcher": "*", "hooks": [] }));
-        }
-        if let Some(inner) = arr
-            .first_mut()
-            .and_then(|m| m.pointer_mut("/hooks"))
-            .and_then(|v| v.as_array_mut())
-        {
-            inner.push(entry);
+        .as_object_mut();
+    let Some(hooks) = hooks else {
+        return;
+    };
+    match hooks
+        .entry(event)
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+    {
+        Some(arr) => arr.insert(0, group),
+        None => {
+            hooks.insert(event.to_string(), json!([group]));
         }
     }
 }
 
-/// Like `upsert_hook` but creates the matcher object with a specific matcher string
-/// rather than `"*"`. Used for events like `SessionStart` where only `"startup"` is wanted.
-fn upsert_hook_with_matcher(root: &mut Value, event: &str, matcher: &str, command: &str) {
-    let entry = json!({ "type": "command", "command": command, "_meldr": true });
-
-    // Update existing meldr-tagged entry if one exists (regardless of matcher).
-    if let Some(event_arr) = root
-        .pointer_mut(&format!("/hooks/{event}"))
-        .and_then(|v| v.as_array_mut())
-    {
-        for matcher_obj in event_arr.iter_mut() {
-            if let Some(hooks_arr) = matcher_obj
-                .pointer_mut("/hooks")
-                .and_then(|v| v.as_array_mut())
-            {
-                for hook in hooks_arr.iter_mut() {
-                    if hook
-                        .get(MELDR_MARKER)
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                    {
-                        *hook = entry.clone();
-                        return;
-                    }
-                }
-                hooks_arr.push(entry.clone());
-                return;
-            }
-        }
-    }
-
-    // Build from scratch with the specified matcher.
-    let hooks_obj = root
-        .as_object_mut()
-        .expect("settings root must be an object");
-    let event_arr = hooks_obj
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .and_then(|o| {
-            o.entry(event)
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .map(|a| a as *mut Vec<Value>)
-        });
-
-    if let Some(arr) = event_arr {
-        // SAFETY: unique borrow of root through the chain above.
-        let arr = unsafe { &mut *arr };
-        if arr.is_empty() {
-            arr.push(json!({ "matcher": matcher, "hooks": [] }));
-        }
-        if let Some(inner) = arr
-            .first_mut()
-            .and_then(|m| m.pointer_mut("/hooks"))
-            .and_then(|v| v.as_array_mut())
-        {
-            inner.push(entry);
-        }
-    }
-}
-
+/// Remove every meldr-owned hook from `event`, dropping groups left empty.
 fn remove_meldr_hooks(root: &mut Value, event: &str) {
-    let Some(event_arr) = root
+    let Some(groups) = root
         .pointer_mut(&format!("/hooks/{event}"))
         .and_then(|v| v.as_array_mut())
     else {
         return;
     };
-    for matcher_obj in event_arr.iter_mut() {
-        if let Some(hooks_arr) = matcher_obj
-            .pointer_mut("/hooks")
-            .and_then(|v| v.as_array_mut())
-        {
-            hooks_arr.retain(|hook| {
-                !hook
-                    .get(MELDR_MARKER)
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            });
+
+    for group in groups.iter_mut() {
+        if let Some(hooks) = group.pointer_mut("/hooks").and_then(|v| v.as_array_mut()) {
+            hooks.retain(|hook| !is_meldr_hook(hook));
+        }
+        // Some settings files carry the marker on the matcher object rather than
+        // the entry; it is ours to remove either way.
+        if let Some(obj) = group.as_object_mut() {
+            obj.remove(MELDR_MARKER);
         }
     }
-}
 
-fn find_meldr_hook<'a>(root: &'a Value, event: &str) -> Option<&'a Value> {
-    root.pointer(&format!("/hooks/{event}"))
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find_map(|matcher_obj| {
-                matcher_obj
-                    .pointer("/hooks")
-                    .and_then(|v| v.as_array())
-                    .and_then(|hooks_arr| {
-                        hooks_arr.iter().find(|hook| {
-                            hook.get(MELDR_MARKER)
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false)
-                        })
-                    })
-            })
-        })
+    // A group we emptied is meldr's own leftover, not a user's.
+    groups.retain(|group| {
+        group
+            .pointer("/hooks")
+            .and_then(|v| v.as_array())
+            .map(|hs| !hs.is_empty())
+            .unwrap_or(true)
+    });
+
+    if groups.is_empty()
+        && let Some(hooks) = root.pointer_mut("/hooks").and_then(|v| v.as_object_mut())
+    {
+        hooks.remove(event);
+    }
 }
 
 #[cfg(test)]
@@ -404,14 +403,12 @@ mod tests {
         uninstall_claude_hooks(tmp.path(), false).unwrap();
 
         let root = read_back(tmp.path());
-        let stop_hooks = root
-            .pointer("/hooks/Stop/0/hooks")
-            .unwrap()
-            .as_array()
-            .unwrap();
+        // Uninstall drops the group it emptied, and with it the event key: an
+        // empty `"Stop": [{"matcher":"*","hooks":[]}]` is meldr's litter, not the
+        // user's configuration.
         assert!(
-            stop_hooks.is_empty(),
-            "meldr entry removed, nothing else left"
+            root.pointer("/hooks/Stop").is_none(),
+            "nothing of meldr's should remain: {root:#}"
         );
     }
 
@@ -438,7 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn test_session_start_matcher_is_startup() {
+    fn session_start_matcher_covers_resume_and_fork() {
+        // `startup` alone meant a session resumed in a different pane never
+        // re-recorded where that pane was, so it kept notifying the old one.
         let tmp = tempfile::TempDir::new().unwrap();
         install_claude_hooks(tmp.path(), false).unwrap();
 
@@ -447,7 +446,171 @@ mod tests {
             .pointer("/hooks/SessionStart/0/matcher")
             .and_then(|v| v.as_str())
             .expect("SessionStart matcher must be set");
-        assert_eq!(matcher, "startup");
+        assert_eq!(matcher, "startup|resume|clear|fork");
+    }
+
+    #[test]
+    fn notification_matcher_excludes_non_blocking_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        install_claude_hooks(tmp.path(), false).unwrap();
+        let root = read_back(tmp.path());
+        let matcher = root
+            .pointer("/hooks/Notification/0/matcher")
+            .and_then(|v| v.as_str())
+            .expect("Notification matcher must be set");
+        for blocking in ["permission_prompt", "idle_prompt", "agent_needs_input"] {
+            assert!(
+                matcher.contains(blocking),
+                "{matcher} should match {blocking}"
+            );
+        }
+        // Under the old `*` matcher these lit a "waiting" tab for nothing.
+        for noise in ["auth_success", "agent_completed", "quota_auto_resume"] {
+            assert!(
+                !matcher.contains(noise),
+                "{matcher} should not match {noise}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_collapses_untagged_duplicates() {
+        // The state actually found on this machine: every event carried two
+        // identical entries and the `_meldr` markers had been stripped, so each
+        // Stop fired twice and `hooks_installed` reported them missing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &json!({
+                "hooks": {
+                    "Stop": [{
+                        "matcher": "*",
+                        "hooks": [
+                            {"type": "command", "command": "meldr claude-hook stop"},
+                            {"type": "command", "command": "meldr claude-hook stop"}
+                        ]
+                    }]
+                },
+                "model": "opus"
+            }),
+        );
+
+        assert_eq!(hook_state(tmp.path(), "Stop"), HookState::Duplicated(2));
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let groups = root.pointer("/hooks/Stop").unwrap().as_array().unwrap();
+        let total: usize = groups
+            .iter()
+            .map(|g| g.pointer("/hooks").unwrap().as_array().unwrap().len())
+            .sum();
+        assert_eq!(total, 1, "exactly one Stop hook must remain: {root:#}");
+        assert_eq!(hook_state(tmp.path(), "Stop"), HookState::Ok);
+        assert_eq!(root["model"], "opus", "unrelated settings preserved");
+    }
+
+    #[test]
+    fn install_recognises_a_marker_on_the_matcher_object() {
+        // Another shape seen in the wild: the marker sat on the group, not the entry.
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &json!({
+                "hooks": {
+                    "Stop": [{
+                        "matcher": "*",
+                        "_meldr": true,
+                        "hooks": [{"type": "command", "command": "meldr claude-hook stop"}]
+                    }]
+                }
+            }),
+        );
+        install_claude_hooks(tmp.path(), false).unwrap();
+        let root = read_back(tmp.path());
+        let groups = root.pointer("/hooks/Stop").unwrap().as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(
+            groups[0].get(MELDR_MARKER).is_none(),
+            "the stray group-level marker should be gone: {root:#}"
+        );
+        assert_eq!(hook_state(tmp.path(), "Stop"), HookState::Ok);
+    }
+
+    #[test]
+    fn install_fixes_an_obsolete_matcher() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "matcher": "startup",
+                        "hooks": [{"type": "command", "command": "meldr claude-hook session-start", "_meldr": true}]
+                    }]
+                }
+            }),
+        );
+        assert!(matches!(
+            hook_state(tmp.path(), "SessionStart"),
+            HookState::WrongMatcher { .. }
+        ));
+        install_claude_hooks(tmp.path(), false).unwrap();
+        assert_eq!(hook_state(tmp.path(), "SessionStart"), HookState::Ok);
+    }
+
+    #[test]
+    fn install_preserves_user_hooks_in_other_groups() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_settings(
+            tmp.path(),
+            &json!({
+                "hooks": {
+                    "Stop": [
+                        {"matcher": "*", "hooks": [
+                            {"type": "command", "command": "meldr claude-hook stop"},
+                            {"type": "command", "command": "bash ~/my-own-hook.sh"}
+                        ]}
+                    ]
+                }
+            }),
+        );
+        install_claude_hooks(tmp.path(), false).unwrap();
+
+        let root = read_back(tmp.path());
+        let all: Vec<String> = root
+            .pointer("/hooks/Stop")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g.pointer("/hooks").unwrap().as_array().unwrap().clone())
+            .map(|h| h["command"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(all.iter().any(|c| c == "bash ~/my-own-hook.sh"));
+        assert_eq!(
+            all.iter().filter(|c| c.starts_with("meldr ")).count(),
+            1,
+            "one meldr entry, user hook untouched: {all:?}"
+        );
+    }
+
+    #[test]
+    fn hook_state_reports_missing_for_an_empty_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(hook_state(tmp.path(), "Stop"), HookState::Missing);
+    }
+
+    #[test]
+    fn untagged_meldr_command_counts_as_ours() {
+        // Without this, `doctor` says "missing" about a hook that is firing.
+        assert!(is_meldr_hook(&json!({"command": "meldr claude-hook stop"})));
+        assert!(is_meldr_hook(
+            &json!({"command": "meldr claude-hook notify"})
+        ));
+        assert!(!is_meldr_hook(&json!({"command": "bash ~/mine.sh"})));
+        assert!(is_meldr_hook(
+            &json!({"command": "bash ~/mine.sh", "_meldr": true})
+        ));
     }
 
     #[test]
@@ -481,11 +644,11 @@ mod tests {
     }
 
     #[test]
-    fn test_hooks_installed_detects_session_start() {
+    fn hook_state_detects_session_start_registration() {
         let tmp = tempfile::TempDir::new().unwrap();
-        assert!(!hooks_installed(tmp.path(), "SessionStart"));
+        assert_ne!(hook_state(tmp.path(), "SessionStart"), HookState::Ok);
         install_claude_hooks(tmp.path(), false).unwrap();
-        assert!(hooks_installed(tmp.path(), "SessionStart"));
+        assert_eq!(hook_state(tmp.path(), "SessionStart"), HookState::Ok);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::path::Path;
 use console::style;
 
 use crate::core::doctor::{ActionKind, run_claude, run_hooks, run_tmux, run_worktrees};
+use crate::core::install_hooks::HookState;
 use crate::error::Result;
 use crate::git::GitOps;
 
@@ -132,40 +133,39 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
     let mut any = false;
 
     if report.claude_detected {
-        if report.claude_hook_missing {
-            any = true;
-            if apply {
-                println!(
-                    "  {} Claude hook missing — installed meldr entry in settings.json",
-                    style("[apply]").green()
-                );
-            } else {
-                println!(
-                    "  {} Claude hook missing — run {} to fix",
-                    style("[warn]").yellow(),
-                    style("meldr install-hooks").bold()
-                );
+        for (event, state) in &report.hook_states {
+            match state {
+                HookState::Ok => {}
+                HookState::Missing => {
+                    any = true;
+                    println!(
+                        "  {} {event} hook missing from ~/.claude/settings.json — run {}",
+                        style("[warn]").yellow(),
+                        style("meldr install-hooks").bold()
+                    );
+                }
+                HookState::Duplicated(n) => {
+                    any = true;
+                    println!(
+                        "  {} {event} hook is registered {n} times — every event fires {n}× (duplicate sounds and flashes); run {}",
+                        style("[warn]").yellow(),
+                        style("meldr install-hooks").bold()
+                    );
+                }
+                HookState::WrongMatcher { found, want } => {
+                    any = true;
+                    println!(
+                        "  {} {event} hook matcher is {found:?}, expected {want:?} — run {}",
+                        style("[warn]").yellow(),
+                        style("meldr install-hooks").bold()
+                    );
+                }
             }
         }
-    } else {
-        println!(
-            "  {}",
-            style("claude not found on PATH — skipping hook check").dim()
-        );
-    }
-
-    if report.session_start_hook_missing && report.claude_detected {
-        any = true;
-        if apply {
+        if report.hook_states.iter().all(|(_, s)| *s == HookState::Ok) {
             println!(
-                "  {} SessionStart hook missing — installed entry in settings.json",
-                style("[apply]").green()
-            );
-        } else {
-            println!(
-                "  {} SessionStart hook missing (tab-flash won't work for claude agents) — run {} to fix",
-                style("[warn]").yellow(),
-                style("meldr install-hooks").bold()
+                "  {} Stop, Notification and SessionStart hooks registered once each",
+                style("[ok]").green()
             );
         }
     }
