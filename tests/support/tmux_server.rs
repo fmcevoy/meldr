@@ -5,9 +5,13 @@
 //! Claude background job runs with no `$TMUX` at all. Pointing meldr at a socket
 //! explicitly would test a path production never takes.
 //!
-//! Note that `TMUX_TMPDIR` must name a directory that **exists**: tmux silently
-//! falls back to `/tmp` when it does not, which would quietly point a test at the
-//! developer's own tmux server.
+//! Two tmux quirks this fixture has to respect:
+//!
+//! - `TMUX_TMPDIR` must name a directory that **exists**; tmux silently falls back
+//!   to `/tmp` when it does not, which would quietly point a test at the
+//!   developer's own server.
+//! - tmux 3.3a rewrites control characters in `-F` output to `_`, so formats here
+//!   use a printable separator. Only tmux ids are ever separated by it.
 //!
 //! Every server gets a unique directory and is killed on `Drop`, so tests can run
 //! in parallel and a panicking test cannot poison the next run — the previous
@@ -86,7 +90,7 @@ impl TmuxServer {
             cwd,
             "-P",
             "-F",
-            "#{window_id}\t#{pane_id}",
+            "#{window_id}|#{pane_id}",
         ]);
         split_pair(&out)
     }
@@ -101,7 +105,7 @@ impl TmuxServer {
             cwd,
             "-P",
             "-F",
-            "#{window_id}\t#{pane_id}",
+            "#{window_id}|#{pane_id}",
         ]);
         split_pair(&out)
     }
@@ -155,9 +159,9 @@ impl TmuxServer {
 
     /// Every `(pane_id, window_id)` on the server.
     pub fn panes(&self) -> Vec<(String, String)> {
-        self.tmux_ok(&["list-panes", "-a", "-F", "#{pane_id}\t#{window_id}"])
+        self.tmux_ok(&["list-panes", "-a", "-F", "#{pane_id}|#{window_id}"])
             .lines()
-            .filter_map(|l| l.split_once('\t'))
+            .filter_map(|l| l.split_once('|'))
             .map(|(p, w)| (p.to_string(), w.to_string()))
             .collect()
     }
@@ -183,8 +187,8 @@ impl Drop for TmuxServer {
 fn split_pair(out: &str) -> (String, String) {
     let (a, b) = out
         .trim()
-        .split_once('\t')
-        .unwrap_or_else(|| panic!("expected two tab-separated ids, got {out:?}"));
+        .split_once('|')
+        .unwrap_or_else(|| panic!("expected two '|'-separated ids, got {out:?}"));
     (a.to_string(), b.to_string())
 }
 

@@ -565,15 +565,18 @@ impl TmuxOps for RealTmux {
     }
 
     fn snapshot(&self) -> Result<TmuxSnapshot> {
-        let pane_fmt = snapshot::pane_format();
         let stamp_fmt = snapshot::stamp_format();
-
         let stamp_out = self.run(&["display-message", "-p", &stamp_fmt])?;
         let stamp = snapshot::parse_stamp(&stamp_out)
             .ok_or_else(|| MeldrError::Tmux(format!("unparseable server stamp: {stamp_out:?}")))?;
 
+        // Two queries, so that each field whose value could contain the separator
+        // is the last thing on its line. See `snapshot::pane_format`.
+        let pane_fmt = snapshot::pane_format();
         let panes_out = self.run_raw(&["list-panes", "-a", "-F", &pane_fmt])?;
-        let panes = snapshot::parse_list_panes(&panes_out);
+        let cwd_fmt = snapshot::cwd_format();
+        let cwds_out = self.run_raw(&["list-panes", "-a", "-F", &cwd_fmt])?;
+        let panes = snapshot::parse_list_panes(&panes_out, &cwds_out);
 
         // A `$TMUX` naming a different server pid than the one that just answered
         // means the variable outlived its server — the socket path was reused. The

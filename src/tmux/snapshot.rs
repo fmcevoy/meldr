@@ -17,22 +17,40 @@
 
 use std::path::{Path, PathBuf};
 
-/// Field separator for `list-panes -F`. ASCII unit separator: it cannot appear in
-/// a path, command name, or window name, unlike a tab or space.
-pub const FS: char = '\u{1f}';
+/// Field separator for `list-panes -F`.
+///
+/// It has to be a *printable* character: tmux 3.3a rewrites control characters in
+/// format output to `_`, so a tab or an ASCII unit separator silently collapses
+/// into the data (3.6b passes them through, which is how that went unnoticed
+/// locally and was caught by the Debian test image).
+///
+/// A printable separator can legitimately occur in a path or a window name, so no
+/// field that might contain one is ever parsed *between* two separators — see
+/// `pane_format` and `cwd_format`.
+pub const FS: char = '|';
 
-/// The `list-panes -a -F` format string that produces one parseable `PaneRow`.
+/// Fields whose values cannot contain `FS`: a pid is digits, and tmux ids are
+/// `%N` / `@N` / `$N`. The last field is a window name, taken as the remainder of
+/// the line, so a `|` a user puts in a window name cannot shift anything.
+///
+/// `pane_current_command` sits among the constrained fields because it is a
+/// process name; a `|` there is not achievable in practice.
 pub fn pane_format() -> String {
     [
         "#{pane_pid}",
         "#{pane_id}",
         "#{window_id}",
         "#{session_id}",
-        "#{pane_current_path}",
         "#{pane_current_command}",
         "#{window_name}",
     ]
     .join(&FS.to_string())
+}
+
+/// Working directories get their own query so the path can be the remainder of
+/// the line. Paths may contain any byte but `/` and NUL, `|` very much included.
+pub fn cwd_format() -> String {
+    format!("#{{pane_id}}{FS}#{{pane_current_path}}")
 }
 
 /// The `display-message -p` format string that produces a `ServerStamp`.
@@ -93,31 +111,47 @@ impl TmuxSnapshot {
     }
 }
 
-/// Parse the output of `list-panes -a -F <pane_format()>`.
+/// Parse the output of `list-panes -a -F <pane_format()>`, filling in each pane's
+/// directory from `cwds` (the output of `<cwd_format()>`).
 ///
 /// Malformed lines are skipped rather than failing the whole snapshot — one weird
 /// pane should not blind the resolver to every other pane.
-pub fn parse_list_panes(text: &str) -> Vec<PaneRow> {
+pub fn parse_list_panes(text: &str, cwds: &str) -> Vec<PaneRow> {
+    let cwd_by_pane = parse_cwds(cwds);
     text.lines()
         .filter(|l| !l.trim().is_empty())
-        .filter_map(parse_pane_line)
+        .filter_map(|l| parse_pane_line(l, &cwd_by_pane))
         .collect()
 }
 
-fn parse_pane_line(line: &str) -> Option<PaneRow> {
-    let mut it = line.splitn(7, FS);
+/// `pane_id` → working directory. The path is the remainder of the line, so a `|`
+/// inside it is harmless.
+pub fn parse_cwds(text: &str) -> std::collections::HashMap<String, PathBuf> {
+    text.lines()
+        .filter_map(|l| {
+            let (pane, path) = l.split_once(FS)?;
+            is_pane_id(pane).then(|| (pane.to_string(), PathBuf::from(path)))
+        })
+        .collect()
+}
+
+fn parse_pane_line(
+    line: &str,
+    cwd_by_pane: &std::collections::HashMap<String, PathBuf>,
+) -> Option<PaneRow> {
+    let mut it = line.splitn(6, FS);
     let pane_pid: u32 = it.next()?.trim().parse().ok()?;
     let pane_id = it.next()?.to_string();
     let window_id = it.next()?.to_string();
     let session_id = it.next()?.to_string();
-    let cwd = PathBuf::from(it.next()?);
     let current_command = it.next()?.to_string();
-    // Window names may contain anything except the separator; take the remainder.
+    // Window names may contain the separator; take the remainder of the line.
     let window_name = it.next().unwrap_or_default().to_string();
 
     if !is_pane_id(&pane_id) || !is_window_id(&window_id) {
         return None;
     }
+    let cwd = cwd_by_pane.get(&pane_id).cloned().unwrap_or_default();
     Some(PaneRow {
         pane_pid,
         pane_id,
@@ -200,57 +234,109 @@ pub fn is_ancestor_or_equal(ancestor: &Path, path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// One `pane_format()` line: pid, pane, window, session, command, name.
     fn line(fields: &[&str]) -> String {
         fields.join(&FS.to_string())
     }
 
+    /// One `cwd_format()` line.
+    fn cwd_line(pane: &str, cwd: &str) -> String {
+        format!("{pane}{FS}{cwd}")
+    }
+
     #[test]
     fn parses_a_full_row() {
-        let text = line(&[
+        let panes = line(&[
             "13793",
             "%9",
             "@1",
             "$0",
-            "/home/u/ws/meldr",
             "claude.exe",
             "ws-meldr/improvement:",
         ]);
-        let rows = parse_list_panes(&text);
+        let cwds = cwd_line("%9", "/home/u/ws/meldr");
+        let rows = parse_list_panes(&panes, &cwds);
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.pane_pid, 13793);
         assert_eq!(r.pane_id, "%9");
         assert_eq!(r.window_id, "@1");
+        assert_eq!(r.session_id, "$0");
         assert_eq!(r.cwd, PathBuf::from("/home/u/ws/meldr"));
         assert_eq!(r.current_command, "claude.exe");
-        // Colons and slashes in window names must survive intact — they are what
+        // Colons and slashes in window names must survive: they are exactly what
         // makes a name unusable as a `-t` target, which is why we key on `@N`.
         assert_eq!(r.window_name, "ws-meldr/improvement:");
     }
 
     #[test]
-    fn window_name_may_contain_spaces_and_separators_of_other_kinds() {
-        let text = line(&["1", "%0", "@0", "$0", "/tmp", "zsh", "my window: a/b\tc"]);
-        let rows = parse_list_panes(&text);
-        assert_eq!(rows[0].window_name, "my window: a/b\tc");
+    fn a_separator_in_the_window_name_is_harmless() {
+        // The name is the remainder of the line, so a user's `|` cannot shift
+        // fields. tmux 3.3a forced a printable separator, which makes this matter.
+        let panes = line(&["1", "%0", "@0", "$0", "zsh", "left | right"]);
+        let rows = parse_list_panes(&panes, &cwd_line("%0", "/tmp"));
+        assert_eq!(rows[0].window_name, "left | right");
+    }
+
+    #[test]
+    fn a_separator_in_the_path_is_harmless() {
+        // Paths get their own query for this reason: `|` is legal in a filename.
+        let panes = line(&["1", "%0", "@0", "$0", "zsh", "w"]);
+        let rows = parse_list_panes(&panes, &cwd_line("%0", "/tmp/od|d/proj"));
+        assert_eq!(rows[0].cwd, PathBuf::from("/tmp/od|d/proj"));
+    }
+
+    #[test]
+    fn a_pane_with_no_cwd_line_still_parses() {
+        let panes = line(&["1", "%0", "@0", "$0", "zsh", "w"]);
+        let rows = parse_list_panes(&panes, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cwd, PathBuf::new());
     }
 
     #[test]
     fn skips_malformed_rows_but_keeps_the_rest() {
-        let good = line(&["1", "%0", "@0", "$0", "/tmp", "zsh", "w"]);
-        let text = format!(
-            "{good}\nnot-a-row\n\n{}",
-            line(&["x", "%1", "@0", "$0", "/", "z", "w"])
-        );
-        let rows = parse_list_panes(&text);
+        let good = line(&["1", "%0", "@0", "$0", "zsh", "w"]);
+        let bad_pid = line(&["x", "%1", "@0", "$0", "zsh", "w"]);
+        let text = format!("{good}\nnot-a-row\n\n{bad_pid}");
+        let rows = parse_list_panes(&text, "");
         assert_eq!(rows.len(), 1, "only the well-formed row survives");
         assert_eq!(rows[0].pane_id, "%0");
     }
 
     #[test]
     fn rejects_rows_whose_ids_are_positional() {
-        let text = line(&["1", "@0.0", "@0", "$0", "/tmp", "zsh", "w"]);
-        assert!(parse_list_panes(&text).is_empty());
+        let text = line(&["1", "@0.0", "@0", "$0", "zsh", "w"]);
+        assert!(parse_list_panes(&text, "").is_empty());
+    }
+
+    #[test]
+    fn parse_cwds_ignores_non_pane_keys() {
+        let map = parse_cwds(&format!("{}\n@0{FS}/nope\ngarbage", cwd_line("%3", "/a")));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("%3"), Some(&PathBuf::from("/a")));
+    }
+
+    #[test]
+    fn the_separator_is_printable() {
+        // tmux 3.3a rewrites control characters in `-F` output to `_`, silently
+        // merging fields. Locally (3.6b) they pass through, so this invariant has
+        // to be asserted rather than observed.
+        assert!(
+            !FS.is_control(),
+            "separator {FS:?} would be mangled by tmux 3.3a"
+        );
+        assert!(FS.is_ascii());
+    }
+
+    #[test]
+    fn formats_contain_no_control_characters() {
+        for fmt in [pane_format(), cwd_format(), stamp_format()] {
+            assert!(
+                !fmt.chars().any(char::is_control),
+                "format {fmt:?} contains a control character"
+            );
+        }
     }
 
     #[test]
@@ -330,21 +416,28 @@ mod tests {
 
     #[test]
     fn snapshot_lookups() {
-        let panes = parse_list_panes(&format!(
+        let panes = format!(
             "{}\n{}\n{}",
-            line(&["10", "%0", "@0", "$0", "/a", "zsh", "one"]),
-            line(&["11", "%1", "@1", "$0", "/b", "claude", "two"]),
-            line(&["12", "%2", "@1", "$0", "/b", "zsh", "two"]),
-        ));
+            line(&["10", "%0", "@0", "$0", "zsh", "one"]),
+            line(&["11", "%1", "@1", "$0", "claude", "two"]),
+            line(&["12", "%2", "@1", "$0", "zsh", "two"]),
+        );
+        let cwds = format!(
+            "{}\n{}\n{}",
+            cwd_line("%0", "/a"),
+            cwd_line("%1", "/b"),
+            cwd_line("%2", "/b")
+        );
         let snap = TmuxSnapshot {
             stamp: ServerStamp {
                 pid: 1,
                 start_time: 2,
             },
-            panes,
+            panes: parse_list_panes(&panes, &cwds),
             env_stale: false,
         };
         assert_eq!(snap.pane("%1").unwrap().window_id, "@1");
+        assert_eq!(snap.pane("%1").unwrap().cwd, PathBuf::from("/b"));
         assert_eq!(snap.by_pid(12).unwrap().pane_id, "%2");
         assert_eq!(snap.panes_in_window("@1").count(), 2);
         assert_eq!(snap.window_name("@1"), "two");

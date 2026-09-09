@@ -137,11 +137,16 @@ mod tests {
 
     fn snapshot(rows: &[(&str, &str, &str, u32)]) -> TmuxSnapshot {
         // (pane_id, window_id, cwd, pane_pid)
-        let text = rows
+        let panes = rows
             .iter()
-            .map(|(pane, win, cwd, pid)| {
-                [pid.to_string().as_str(), pane, win, "$0", cwd, "zsh", "w"].join(&FS.to_string())
+            .map(|(pane, win, _cwd, pid)| {
+                [pid.to_string().as_str(), pane, win, "$0", "zsh", "w"].join(&FS.to_string())
             })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cwds = rows
+            .iter()
+            .map(|(pane, _win, cwd, _pid)| format!("{pane}{FS}{cwd}"))
             .collect::<Vec<_>>()
             .join("\n");
         TmuxSnapshot {
@@ -149,7 +154,7 @@ mod tests {
                 pid: 1,
                 start_time: 1,
             },
-            panes: parse_list_panes(&text),
+            panes: parse_list_panes(&panes, &cwds),
             env_stale: false,
         }
     }
