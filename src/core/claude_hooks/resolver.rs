@@ -27,9 +27,18 @@
 //! - **S — stamped sidecar.** What SessionStart recorded, valid only while the tmux
 //!   server that issued the pane id is still the one running.
 //! - **C — working directory.** Panes whose cwd matches the event's. Usually the
-//!   only thing available for a background job, since its daemon has no pane
-//!   ancestry at all. When several panes share the directory the pane is genuinely
-//!   unknown, so this yields the *window* rather than picking one.
+//!   only thing available for a background job, since its daemon is reparented to
+//!   pid 1 and so has no pane ancestry for the walk to find. When several panes
+//!   share the directory the pane is genuinely unknown, so this yields the
+//!   *window* rather than picking one.
+//!
+//! An answer from the working directory alone never proved *which process* the
+//! event came from, so it is reported as `Background` and rendered distinctly. No
+//! environment variable is consulted to decide that: `CLAUDE_CODE_CHILD_SESSION`
+//! looked like a useful hint, but a tmux server inherits the environment of
+//! whatever launched it and passes it to every pane, so inside a Claude session
+//! every pane appeared to be a background job. The tier that answered is an
+//! observation; an inherited variable is a guess.
 //!
 //! When nothing resolves, that is reported as `None` with a reason. Refusing to
 //! flash is always better than flashing the wrong thing.
@@ -224,28 +233,15 @@ impl<'a> PaneResolver<'a> {
 
     /// Resolve against an already-taken snapshot.
     pub fn resolve_with(&self, snapshot: &TmuxSnapshot) -> Resolved {
-        // Claude sets this in sessions it hosts itself rather than in a terminal.
-        // It is undocumented, so it only reorders the tiers and labels the source —
-        // correctness never depends on it.
-        let child_session = self
-            .env
-            .var("CLAUDE_CODE_CHILD_SESSION")
-            .is_some_and(|v| !v.is_empty());
-
         let cwd = self
             .payload_cwd
             .filter(|s| !s.is_empty())
             .map(|s| normalize(Path::new(s)));
 
-        // For a child session the process tree leads to whichever pane launched the
-        // daemon — which may be a completely unrelated project — so ask the working
-        // directory first. Otherwise the process tree is the most reliable thing we
-        // have and goes first.
-        let order: [Tier; 4] = if child_session {
-            [Tier::Cwd, Tier::ProcessTree, Tier::Env, Tier::Sidecar]
-        } else {
-            [Tier::ProcessTree, Tier::Env, Tier::Sidecar, Tier::Cwd]
-        };
+        // Most reliable first. A background job's daemon is reparented to pid 1, so
+        // the walk simply dead-ends and the working directory takes over — no
+        // special case needed to detect one.
+        let order = [Tier::ProcessTree, Tier::Env, Tier::Sidecar, Tier::Cwd];
 
         let mut last_failure: Option<NoMatch> = None;
 
@@ -272,9 +268,9 @@ impl<'a> PaneResolver<'a> {
             };
 
             if let Some(resolution) = outcome {
-                // A cwd-only answer means we never proved which process this was;
-                // treat it as a background job so the indicator says so.
-                let source = if child_session || tier == Tier::Cwd {
+                // A cwd-only answer never proved which process this was, so say so
+                // rather than dressing it up as the agent in front of you.
+                let source = if tier == Tier::Cwd {
                     Source::Background
                 } else {
                     Source::Interactive
@@ -293,11 +289,7 @@ impl<'a> PaneResolver<'a> {
         });
         Resolved {
             resolution: Resolution::None(reason),
-            source: if child_session {
-                Source::Background
-            } else {
-                Source::Interactive
-            },
+            source: Source::Interactive,
             tier: Tier::NoneOfThem,
         }
     }
@@ -745,15 +737,14 @@ mod tests {
     // ── ordering / source ─────────────────────────────────────────────────────
 
     #[test]
-    fn child_session_prefers_cwd_over_the_process_tree() {
-        // A background job's ancestry leads to whichever pane started the daemon —
-        // here a different project. The directory is the trustworthy signal.
+    fn a_detached_daemon_falls_through_to_the_working_directory() {
+        // A background job's host is reparented to pid 1, so the walk dead-ends of
+        // its own accord and the directory decides. No hint needed to detect one.
         let f = fixture(vec![
             row("%2", "@0", "/other/project", 100, "claude"),
             row("%8", "@1", "/ws/meldr", 200, "claude"),
         ])
-        .env(&[("CLAUDE_CODE_CHILD_SESSION", "1")])
-        .procs(&[(500, 100), (100, 1)]);
+        .procs(&[(500, 400), (400, 1)]);
 
         let r = f.resolve(500, None, Some("/ws/meldr"));
         assert_eq!(r.tier, Tier::Cwd);
@@ -762,13 +753,25 @@ mod tests {
     }
 
     #[test]
-    fn child_session_still_resolves_via_process_tree_when_cwd_says_nothing() {
-        let f = fixture(vec![row("%2", "@0", "/other", 100, "claude")])
-            .env(&[("CLAUDE_CODE_CHILD_SESSION", "1")])
-            .procs(&[(500, 100), (100, 1)]);
-        let r = f.resolve(500, None, Some("/unmatched"));
+    fn an_inherited_child_session_variable_changes_nothing() {
+        // A tmux server passes its own environment to every pane, so inside a
+        // Claude session this variable is set in *interactive* panes too. Reading
+        // it made every one of them report as a background job.
+        let f = fixture(vec![
+            row("%8", "@1", "/ws/meldr", 100, "claude"),
+            row("%9", "@1", "/ws/meldr", 200, "claude"),
+        ])
+        .env(&[("CLAUDE_CODE_CHILD_SESSION", "1")])
+        .procs(&[(500, 200), (200, 1)]);
+
+        let r = f.resolve(500, None, Some("/ws/meldr"));
         assert_eq!(r.tier, Tier::ProcessTree);
-        assert_eq!(r.source, Source::Background, "still a child session");
+        assert_eq!(r.pane().unwrap().pane_id, "%9");
+        assert_eq!(
+            r.source,
+            Source::Interactive,
+            "an interactive pane must not be labelled a background job"
+        );
     }
 
     #[test]

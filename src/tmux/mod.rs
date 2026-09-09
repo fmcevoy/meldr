@@ -913,7 +913,7 @@ mod tmux_tests {
 
     fn row(pane: &str, win: &str) -> snapshot::PaneRow {
         snapshot::PaneRow {
-            pane_pid: 1,
+            pane_pid: 4_000_000_001,
             pane_id: pane.to_string(),
             window_id: win.to_string(),
             session_id: "$0".to_string(),

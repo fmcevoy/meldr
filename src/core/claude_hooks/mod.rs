@@ -527,7 +527,9 @@ mod tests {
 
     fn row(pane: &str, win: &str) -> PaneRow {
         PaneRow {
-            pane_pid: 1,
+            // Not an ancestor of the test process, so the process-tree tier cannot
+            // accidentally claim these panes.
+            pane_pid: 4_000_000_001,
             pane_id: pane.to_string(),
             window_id: win.to_string(),
             session_id: "$0".to_string(),

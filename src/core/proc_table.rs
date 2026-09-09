@@ -100,7 +100,12 @@ pub fn walk_to_pane<'a>(
     let mut seen = Vec::with_capacity(8);
 
     for _ in 0..MAX_HOPS {
-        if let Some(row) = snapshot.by_pid(pid) {
+        // pid 0 and 1 are every process's ancestors, so a pane claiming one of them
+        // as its `pane_pid` would match *everything*. tmux never reports one, but
+        // matching on it would turn a malformed snapshot into confident nonsense.
+        if pid > 1
+            && let Some(row) = snapshot.by_pid(pid)
+        {
             return Some(row);
         }
         if pid <= 1 || seen.contains(&pid) {
@@ -235,6 +240,15 @@ mod tests {
     fn walk_stops_when_a_pid_has_no_parent() {
         let snap = snapshot(&[("%9", "@1", "/w", 100)]);
         let procs = FakeProcTable::new(&[(900, 800)]); // 800 unknown
+        assert!(walk_to_pane(&procs, &snap, 900).is_none());
+    }
+
+    #[test]
+    fn a_pane_claiming_pid_one_matches_nothing() {
+        // Otherwise every process in the system would "belong" to that pane, since
+        // pid 1 is on every ancestry chain.
+        let snap = snapshot(&[("%9", "@1", "/w", 1)]);
+        let procs = FakeProcTable::new(&[(900, 800), (800, 1)]);
         assert!(walk_to_pane(&procs, &snap, 900).is_none());
     }
 
