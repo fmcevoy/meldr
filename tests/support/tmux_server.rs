@@ -43,12 +43,14 @@ impl TmuxServer {
             .join(format!("tmux-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&tmpdir).expect("tmux tmpdir");
 
-        let server = Self {
+        // Deliberately no `start-server`: a tmux server with no sessions exits on
+        // its own, so pre-starting one races with the first `new-session` and
+        // fails as "server exited unexpectedly" on a loaded machine. The first
+        // `new-session` starts the server and keeps it alive.
+        Self {
             tmpdir,
             _guard: guard,
-        };
-        server.tmux(&["start-server"]).expect("start-server");
-        server
+        }
     }
 
     /// `TMUX_TMPDIR` value that makes any `tmux` process address this server.
@@ -75,9 +77,9 @@ impl TmuxServer {
             .unwrap_or_else(|e| panic!("tmux {args:?} failed: {e}"))
     }
 
-    /// First session, created lazily. Returns `(window_id, pane_id)`.
+    /// Start the server with its first session. Returns `(window_id, pane_id)`.
     pub fn new_session(&self, cwd: &str) -> (String, String) {
-        let out = self.tmux_ok(&[
+        let args = [
             "new-session",
             "-d",
             "-s",
@@ -91,8 +93,21 @@ impl TmuxServer {
             "-P",
             "-F",
             "#{window_id}|#{pane_id}",
-        ]);
-        split_pair(&out)
+        ];
+        // Starting a server is the one genuinely racy step: a concurrently-exiting
+        // sessionless server can make the first attempt fail. Retry briefly rather
+        // than flaking the test it happens to land in.
+        let mut last = String::new();
+        for attempt in 0..10 {
+            match self.tmux(&args) {
+                Ok(out) => return split_pair(&out),
+                Err(e) => {
+                    last = e;
+                    std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+                }
+            }
+        }
+        panic!("tmux new-session never succeeded: {last}");
     }
 
     /// A new window, which also becomes the active one.
