@@ -165,17 +165,30 @@ pub enum Commands {
         /// Remove meldr-managed hook entries from settings.json
         #[arg(long)]
         uninstall: bool,
-        /// Print a zsh claude() wrapper snippet to stdout instead of installing
-        #[arg(long)]
-        print_shell_snippet: bool,
     },
 
-    /// Handle a Claude Code hook event (session-start, stop, notify, register-launcher).
-    /// Hook JSON is read from stdin for all events except register-launcher.
+    /// Handle a Claude Code hook event.
+    ///
+    /// `session-start`, `stop` and `notify` read hook JSON from stdin and are
+    /// called by Claude Code. `clear` expires a flash and is scheduled by meldr
+    /// itself (and usable from a tmux hook). `selftest` reports which pane the
+    /// resolver places this process in.
     #[command(name = "claude-hook")]
     ClaudeHook {
-        /// The hook event name
+        /// session-start | stop | notify | clear | selftest
         event: String,
+        /// clear: pane to expire (`%N`)
+        #[arg(long)]
+        pane: Option<String>,
+        /// clear: window to expire or recompute (`@N`)
+        #[arg(long)]
+        window: Option<String>,
+        /// clear: also expire every pane in the window
+        #[arg(long)]
+        all_panes: bool,
+        /// clear: expire immediately, ignoring the recorded deadline
+        #[arg(long = "now")]
+        clear_now: bool,
     },
 
     /// Diagnose and repair drift between meldr state, Claude Code daemon state,

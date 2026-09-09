@@ -170,14 +170,6 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         }
     }
 
-    if report.launcher_dir_unwritable {
-        any = true;
-        println!(
-            "  {} ~/.cache/claude-agents/launchers/ is missing or not writable — tab-flash for claude agents will silently skip",
-            style("[warn]").yellow()
-        );
-    }
-
     if report.legacy_notify_script_present {
         any = true;
         println!(
@@ -207,32 +199,49 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
                 style("[warn]").yellow()
             );
         } else {
-            let all_pass = st.env_tier_pass && st.registry_tier_pass && st.sibling_nonmatch_pass;
-            if all_pass {
+            if st.pane_match && st.window_match {
                 println!(
-                    "  {} resolver self-test passed (env-tier, registry-tier, sibling-nonmatch)",
-                    style("[ok]").green()
+                    "  {} resolver self-test passed — pane {}, window {} (via {})",
+                    style("[ok]").green(),
+                    st.reported_pane,
+                    st.reported_window,
+                    st.tier
                 );
             } else {
                 any = true;
-                if !st.env_tier_pass {
+                if !st.pane_match {
                     println!(
-                        "  {} resolver self-test: env tier FAILED — TMUX_PANE not resolving to a live pane",
-                        style("[warn]").yellow()
+                        "  {} resolver self-test: pane MISMATCH — reported {:?}, expected {:?} (via {})",
+                        style("[warn]").yellow(),
+                        st.reported_pane,
+                        st.expected_pane,
+                        st.tier
                     );
                 }
-                if !st.registry_tier_pass {
+                if !st.window_match {
                     println!(
-                        "  {} resolver self-test: registry tier FAILED — cwd match not working",
-                        style("[warn]").yellow()
+                        "  {} resolver self-test: window MISMATCH — reported {:?}, expected {:?}; notifications will light the wrong tab",
+                        style("[warn]").yellow(),
+                        st.reported_window,
+                        st.expected_window
                     );
                 }
-                if !st.sibling_nonmatch_pass {
-                    println!(
-                        "  {} resolver self-test: sibling-nonmatch FAILED — sibling-prefix bug may be active",
-                        style("[warn]").yellow()
-                    );
-                }
+            }
+
+            if st.legacy_sidecars > 0 {
+                any = true;
+                println!(
+                    "  {} {} legacy *.parent_pane sidecar(s) in ~/.cache/claude-agents — unstamped and unverifiable; run 'meldr doctor hooks --apply' or delete them",
+                    style("[warn]").yellow(),
+                    st.legacy_sidecars
+                );
+            }
+            if st.stale_sidecars > 0 {
+                println!(
+                    "  {} {} pane sidecar(s) from an older tmux server — ignored, and swept on next SessionStart",
+                    style("[info]").dim(),
+                    st.stale_sidecars
+                );
             }
         }
     }
@@ -260,10 +269,14 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         );
         println!("  Add to ~/.tmux.conf (replace existing after-select-* hooks if present):");
         println!(
-            "    set-hook -g after-select-window 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'"
+            "    set-hook -g after-select-pane   'run-shell -b \"meldr claude-hook clear --pane #{{pane_id}} --now\"'"
         );
         println!(
-            "    set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_pane_status'"
+            "    set-hook -g after-select-window 'run-shell -b \"meldr claude-hook clear --window #{{window_id}} --all-panes --now\"'"
+        );
+        println!("  (the older 'set-option -wu @cc_status' form still works, but clears the whole");
+        println!(
+            "   window when you merely switch panes, hiding a sibling agent that is still waiting)"
         );
     }
 
@@ -280,16 +293,25 @@ pub fn hooks(apply: bool, env_check: bool) -> Result<()> {
         if std::env::var("TMUX").is_err() {
             println!("  not in a tmux session, skipping env-check");
         } else {
-            match std::env::var("MELDR_TMUX_PANE") {
-                Ok(pane) => println!("  {} MELDR_TMUX_PANE={}", style("[ok]").green(), pane),
-                Err(_) => println!(
-                    "  {} MELDR_TMUX_PANE not set — env injection (M2) may not be active",
-                    style("[warn]").yellow()
-                ),
+            for key in ["TMUX", "TMUX_PANE", "CLAUDE_CODE_CHILD_SESSION"] {
+                match std::env::var(key) {
+                    Ok(v) => println!("  {} {key}={v}", style("[ok]").green()),
+                    Err(_) => println!("  {} {key} not set", style("[info]").dim()),
+                }
             }
-            match std::env::var("MELDR_AGENT_SESSION") {
-                Ok(sess) => println!("  {} MELDR_AGENT_SESSION={}", style("[ok]").green(), sess),
-                Err(_) => println!("  {} MELDR_AGENT_SESSION not set", style("[warn]").yellow()),
+            // These are no longer consulted. A leftover value is harmless now, but
+            // it means a shell wrapper is still exporting it.
+            for key in [
+                "MELDR_TMUX_PANE",
+                "MELDR_TMUX_WINDOW_ID",
+                "MELDR_AGENT_SESSION",
+            ] {
+                if let Ok(v) = std::env::var(key) {
+                    println!(
+                        "  {} {key}={v} — obsolete and ignored; remove the claude() wrapper that sets it",
+                        style("[warn]").yellow()
+                    );
+                }
             }
         }
     }

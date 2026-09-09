@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod install_hooks;
 pub mod leftover_archive;
 pub mod package;
+pub mod proc_table;
 pub mod state;
 pub mod sync_history;
 pub mod workspace;

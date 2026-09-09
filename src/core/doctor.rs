@@ -6,7 +6,6 @@ use crate::core::state::WorkspaceState;
 use crate::core::workspace::{Manifest, sanitize_branch_for_dir, worktrees_dir};
 use crate::error::Result;
 use crate::git::GitOps;
-use crate::tmux::TmuxOps as _;
 
 // ── Shared types ─────────────────────────────────────────────────────────────
 
@@ -490,15 +489,30 @@ impl TmuxDoctorReport {
 // ── doctor hooks ──────────────────────────────────────────────────────────────
 
 /// Result of the live resolver self-test run during `meldr doctor hooks`.
+///
+/// The old self-test exercised two tiers against a scratch directory and never
+/// checked a window id — which is precisely where the wrong-window bug lived, so it
+/// reported green throughout. This one runs the real resolver from a nested shell,
+/// the way Claude actually invokes a hook, and compares both the pane *and* the
+/// window against what tmux says about the pane we are sitting in.
+#[derive(Default)]
 pub struct ResolverSelftestResult {
     /// True when doctor was not invoked from inside a tmux session — self-test skipped.
     pub skipped: bool,
-    /// Tier 2 (TMUX_PANE env) resolved to a live pane.
-    pub env_tier_pass: bool,
-    /// Tier 5 (registry cwd match) found a temp entry for a child cwd.
-    pub registry_tier_pass: bool,
-    /// Sibling-prefix cwd correctly produced no match (regression test for the fmcevoy/fmcevoy_tools bug).
-    pub sibling_nonmatch_pass: bool,
+    /// The resolver placed us in the pane `$TMUX_PANE` names.
+    pub pane_match: bool,
+    /// The window it reported is the one tmux says that pane is in.
+    pub window_match: bool,
+    /// Which tier answered.
+    pub tier: String,
+    /// What the resolver reported, for display.
+    pub reported_pane: String,
+    pub reported_window: String,
+    pub expected_pane: String,
+    pub expected_window: String,
+    /// Sidecars that can no longer name anything real.
+    pub legacy_sidecars: usize,
+    pub stale_sidecars: usize,
     /// Non-None when the self-test machinery itself failed (e.g. tmux not on PATH).
     pub error: Option<String>,
 }
@@ -514,8 +528,6 @@ pub struct HooksDoctorReport {
     pub tmux_conf_missing_pane_focus_clear: bool,
     /// `settings.json` is missing a meldr-tagged SessionStart hook.
     pub session_start_hook_missing: bool,
-    /// `~/.cache/claude-agents/launchers/` is absent or not writable.
-    pub launcher_dir_unwritable: bool,
     /// Legacy `~/.local/share/meldr/meldr-agent-notify.sh` still present from an old meldr version.
     pub legacy_notify_script_present: bool,
     /// Legacy `~/.claude/claude-session-start.sh` symlink still present from fmcevoy_tools.
@@ -536,7 +548,6 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         tmux_conf_missing_cc_status: false,
         tmux_conf_missing_pane_focus_clear: false,
         session_start_hook_missing: false,
-        launcher_dir_unwritable: false,
         legacy_notify_script_present: false,
         legacy_session_start_symlink_present: false,
         resolver_selftest: None,
@@ -599,19 +610,6 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         report.tmux_conf_missing_pane_focus_clear = true;
     }
 
-    // 3. Launcher registry directory writable (warn only).
-    let launcher_dir = home.join(".cache/claude-agents/launchers");
-    if launcher_dir.exists() {
-        let probe = launcher_dir.join(".meldr-write-probe");
-        let ok = std::fs::write(&probe, b"").is_ok();
-        let _ = std::fs::remove_file(&probe);
-        if !ok {
-            report.launcher_dir_unwritable = true;
-        }
-    } else {
-        report.launcher_dir_unwritable = std::fs::create_dir_all(&launcher_dir).is_err();
-    }
-
     // 4. Legacy artifact checks.
     report.legacy_notify_script_present = home
         .join(".local/share/meldr/meldr-agent-notify.sh")
@@ -623,94 +621,104 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
     report.resolver_selftest = Some(if std::env::var("TMUX").is_err() {
         ResolverSelftestResult {
             skipped: true,
-            env_tier_pass: false,
-            registry_tier_pass: false,
-            sibling_nonmatch_pass: false,
-            error: None,
+            ..Default::default()
         }
     } else {
-        run_resolver_selftest()
+        run_resolver_selftest(home)
     });
 
     Ok(report)
 }
 
-fn run_resolver_selftest() -> ResolverSelftestResult {
-    use crate::core::claude_hooks::registry;
-    use crate::tmux::RealTmux;
+/// Run the real resolver the way Claude runs a hook, and check its answer.
+///
+/// The nesting matters: Claude executes a hook through `sh -c`, so the process-tree
+/// walk has to cross a couple of intermediate processes. Invoking the resolver
+/// in-process would exercise a shorter chain than production ever uses.
+pub fn run_resolver_selftest(home: &Path) -> ResolverSelftestResult {
+    use crate::core::claude_hooks::sidecar;
+    use crate::tmux::TmuxOps as _;
 
-    let tmux = RealTmux::new();
+    let mut out = ResolverSelftestResult::default();
 
-    // Capture current pane id — we know it exists since we're running inside tmux.
-    let current_pane = match run_tmux_cmd(&["display-message", "-p", "#{pane_id}"]) {
-        Ok(s) => s.trim().to_string(),
+    let Ok(expected_pane) = run_tmux_cmd(&["display-message", "-p", "#{pane_id}"]) else {
+        out.error = Some("tmux display-message failed".to_string());
+        return out;
+    };
+    out.expected_pane = expected_pane.trim().to_string();
+
+    match run_tmux_cmd(&[
+        "display-message",
+        "-p",
+        "-t",
+        &out.expected_pane,
+        "#{window_id}",
+    ]) {
+        Ok(w) => out.expected_window = w.trim().to_string(),
         Err(e) => {
-            return ResolverSelftestResult {
-                skipped: false,
-                env_tier_pass: false,
-                registry_tier_pass: false,
-                sibling_nonmatch_pass: false,
-                error: Some(format!("tmux display-message failed: {e}")),
-            };
+            out.error = Some(format!("tmux display-message -t pane failed: {e}"));
+            return out;
+        }
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(e) => {
+            out.error = Some(format!("cannot locate own executable: {e}"));
+            return out;
         }
     };
 
-    // T2 — env tier: the pane we're running in must be alive.
-    let env_tier_pass = tmux.pane_exists(&current_pane);
-
-    // Use an isolated temp dir so the test never touches real launcher entries.
-    let selftest_dir = std::env::temp_dir().join("meldr-selftest-launchers");
-    if let Err(e) = std::fs::create_dir_all(&selftest_dir) {
-        return ResolverSelftestResult {
-            skipped: false,
-            env_tier_pass,
-            registry_tier_pass: false,
-            sibling_nonmatch_pass: false,
-            error: Some(format!("selftest dir create failed: {e}")),
-        };
-    }
-    // Remove any leftover entries from a prior run.
-    if let Ok(rd) = std::fs::read_dir(&selftest_dir) {
-        for e in rd.flatten() {
-            let _ = std::fs::remove_file(e.path());
+    // Two levels of `sh -c`, matching (at least) the depth Claude introduces.
+    let inner = format!(
+        "sh -c {}",
+        shell_single_quote(&format!("{exe} claude-hook selftest"))
+    );
+    let output = match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&inner)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            out.error = Some(format!("failed to spawn nested selftest: {e}"));
+            return out;
         }
-    }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(parsed) = stdout
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+    else {
+        out.error = Some(format!(
+            "nested selftest produced no JSON: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+        return out;
+    };
 
-    let base_cwd = std::path::PathBuf::from("/tmp/meldr-selftest-base");
-    let sub_cwd = base_cwd.join("sub");
-    // A sibling path that shares a byte-prefix with base_cwd but is NOT a child of it.
-    let sibling_cwd = std::path::PathBuf::from("/tmp/meldr-selftest-baseplus");
+    out.reported_pane = parsed["pane"].as_str().unwrap_or_default().to_string();
+    out.reported_window = parsed["window"].as_str().unwrap_or_default().to_string();
+    out.tier = parsed["tier"].as_str().unwrap_or_default().to_string();
+    out.pane_match = out.reported_pane == out.expected_pane;
+    // The window is the part that used to be wrong while the pane looked right.
+    out.window_match = out.reported_window == out.expected_window;
 
-    // T5 — registry tier: write a temp entry and verify find_best_match resolves it.
-    let registry_tier_pass =
-        match registry::write_entry(&selftest_dir, &current_pane, "selftest-win", &base_cwd) {
-            Ok(()) => registry::find_best_match(&selftest_dir, &sub_cwd, &tmux)
-                .map(|e| e.pane == current_pane)
-                .unwrap_or(false),
-            Err(_) => false,
-        };
+    let state_dir = home.join(".cache/claude-agents");
+    let stamp = crate::tmux::RealTmux::from_env()
+        .snapshot()
+        .ok()
+        .map(|s| s.stamp);
+    let survey = sidecar::survey(&state_dir, stamp.as_ref(), sidecar::now_secs());
+    out.legacy_sidecars = survey.legacy;
+    out.stale_sidecars = survey.stale_server + survey.aged + survey.unreadable;
 
-    // Sibling non-match — same entry in dir, but query with a sibling cwd.
-    // Path::starts_with is component-aware so /tmp/meldr-selftest-baseplus does NOT
-    // start_with /tmp/meldr-selftest-base. This is the regression test for the
-    // ~/fmcevoy vs ~/fmcevoy_tools bug.
-    let sibling_nonmatch_pass =
-        registry::find_best_match(&selftest_dir, &sibling_cwd, &tmux).is_none();
+    out
+}
 
-    // Clean up.
-    if let Ok(rd) = std::fs::read_dir(&selftest_dir) {
-        for e in rd.flatten() {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
-
-    ResolverSelftestResult {
-        skipped: false,
-        env_tier_pass,
-        registry_tier_pass,
-        sibling_nonmatch_pass,
-        error: None,
-    }
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Find and optionally kill tmux windows whose named worktree no longer exists.
@@ -1215,18 +1223,14 @@ mod tests {
     }
 
     #[test]
-    fn test_launcher_dir_missing_flag_set_then_clear_after_creation() {
+    fn test_hooks_doctor_no_longer_creates_a_launcher_dir() {
+        // The launcher registry is gone: it was a second index of pane locations
+        // that could only ever disagree with `tmux list-panes`.
         let tmp = TempDir::new().unwrap();
-        // No launcher dir → flag set (and dir is created by the check itself)
-        let report = run_hooks(tmp.path(), false).unwrap();
-        // The check creates the dir if missing; if creation succeeded, flag is clear.
+        run_hooks(tmp.path(), false).unwrap();
         assert!(
-            !report.launcher_dir_unwritable,
-            "launcher dir should be creatable in a temp home"
-        );
-        assert!(
-            tmp.path().join(".cache/claude-agents/launchers").exists(),
-            "check must create the dir when it is missing"
+            !tmp.path().join(".cache/claude-agents/launchers").exists(),
+            "doctor must not recreate the retired launcher registry"
         );
     }
 
