@@ -15,9 +15,9 @@ pub fn run(dry_run: bool, uninstall: bool) -> Result<()> {
 
     if dry_run {
         println!("Would update: ~/.claude/settings.json");
-        println!("  Stop       → meldr claude-hook stop");
-        println!("  Notify     → meldr claude-hook notify");
-        println!("  SessionStart → meldr claude-hook session-start");
+        for (event, matcher, command) in install_hooks::MELDR_HOOKS {
+            println!("  {event} [{matcher}] → {command}");
+        }
         install_hooks::install_claude_hooks(&home, true)?;
     } else {
         let settings_path = install_hooks::install_claude_hooks(&home, false)?;

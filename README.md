@@ -256,11 +256,23 @@ Template variables: `{{window}}`, `{{cwd}}`, `{{editor}}`, `{{agent}}`, `{{pkg}}
 
 Select with: `meldr config set layout my-layout`
 
-### Claude Code tab-flash notifications
+### Claude Code notifications
 
-When the `agent` is `claude`, meldr can flash the tmux tab when a Claude session
-finishes — showing `done` (green) or `waiting` (orange for `AskUserQuestion` /
-`needs input:` prompts).
+When the `agent` is `claude`, meldr lights the tmux pane border and window tab as
+sessions finish or ask for input.
+
+Four states, so a background job never looks like the agent in front of you:
+
+| `@cc_status` / `@cc_pane_status` | Meaning |
+|---|---|
+| `done` | A session in this pane finished |
+| `waiting` | It is blocked on you (`AskUserQuestion`, a trailing `?`, `needs input:`) |
+| `bg-done` | A background job in this worktree finished; the exact pane is unknown |
+| `bg-waiting` | A background job is blocked on you |
+
+The pane is the source of truth (`@cc_pane_status`); a window's `@cc_status` is
+*derived* from its panes and shows the most urgent of them, so one agent finishing
+never hides a sibling that is still waiting.
 
 **1. Wire Claude Code hooks (one-time setup)**
 
@@ -268,31 +280,67 @@ finishes — showing `done` (green) or `waiting` (orange for `AskUserQuestion` /
 meldr install-hooks
 ```
 
-This writes `meldr claude-hook stop|notify|session-start` entries into
-`~/.claude/settings.json`. On first install it also removes the legacy
-`meldr-agent-notify.sh` bash script if present.
+Writes exactly one `meldr claude-hook stop|notify|session-start` entry per event
+into `~/.claude/settings.json`, replacing any meldr entries already there — so it
+also repairs duplicated entries, which fire every notification twice.
 
-**2. Register the launcher wrapper in `~/.zshrc`**
+`Notification` is registered only for the types that mean the agent is actually
+blocked on you (`permission_prompt`, `idle_prompt`, `elicitation_dialog`,
+`elicitation_url_dialog`, `agent_needs_input`); routine events such as
+`auth_success` and `quota_auto_resume_*` are ignored. `SessionStart` covers
+`startup|resume|clear|fork`, so resuming a session in a different pane re-records
+where that pane is.
 
-```bash
-# Print the snippet, then paste it into ~/.zshrc
-meldr install-hooks --print-shell-snippet
-```
+**No shell wrapper is needed.** If your shell rc still defines a `claude()`
+function that exports `MELDR_TMUX_PANE` or `MELDR_TMUX_WINDOW_ID`, delete it:
+those variables are no longer read, and a stale one used to misdirect every
+notification (see *How the pane is resolved* below).
 
-The snippet wraps the `claude` command so meldr records the current tmux pane
-before each `claude agents` invocation. This lets the resolver map new sessions
-to the pane that launched them even when `TMUX_PANE` is ambiguous.
-
-**3. Add tab-flash indicators to `~/.tmux.conf`**
+**2. Add the indicators to `~/.tmux.conf`**
 
 ```tmux
-set -g window-status-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,}} "
-set -g window-status-current-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,}} "
+# Window tab: red = done, orange = waiting, purple = a background job.
+set -g window-status-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,#{?#{==:#{@cc_status},bg-done},#[bg=#bb9af7 fg=#1a1b26 bold]  ⇣ ,#{?#{==:#{@cc_status},bg-waiting},#[bg=#7aa2f7 fg=#1a1b26 bold]  ⇣⏳ ,}}}} "
+set -g window-status-current-format " #I:#W#{?#{==:#{@cc_status},done},#[bg=#f7768e fg=#1a1b26 bold]  ✓ ,#{?#{==:#{@cc_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold]  ⏳ ,#{?#{==:#{@cc_status},bg-done},#[bg=#bb9af7 fg=#1a1b26 bold]  ⇣ ,#{?#{==:#{@cc_status},bg-waiting},#[bg=#7aa2f7 fg=#1a1b26 bold]  ⇣⏳ ,}}}} "
 
-# Clear the indicator when you switch to the window/pane.
-set-hook -g after-select-window 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'
-set-hook -g after-select-pane   'set-option -wu @cc_status ; set-option -pu @cc_pane_status'
+# Pane border shows which pane it was.
+set -g pane-border-status top
+set -g pane-border-format "#{?#{==:#{@cc_pane_status},done},#[bg=#f7768e fg=#1a1b26 bold] ● done ,#{?#{==:#{@cc_pane_status},waiting},#[bg=#e0af68 fg=#1a1b26 bold] ● waiting ,}}#[default] #P "
+
+# Clear when you look at it. `clear` recomputes the tab from the remaining panes,
+# so acknowledging one pane does not hide a sibling that is still waiting.
+set-hook -g after-select-pane   'run-shell -b "meldr claude-hook clear --pane #{pane_id} --now"'
+set-hook -g after-select-window 'run-shell -b "meldr claude-hook clear --window #{window_id} --all-panes --now"'
 ```
+
+If `meldr` is not on the tmux server's `PATH` — it inherits whatever launched the
+server, which often lacks `~/.cargo/bin` — use the absolute path in those hooks.
+
+A flash expires on its own after `MELDR_CC_TIMEOUT` seconds (default 5).
+
+**How the pane is resolved**
+
+The pane is never guessed. Everything comes from one `tmux list-panes` snapshot,
+so a resolved pane always carries the window it is genuinely in, and any hint is
+only a lookup key into that snapshot:
+
+1. **process tree** — walk `ppid` from the hook until a pid matches a pane's
+   `#{pane_pid}`. Hooks are children of Claude Code, and an interactive `claude`
+   is a child of its pane's shell, so this is the kernel's own answer. Needs no
+   configuration and cannot go stale.
+2. **`TMUX_PANE`** — accepted only if it names a pane in the snapshot whose
+   directory is consistent with the event's `cwd`.
+3. **session sidecar** — what `SessionStart` recorded, valid only while the tmux
+   server that issued the pane id is still running. Pane ids restart at `%0` for
+   each server, so an older record can name a live but unrelated pane.
+4. **working directory** — usually all a background job has, since its host
+   process is reparented to pid 1. Where several panes share the directory the
+   pane is genuinely unknown, so the *window* is flashed with a `bg-` status
+   rather than picking one.
+
+If none of these produce an answer, nothing is flashed and the reason is printed
+to stderr. `MELDR_TMUX_PANE`, `MELDR_TMUX_WINDOW_ID` and `MELDR_AGENT_SESSION`
+are no longer read by anything.
 
 **Verify setup**
 
@@ -301,16 +349,21 @@ meldr doctor              # run ALL reconcilers (claude + worktrees + tmux + hoo
 meldr doctor --apply      # one-shot fix for stale tabs/state left after removals
 meldr doctor tmux --apply # sweep only orphaned tmux windows
 meldr doctor claude       # reconcile Claude jobs/projects only — does NOT touch tmux
-meldr doctor hooks        # checks hooks + runs resolver self-test inside tmux
-meldr doctor hooks --apply # auto-fixes missing hook entries
+meldr doctor hooks        # checks hooks + runs the resolver self-test inside tmux
+meldr doctor hooks --apply # repairs missing, duplicated or mis-matched hook entries
 ```
 
-The resolver self-test covers:
+`doctor hooks` runs the resolver through a nested shell, exactly as Claude invokes
+a hook, and checks its answer against tmux — both the pane **and** the window,
+since the window is the part that used to be wrong while the pane looked right. It
+also reports hooks that are registered more than once, hooks under an obsolete
+matcher, and sidecars that can no longer name anything.
 
-- Tier 2 (env): `TMUX_PANE` resolves to a live pane
-- Tier 5 (registry): launcher-entry cwd match works correctly
-- Sibling non-match: `/tmp/foo` launcher does **not** match a session under `/tmp/foobar`
-  (regression test for the path-component boundary bug)
+For a full end-to-end check against a throwaway tmux server:
+
+```bash
+cargo build && ./scripts/notify-acceptance.sh
+```
 
 **`meldr claude-hook` subcommands** (called automatically by Claude Code — not normally invoked by hand)
 
@@ -319,7 +372,9 @@ The resolver self-test covers:
 | `meldr claude-hook session-start` | Claude `SessionStart` hook |
 | `meldr claude-hook stop` | Claude `Stop` hook |
 | `meldr claude-hook notify` | Claude `Notification` hook |
-| `meldr claude-hook register-launcher` | `claude()` shell wrapper before `claude agents` |
+| `meldr claude-hook clear` | meldr's own expiry timer, and `after-select-*` tmux hooks |
+| `meldr claude-hook selftest` | `meldr doctor hooks` |
+| `meldr claude-hook register-launcher` | Retired — a no-op that warns, for one release |
 
 ---
 

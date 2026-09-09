@@ -39,9 +39,9 @@ A daemon that detects when AI agents finish or need input, then signals the corr
 - `meldr watch stop` / `meldr watch status`
 - Monitors agent panes in all active meldr worktree windows via periodic `tmux capture-pane`
 - Detects idle state per agent type (cursor prompt for shells, Cursor's status bar change, Codex's prompt return)
-- Sets `@cc_status` on the window (using the same `done`/`waiting` values your tmux.conf already renders) and optionally plays a sound
-- For Claude: delegates entirely to the existing `meldr-agent-notify.sh` hooks — no double-counting
-- Writes per-pane state to `~/.cache/claude-agents/<session>.json` (same format as meldr-agent-notify.sh)
+- Sets `@cc_pane_status` on the pane and lets the window aggregate follow (the same values your tmux.conf already renders) and optionally plays a sound
+- For Claude: delegates entirely to `meldr claude-hook` — no double-counting
+- Writes per-pane state to `~/.cache/claude-agents/<session>.json` (same format `meldr claude-hook` writes)
 - Optional: adds a compact per-worktree summary to `status-right` (e.g. `auth: ✓⏳✓`)
 
 **meldr.toml config:**
