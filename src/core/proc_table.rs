@@ -73,6 +73,9 @@ pub fn parse_proc_stat_ppid(stat: &str) -> Option<u32> {
 }
 
 /// Parse `ps -axo pid=,ppid=` output into a pid → ppid map.
+///
+/// Unused on Linux, which reads `/proc` directly — the test image has no `ps`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn parse_ps_table(out: &str) -> HashMap<u32, u32> {
     out.lines()
         .filter_map(|line| {
