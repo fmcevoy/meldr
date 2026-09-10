@@ -284,6 +284,11 @@ Writes exactly one `meldr claude-hook stop|notify|session-start` entry per event
 into `~/.claude/settings.json`, replacing any meldr entries already there — so it
 also repairs duplicated entries, which fire every notification twice.
 
+If `~/.claude/settings.json` is a symlink into a dotfiles repo, the install
+replaces the symlink with a real file rather than writing through it, keeping
+the settings it found there. Hooks are machine state; they do not belong in
+tracked source.
+
 `Notification` is registered only for the types that mean the agent is actually
 blocked on you (`permission_prompt`, `idle_prompt`, `elicitation_dialog`,
 `elicitation_url_dialog`, `agent_needs_input`); routine events such as

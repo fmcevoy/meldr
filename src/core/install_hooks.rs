@@ -184,13 +184,18 @@ pub fn uninstall_claude_hooks(home: &Path, dry_run: bool) -> Result<PathBuf> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Where the hooks are written.
+///
+/// Deliberately *not* canonicalised. This path is very often a symlink into a
+/// dotfiles repo, and resolving it made every install write through the link
+/// into tracked source — which is how meldr's own hook block came to be
+/// committed to fmcevoy_tools, serde key ordering and all. Writing to the link
+/// path instead lets the atomic rename in `write_json_atomic` replace the
+/// symlink with a real file: the repo is left alone, the live settings that
+/// were reachable through the link are preserved (they are read first), and the
+/// path self-heals on the first install.
 fn resolve_settings_path(home: &Path) -> Result<PathBuf> {
-    let candidate = home.join(".claude/settings.json");
-    if candidate.exists() {
-        std::fs::canonicalize(&candidate).map_err(MeldrError::Io)
-    } else {
-        Ok(candidate)
-    }
+    Ok(home.join(".claude/settings.json"))
 }
 
 fn read_settings(path: &Path) -> Result<Value> {
@@ -283,6 +288,39 @@ fn remove_meldr_hooks(root: &mut Value, event: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A symlinked settings file must not be written through: the hooks belong
+    /// in $HOME, not in whatever dotfiles repo the link points at.
+    #[test]
+    fn install_never_writes_through_a_symlinked_settings_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let tracked = repo.join("settings.json");
+        std::fs::write(&tracked, "{\n  \"theme\": \"dark\"\n}\n").unwrap();
+        let before = std::fs::read_to_string(&tracked).unwrap();
+
+        let live = home.join(".claude/settings.json");
+        std::os::unix::fs::symlink(&tracked, &live).unwrap();
+
+        install_claude_hooks(&home, false).unwrap();
+
+        // The tracked file is byte-for-byte untouched.
+        assert_eq!(std::fs::read_to_string(&tracked).unwrap(), before);
+
+        // The live path is a real file now, carrying the hooks.
+        assert!(!live.symlink_metadata().unwrap().file_type().is_symlink());
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&live).unwrap()).unwrap();
+        for (event, _, _) in MELDR_HOOKS {
+            assert_eq!(hook_state_in(&root, event), HookState::Ok, "{event}");
+        }
+
+        // Settings that were only reachable through the link survive.
+        assert_eq!(root["theme"], "dark");
+    }
 
     fn settings_with_meldr_hooks() -> Value {
         json!({
