@@ -594,11 +594,13 @@ pub fn run_hooks(home: &Path, apply: bool) -> Result<HooksDoctorReport> {
         if !content.contains("@cc_status") {
             report.tmux_conf_missing_cc_status = true;
         }
-        // Check that @cc_pane_status is cleared inside an after-select-* hook so
-        // the pane border indicator clears when the user focuses the pane.
+        // An `after-select-*` hook should drop the indicator once you have looked
+        // at it. Two spellings are acceptable: the current one, which calls
+        // `claude-hook clear` so the tab is recomputed from the panes that are
+        // still lit, and the older one that unsets `@cc_pane_status` directly.
         let has_pane_clear = content.lines().any(|line| {
             (line.contains("after-select-window") || line.contains("after-select-pane"))
-                && line.contains("@cc_pane_status")
+                && (line.contains("@cc_pane_status") || line.contains("claude-hook clear"))
         });
         if !has_pane_clear {
             report.tmux_conf_missing_pane_focus_clear = true;
@@ -1291,6 +1293,41 @@ mod tests {
                 "--apply must collapse the duplicates"
             );
         }
+    }
+
+    #[test]
+    fn tmux_conf_check_accepts_both_clear_spellings() {
+        // The current spelling delegates to `claude-hook clear`, which recomputes
+        // the tab from the panes still lit instead of blanket-clearing the window.
+        // The older direct-unset form still works and must not be flagged.
+        let modern = "set-hook -g after-select-pane 'run-shell -b \"meldr claude-hook clear --pane #{pane_id} --now\"'";
+        let legacy = "set-hook -g after-select-pane 'set-option -wu @cc_status ; set-option -pu @cc_pane_status'";
+        for conf in [modern, legacy] {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join(".tmux.conf"),
+                format!("set -g window-status-format \"#{{@cc_status}}\"\n{conf}\n"),
+            )
+            .unwrap();
+            let report = run_hooks(tmp.path(), false).unwrap();
+            assert!(
+                !report.tmux_conf_missing_pane_focus_clear,
+                "should accept: {conf}"
+            );
+            assert!(!report.tmux_conf_missing_cc_status);
+        }
+    }
+
+    #[test]
+    fn tmux_conf_check_still_flags_a_missing_clear() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".tmux.conf"),
+            "set -g window-status-format \"#{@cc_status}\"\n",
+        )
+        .unwrap();
+        let report = run_hooks(tmp.path(), false).unwrap();
+        assert!(report.tmux_conf_missing_pane_focus_clear);
     }
 
     #[test]
