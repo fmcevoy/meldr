@@ -1,12 +1,7 @@
 use crate::core::install_hooks;
 use crate::error::Result;
 
-pub fn run(dry_run: bool, uninstall: bool, print_shell_snippet: bool) -> Result<()> {
-    if print_shell_snippet {
-        print_snippet();
-        return Ok(());
-    }
-
+pub fn run(dry_run: bool, uninstall: bool) -> Result<()> {
     let home = dirs::home_dir()
         .ok_or_else(|| crate::error::MeldrError::Config("cannot determine HOME".into()))?;
 
@@ -20,9 +15,9 @@ pub fn run(dry_run: bool, uninstall: bool, print_shell_snippet: bool) -> Result<
 
     if dry_run {
         println!("Would update: ~/.claude/settings.json");
-        println!("  Stop       → meldr claude-hook stop");
-        println!("  Notify     → meldr claude-hook notify");
-        println!("  SessionStart → meldr claude-hook session-start");
+        for (event, matcher, command) in install_hooks::MELDR_HOOKS {
+            println!("  {event} [{matcher}] → {command}");
+        }
         install_hooks::install_claude_hooks(&home, true)?;
     } else {
         let settings_path = install_hooks::install_claude_hooks(&home, false)?;
@@ -43,26 +38,10 @@ pub fn run(dry_run: bool, uninstall: bool, print_shell_snippet: bool) -> Result<
         println!();
         println!("Claude Code hooks wired.");
         println!();
-        println!(
-            "To register launcher entries when you run 'claude agents', add this to your .zshrc:"
-        );
-        println!("  (run: meldr install-hooks --print-shell-snippet)");
+        println!("No shell wrapper is needed. If your shell rc still defines a claude()");
+        println!("function that exports MELDR_TMUX_PANE or MELDR_TMUX_WINDOW_ID, delete it —");
+        println!("those variables are no longer read and a stale one misdirects notifications.");
     }
 
     Ok(())
-}
-
-fn print_snippet() {
-    println!(
-        r#"# Add to ~/.zshrc — registers the current tmux pane so meldr can flash
-# the right tab when a Claude session finishes.
-claude() {{
-  local pane="${{TMUX_PANE:-}}"
-  local win=""
-  [ -n "$pane" ] && win=$(tmux display-message -p '#{{window_id}}' 2>/dev/null || true)
-  MELDR_TMUX_PANE="$pane" MELDR_TMUX_WINDOW_ID="$win" \
-    meldr claude-hook register-launcher 2>/dev/null
-  MELDR_TMUX_PANE="$pane" MELDR_TMUX_WINDOW_ID="$win" command claude "$@"
-}}"#
-    );
 }

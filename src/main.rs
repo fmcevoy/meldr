@@ -311,13 +311,25 @@ fn run(cli: Cli) -> error::Result<()> {
             }
         }
 
-        Commands::InstallHooks {
-            dry_run,
-            uninstall,
-            print_shell_snippet,
-        } => cli::install_hooks::run(dry_run, uninstall, print_shell_snippet),
+        Commands::InstallHooks { dry_run, uninstall } => {
+            cli::install_hooks::run(dry_run, uninstall)
+        }
 
-        Commands::ClaudeHook { event } => cli::claude_hook::run(&event),
+        Commands::ClaudeHook {
+            event,
+            pane,
+            window,
+            all_panes,
+            clear_now,
+        } => cli::claude_hook::run(
+            &event,
+            &cli::claude_hook::ClearArgs {
+                pane,
+                window,
+                all_panes,
+                now: clear_now,
+            },
+        ),
 
         Commands::Doctor { action, apply } => {
             let cwd = std::env::current_dir()?;

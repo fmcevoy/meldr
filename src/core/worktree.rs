@@ -4,7 +4,6 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::core::claude_hooks::{registry, sidecar};
 use crate::core::config::{EffectiveConfig, GlobalConfig};
 use crate::core::hooks;
 use crate::core::state::{WorkspaceState, WorktreeState};
@@ -124,37 +123,26 @@ struct TmuxSetupResult {
     pane_mappings: HashMap<String, String>,
 }
 
-/// Export MELDR_TMUX_* env vars into a pane shell and write sidecar files so
-/// `meldr claude-hook` can locate the pane even when TMUX/TMUX_PANE are stripped
-/// by a Node.js process wrapper.
-fn inject_agent_env(
-    tmux: &dyn TmuxOps,
-    pane_id: &str,
-    window_id: &str,
-    agent_name: &str,
-    session_id: &str,
-    state_dir_override: Option<&Path>,
-) -> Result<()> {
-    let export_cmd = format!(
-        "export MELDR_TMUX_PANE={pane_id} MELDR_TMUX_WINDOW_ID={window_id} \
-         MELDR_AGENT={agent_name} MELDR_AGENT_SESSION={session_id}"
-    );
-    tmux.send_keys(pane_id, &export_cmd)?;
-
-    let state_dir = state_dir_override
-        .map(Path::to_path_buf)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".cache/claude-agents")));
-
-    if let Some(state_dir) = state_dir {
-        // Sidecar keyed by session_id for Tier 3 / Tier 4 resolver lookups.
-        let _ = sidecar::write_parent_pane(&state_dir, session_id, pane_id);
-        // Launcher registry entry for Tier 5 (background sessions via `claude agents`).
-        let launcher_dir = state_dir.join("launchers");
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let _ = registry::write_entry(&launcher_dir, pane_id, window_id, &cwd);
-    }
-
-    Ok(())
+/// Tell the agent's shell which agent it is. That is all.
+///
+/// This used to also export `MELDR_TMUX_PANE`, `MELDR_TMUX_WINDOW_ID` and
+/// `MELDR_AGENT_SESSION`, and write a sidecar plus a launcher-registry entry
+/// naming this pane. Every one of those was a liability:
+///
+/// - Claude Code hosts all background jobs in a single long-lived daemon, which
+///   inherits its environment from whichever pane first started it and keeps it
+///   for the rest of the day. `MELDR_TMUX_PANE` therefore told every background
+///   job, in every worktree, to flash one unrelated pane.
+/// - The window id was recorded next to the pane id and never re-derived, so
+///   moving a pane between windows silently desynchronised the two.
+/// - The registry entry recorded *meldr's* working directory rather than the
+///   pane's, so directory matching was wrong from the moment it was written.
+///
+/// The resolver now derives the pane from the process tree and the live tmux
+/// snapshot, so none of it is needed. `MELDR_AGENT` stays: it is informational and
+/// nothing routes on it.
+fn inject_agent_env(tmux: &dyn TmuxOps, pane_id: &str, agent_name: &str) -> Result<()> {
+    tmux.send_keys(pane_id, &format!("export MELDR_AGENT={agent_name}"))
 }
 
 /// Create tmux windows and panes for a set of packages in a worktree branch.
@@ -170,7 +158,6 @@ fn setup_tmux_windows(
     config: &EffectiveConfig,
     global_config: Option<&GlobalConfig>,
     leader: Option<&str>,
-    state_dir_override: Option<&Path>,
 ) -> Result<TmuxSetupResult> {
     let ws_name = &manifest.workspace.name;
     let mut tmux_windows = Vec::new();
@@ -190,17 +177,30 @@ fn setup_tmux_windows(
         };
         tmux.apply_layout(&window_id, &layout)?;
 
+        // Resolve positional indices to stable `%N` pane ids once, up front: an
+        // `@3.0` target silently re-binds to whatever pane later occupies index 0.
+        let pane_ids: HashMap<u32, String> = tmux
+            .list_window_panes(&window_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
         for (i, pkg_name) in lo.panes.iter().enumerate() {
             if pkg_name.is_empty() {
                 continue;
             }
             let wt_path = workspace::worktree_path(workspace_root, branch, pkg_name);
-            let target = format!("{window_id}.{i}");
+            let target = pane_ids
+                .get(&(i as u32))
+                .cloned()
+                .unwrap_or_else(|| format!("{window_id}.{i}"));
             tmux.send_keys(&target, &format!("cd {}", wt_path.display()))?;
             if config.should_launch_agent() {
                 tmux.send_keys(&target, &config.agent_command)?;
             }
-            pane_mappings.insert(i.to_string(), pkg_name.clone());
+            // Role → pane id, matching the dev-window branch. `meldr watch` needs
+            // to know which pane belongs to which package.
+            pane_mappings.insert(pkg_name.clone(), target);
         }
 
         // Store the stable `@window_id`, not the name: `@N` is an unambiguous tmux
@@ -244,15 +244,7 @@ fn setup_tmux_windows(
                     &config.agent_command
                 };
                 let agent_name = cmd.split_whitespace().next().unwrap_or("unknown");
-                let session_id = sidecar::session_id(agent_pane);
-                inject_agent_env(
-                    tmux,
-                    agent_pane,
-                    &dev.window_id,
-                    agent_name,
-                    &session_id,
-                    state_dir_override,
-                )?;
+                inject_agent_env(tmux, agent_pane, agent_name)?;
                 tmux.send_keys(agent_pane, cmd)?;
             }
             pane_mappings.insert(format!("agent_{i}"), agent_pane.clone());
@@ -368,7 +360,6 @@ pub fn add_worktree(
             config,
             global_config,
             leader.as_deref(),
-            None,
         )?
     } else {
         TmuxSetupResult {
@@ -673,7 +664,6 @@ pub fn open_worktree(
         config,
         global_config,
         leader,
-        None,
     )?;
 
     state.add_worktree(
@@ -946,7 +936,10 @@ mod tests {
                 .push((name.to_string(), cwd.to_string()));
             Ok(DevWindowPanes {
                 window_id: "@100".to_string(),
-                editor: Some("@100.0".to_string()),
+                // A real `%N`: RealTmux now captures pane 0's id from `new-window`,
+                // so a mock handing back a positional `@100.0` would let the
+                // positional-target bug slip through the suite again.
+                editor: Some("%0".to_string()),
                 agents: vec!["%1".to_string(), "%2".to_string(), "%3".to_string()],
                 terms: vec![
                     "%4".to_string(),
@@ -956,6 +949,10 @@ mod tests {
                     "%8".to_string(),
                 ],
             })
+        }
+
+        fn list_window_panes(&self, _window: &str) -> Result<Vec<(u32, String)>> {
+            Ok((0..9).map(|i| (i, format!("%{i}"))).collect())
         }
 
         fn has_window(&self, _window: &str) -> bool {
@@ -969,9 +966,6 @@ mod tests {
         }
         fn pane_exists(&self, _pane_id: &str) -> bool {
             true
-        }
-        fn display_message(&self, _target: &str, _format: &str) -> Result<String> {
-            Ok(String::new())
         }
         fn set_user_option(
             &self,
@@ -1421,9 +1415,6 @@ mod tests {
         fn pane_exists(&self, _pane_id: &str) -> bool {
             false
         }
-        fn display_message(&self, _target: &str, _format: &str) -> Result<String> {
-            Ok(String::new())
-        }
         fn set_user_option(
             &self,
             _scope: crate::tmux::OptionScope,
@@ -1603,17 +1594,8 @@ mod tests {
             ..Default::default()
         };
 
-        let setup = setup_tmux_windows(
-            &tmux,
-            &manifest,
-            tmp.path(),
-            "feat",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let setup =
+            setup_tmux_windows(&tmux, &manifest, tmp.path(), "feat", &config, None, None).unwrap();
 
         // The dev window returns @100; that @id (not the "test-ws/feat" name) is stored.
         assert_eq!(setup.tmux_window.as_deref(), Some("@100"));
@@ -3167,7 +3149,6 @@ mod tests {
             &config,
             None,
             Some("backend"),
-            None,
         )
         .unwrap();
 
@@ -3213,17 +3194,7 @@ mod tests {
         let tmux = MockTmux::new();
         let config = EffectiveConfig::default();
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "feat-noleader",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        setup_tmux_windows(&tmux, &manifest, root, "feat-noleader", &config, None, None).unwrap();
 
         let calls = tmux.calls();
         // Without a leader, no cd should be sent to the agent pane (%1).
@@ -3662,17 +3633,7 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "test-left",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        setup_tmux_windows(&tmux, &manifest, root, "test-left", &config, None, None).unwrap();
 
         let calls = tmux.calls();
         // Pane %1 (index 0) must get left_agent_command.
@@ -3721,17 +3682,7 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "test-same",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        setup_tmux_windows(&tmux, &manifest, root, "test-same", &config, None, None).unwrap();
 
         let calls = tmux.calls();
         for pane in &["%1", "%2", "%3"] {
@@ -3760,17 +3711,7 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "test-minimal",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        setup_tmux_windows(&tmux, &manifest, root, "test-minimal", &config, None, None).unwrap();
 
         let calls = tmux.calls();
         // The sole agent pane gets agent_command, not left_agent_command.
@@ -3796,17 +3737,7 @@ mod tests {
             ..Default::default()
         };
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "test-noagent",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        setup_tmux_windows(&tmux, &manifest, root, "test-noagent", &config, None, None).unwrap();
 
         let calls = tmux.calls();
         assert!(
@@ -3830,17 +3761,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = setup_tmux_windows(
-            &tmux,
-            &manifest,
-            root,
-            "test-mappings",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let result =
+            setup_tmux_windows(&tmux, &manifest, root, "test-mappings", &config, None, None)
+                .unwrap();
 
         // agent_0 / agent / agent_1 / agent_2 are all still present.
         assert!(result.pane_mappings.contains_key("agent"));
@@ -3854,79 +3777,14 @@ mod tests {
         );
     }
 
-    // --- M2: env injection tests ---
+    // --- agent-pane environment and pane identity ---
 
     #[test]
-    fn test_agent_pane_receives_meldr_env_export_before_agent_cmd() {
-        let packages = &["api"];
-        let (tmp, manifest) = setup_workspace(packages);
-        let tmux = MockTmux::new();
-        // Use "minimal" layout (single agent pane) to avoid the left-agent override
-        // so agent_command is always what's sent, simplifying assertions.
-        let config = EffectiveConfig {
-            agent_command: "claude agents".to_string(),
-            layout: "minimal".to_string(),
-            ..Default::default()
-        };
-
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            tmp.path(),
-            "feat-env",
-            &config,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let calls = tmux.calls();
-        // MockTmux's minimal layout returns agents ["%1"]. Find send_keys calls for %1.
-        let pane_calls: Vec<&str> = calls
-            .send_keys
-            .iter()
-            .filter(|(target, _)| target == "%1")
-            .map(|(_, keys)| keys.as_str())
-            .collect();
-
-        // The export call must appear before the agent command.
-        let export_pos = pane_calls
-            .iter()
-            .position(|k| k.starts_with("export MELDR_TMUX_PANE="));
-        let agent_pos = pane_calls.iter().position(|k| k.starts_with("claude"));
-        assert!(
-            export_pos.is_some(),
-            "expected MELDR_TMUX_PANE export for agent pane"
-        );
-        assert!(agent_pos.is_some(), "expected agent command for agent pane");
-        assert!(
-            export_pos.unwrap() < agent_pos.unwrap(),
-            "export must come before agent command"
-        );
-
-        // Exported vars must include all four keys.
-        let export_line = pane_calls[export_pos.unwrap()];
-        assert!(
-            export_line.contains("MELDR_TMUX_PANE=%1"),
-            "must include pane id"
-        );
-        assert!(
-            export_line.contains("MELDR_TMUX_WINDOW_ID=@100"),
-            "must include window id"
-        );
-        assert!(
-            export_line.contains("MELDR_AGENT=claude"),
-            "must include agent name"
-        );
-        assert!(
-            export_line.contains("MELDR_AGENT_SESSION="),
-            "must include session id"
-        );
-    }
-
-    #[test]
-    fn test_env_injection_covers_all_agent_panes() {
+    fn agent_panes_get_only_meldr_agent_exported() {
+        // The pane/window/session variables are gone. Claude Code hosts every
+        // background job in one daemon that inherits its environment from
+        // whichever pane started it, so exporting a pane id there told every
+        // later background job to flash that one unrelated pane.
         let packages = &["api"];
         let (tmp, manifest) = setup_workspace(packages);
         let tmux = MockTmux::new();
@@ -3943,26 +3801,65 @@ mod tests {
             &config,
             None,
             None,
-            None,
         )
         .unwrap();
 
         let calls = tmux.calls();
-        // All three agent panes (%1 %2 %3) must have received the export.
+        let all_keys: Vec<&str> = calls.send_keys.iter().map(|(_, k)| k.as_str()).collect();
+        for banned in [
+            "MELDR_TMUX_PANE",
+            "MELDR_TMUX_WINDOW_ID",
+            "MELDR_AGENT_SESSION",
+        ] {
+            assert!(
+                !all_keys.iter().any(|k| k.contains(banned)),
+                "{banned} must no longer be exported; sent: {all_keys:?}"
+            );
+        }
+
+        // Pane 0 runs the configured left-pane agent (cursor by default), the rest
+        // run the workspace agent, so assert against each pane's own command.
         for pane in &["%1", "%2", "%3"] {
-            let exported = calls
+            let pane_keys: Vec<&str> = calls
                 .send_keys
                 .iter()
-                .any(|(t, k)| t == pane && k.starts_with("export MELDR_TMUX_PANE="));
+                .filter(|(t, _)| t == pane)
+                .map(|(_, k)| k.as_str())
+                .collect();
+            let export_pos = pane_keys
+                .iter()
+                .position(|k| k.starts_with("export MELDR_AGENT="));
+            let agent_pos = pane_keys
+                .iter()
+                .position(|k| !k.starts_with("export ") && !k.starts_with("cd "));
             assert!(
-                exported,
-                "pane {pane} did not receive MELDR_TMUX_PANE export"
+                export_pos.is_some(),
+                "pane {pane} should still learn which agent it runs: {pane_keys:?}"
+            );
+            assert!(
+                agent_pos.is_some(),
+                "pane {pane} should run an agent: {pane_keys:?}"
+            );
+            assert!(
+                export_pos.unwrap() < agent_pos.unwrap(),
+                "the export must precede the agent command in {pane}: {pane_keys:?}"
+            );
+            let exported = pane_keys[export_pos.unwrap()]
+                .trim_start_matches("export MELDR_AGENT=")
+                .to_string();
+            let ran = pane_keys[agent_pos.unwrap()];
+            assert!(
+                ran.starts_with(&exported),
+                "pane {pane} exported {exported:?} but ran {ran:?}"
             );
         }
     }
 
     #[test]
-    fn test_parent_pane_sidecar_written() {
+    fn spawning_writes_no_sidecars_or_registry_entries() {
+        // Spawn time is the wrong moment to record a pane: the session id is not
+        // known yet, so the old code invented one, and the entry outlived both the
+        // pane and the tmux server that named it.
         let packages = &["api"];
         let (tmp, manifest) = setup_workspace(packages);
         let tmux = MockTmux::new();
@@ -3971,46 +3868,35 @@ mod tests {
             ..Default::default()
         };
 
-        let state_tmp = tempfile::TempDir::new().unwrap();
-        let state_dir = state_tmp.path().join(".cache/claude-agents");
+        let home = tempfile::TempDir::new().unwrap();
+        // SAFETY: single-threaded test; restored immediately after the call.
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        setup_tmux_windows(&tmux, &manifest, tmp.path(), "feat-sc", &config, None, None).unwrap();
+        match prev_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
 
-        setup_tmux_windows(
-            &tmux,
-            &manifest,
-            tmp.path(),
-            "feat-sidecar",
-            &config,
-            None,
-            None,
-            Some(&state_dir),
-        )
-        .unwrap();
-
-        // Extract the MELDR_AGENT_SESSION value from the exported env line for %1.
-        let calls = tmux.calls();
-        let session_id = calls
-            .send_keys
-            .iter()
-            .find(|(t, k)| t == "%1" && k.starts_with("export MELDR_TMUX_PANE="))
-            .and_then(|(_, k)| {
-                k.split_whitespace()
-                    .find(|p| p.starts_with("MELDR_AGENT_SESSION="))
-                    .map(|p| p.trim_start_matches("MELDR_AGENT_SESSION=").to_string())
-            });
-
+        let state_dir = home.path().join(".cache/claude-agents");
+        let files: Vec<String> = std::fs::read_dir(&state_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
         assert!(
-            session_id.is_some(),
-            "could not parse session id from export line"
+            files.is_empty(),
+            "spawning must not write hook state; found {files:?}"
         );
-
-        let sidecar = state_dir.join(format!("{}.parent_pane", session_id.unwrap()));
-        assert!(sidecar.exists(), "sidecar file not written");
-        let content = std::fs::read_to_string(&sidecar).unwrap();
-        assert_eq!(content.trim(), "%1", "sidecar must contain the pane id");
     }
 
     #[test]
-    fn test_launcher_entry_written_alongside_sidecar() {
+    fn dev_window_pane_mappings_are_all_pane_ids() {
+        // `@3.0` is a *positional* target: it re-binds to whatever pane later sits
+        // at index 0, so storing one as an identity silently points elsewhere once
+        // panes are reordered, killed, or broken out into another window.
         let packages = &["api"];
         let (tmp, manifest) = setup_workspace(packages);
         let tmux = MockTmux::new();
@@ -4019,47 +3905,60 @@ mod tests {
             ..Default::default()
         };
 
-        let state_tmp = tempfile::TempDir::new().unwrap();
-        let state_dir = state_tmp.path().join(".cache/claude-agents");
-
-        setup_tmux_windows(
+        let setup = setup_tmux_windows(
             &tmux,
             &manifest,
             tmp.path(),
-            "feat-launcher",
+            "feat-ids",
             &config,
             None,
             None,
-            Some(&state_dir),
         )
         .unwrap();
 
-        let launcher_dir = state_dir.join("launchers");
-        assert!(launcher_dir.exists(), "launcher dir must be created");
-
-        let entries: Vec<_> = std::fs::read_dir(&launcher_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-            .collect();
-        assert!(
-            !entries.is_empty(),
-            "at least one launcher entry must be written"
-        );
-
-        // Every entry must be valid JSON with a non-empty pane and a numeric ts.
-        for entry in &entries {
-            let content = std::fs::read_to_string(entry.path()).unwrap();
-            let v: serde_json::Value =
-                serde_json::from_str(&content).expect("launcher entry must be valid JSON");
+        assert!(!setup.pane_mappings.is_empty(), "expected pane mappings");
+        for (role, target) in &setup.pane_mappings {
             assert!(
-                v["pane"]
-                    .as_str()
-                    .map(|s| s.starts_with('%'))
-                    .unwrap_or(false),
-                "pane field must be a tmux pane id"
+                crate::tmux::snapshot::is_pane_id(target),
+                "pane_mappings[{role}] = {target:?} is not a %N pane id"
             );
-            assert!(v["ts"].as_u64().is_some(), "ts field must be a number");
+        }
+    }
+
+    #[test]
+    fn manifest_layout_pane_mappings_are_pane_ids_keyed_by_package() {
+        let packages = &["api", "web"];
+        let (tmp, mut manifest) = setup_workspace(packages);
+        manifest.layout = Some(crate::core::workspace::LayoutOverride {
+            definition: "even-horizontal".to_string(),
+            panes: vec!["api".to_string(), "web".to_string()],
+        });
+        let tmux = MockTmux::new();
+        let config = EffectiveConfig {
+            agent_command: "claude agents".to_string(),
+            ..Default::default()
+        };
+
+        let setup = setup_tmux_windows(
+            &tmux,
+            &manifest,
+            tmp.path(),
+            "feat-man",
+            &config,
+            None,
+            None,
+        )
+        .unwrap();
+
+        for pkg in ["api", "web"] {
+            let target = setup
+                .pane_mappings
+                .get(pkg)
+                .unwrap_or_else(|| panic!("no mapping for {pkg}: {:?}", setup.pane_mappings));
+            assert!(
+                crate::tmux::snapshot::is_pane_id(target),
+                "manifest pane_mappings[{pkg}] = {target:?} is not a %N pane id"
+            );
         }
     }
 }
